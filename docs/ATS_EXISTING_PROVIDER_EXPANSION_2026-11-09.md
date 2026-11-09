@@ -30,6 +30,13 @@ they do not acquire an extra page request. Current employer application URLs
 must preserve the feed's exact posting ID. Published remote locations remain
 intact when structured office fields contain only a country.
 
+The explicitly requested historical HRMDirect backfill uses the narrower
+`*.hrmdirect.com/employment/*` pattern. That distinct path scope earns its own
+per-index completion receipts with the expanded parser. The original
+`*.hrmdirect.com/*` receipts remain valid and are neither removed nor reset.
+Local discovery inherits completed coverage for the existing patterns and reads
+the selected index sections for missing coverage, beginning with recent crawls.
+
 Two new seed candidates passed complete live reads:
 
 | Employer | Listing records | Verification |
@@ -87,6 +94,7 @@ Regression coverage includes canonical retirement protection, conflicting widget
 configuration, exact employer/posting validation, location preservation,
 localized search and filtered/hidden/unsupported empty-state rejection.
 
-The final unit suite passed 3,120 tests, with 10 skipped and no failures.
+The release unit suite passed 3,121 tests, with 10 skipped and no failures.
 TypeScript checking (`npx tsc --noEmit --incremental false`), ESLint on every
 changed TypeScript file and whitespace validation also passed.
+The production build passed with a deliberately unusable database connection.

@@ -91,7 +91,12 @@ export const PLATFORMS = {
   jobscore: { cc_pattern: ['careers.jobscore.com/careers/*', 'careers.jobscore.com/jobs/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'jobscore'), test_api: '', get_jobs: (_data: any) => [] },
   jazzhr: { cc_pattern: ['*.applytojob.com/*', 'app.jazz.co/feeds/export/jobs/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'jazzhr'), test_api: '', get_jobs: (_data: any) => [] },
   manatal: { cc_pattern: ['www.careers-page.com/*', 'careers-page.com/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'manatal'), test_api: '', get_jobs: (_data: any) => [] },
-  clearcompany: { cc_pattern: ['careers-content.clearcompany.com/*', 'careers-api.clearcompany.com/v1/*', '*.hrmdirect.com/*', 'apply.clearcompany.com/*', '*.clearcompany.com/careers/jobs/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'clearcompany'), test_api: '', get_jobs: (_data: any) => [] },
+  clearcompany: {
+    cc_pattern: ['careers-content.clearcompany.com/*', 'careers-api.clearcompany.com/v1/*', '*.hrmdirect.com/*',
+      // Explicit historical backfill with the expanded parser; old broad-pattern receipts remain intact.
+      '*.hrmdirect.com/employment/*', 'apply.clearcompany.com/*', '*.clearcompany.com/careers/jobs/*'],
+    extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'clearcompany'), test_api: '', get_jobs: (_data: any) => [],
+  },
   hirehive: { cc_pattern: '*.hirehive.com/*', extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'hirehive'), test_api: '', get_jobs: (_data: any) => [] },
   zohorecruit: { cc_pattern: ZOHO_RECRUIT_DOMAINS.map(domain => `*.${domain}/*`),
     extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'zohorecruit'), test_api: '',

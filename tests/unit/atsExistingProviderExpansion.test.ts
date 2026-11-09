@@ -8,11 +8,29 @@ import { identifyAts } from '../../src/lib/atsUtils';
 import { tickFirstCollections } from '../../src/lib/atsFirstCollectionController';
 import { parseSymphonyConfig, parseSymphonyListing, symphonyBoardSlugFromUrl, symphonyPostingIdentity, symphonyBoardRequest } from '../../src/lib/symphonyAtsBoard';
 import { parseSymphonyPosting } from '../../src/lib/symphonyPosting';
+import { PLATFORMS, patternsFor } from '../../src/scripts/discoverATS';
+import { localCrawlPatternMatches } from '../../src/lib/localCommonCrawl';
+import { auditIndicesMissingCoverage } from '../../scripts/audit_ats_common_crawl';
 
 const site = '4edf5447-97a4-5997-e378-68bb4af139ca';
 const jobId = 'f54bd544-01ed-9f3f-c8c8-99150a747e1b';
 const widget = `<script src="https://careers-content.clearcompany.com/js/v1/career-site.js?hosted=true" data-site-id="${site}"></script>`;
 const description = '<p>Lead customer account planning, partner activation, training and performance reviews. Develop sales opportunities and coordinate cross-functional teams. Qualifications include account management and commercial leadership experience.</p>'.repeat(4);
+
+test('the requested HRMDirect historical backfill earns separate coverage without resetting old receipts', () => {
+  const pattern = '*.hrmdirect.com/employment/*';
+  assert.ok(patternsFor(PLATFORMS.clearcompany).includes(pattern));
+  assert.equal(localCrawlPatternMatches(pattern, 'https://franklincovey.hrmdirect.com/employment/job-openings.php?search=true'), true);
+  for (const url of ['https://franklincovey.hrmdirect.com/assets/widget.js', 'https://hrmdirect.com/employment/', 'https://franklincovey.hrmdirect.com.evil.example/employment/']) {
+    assert.equal(localCrawlPatternMatches(pattern, url), false);
+  }
+  const indices = ['CC-MAIN-2026-39-index', 'CC-MAIN-2026-43-index'];
+  const old = indices.map(indexId => ({ platform: 'clearcompany', pattern: '*.hrmdirect.com/*', indexId }));
+  const original = JSON.stringify(old), work = [{ platformKey: 'clearcompany' as const, pattern }];
+  assert.deepEqual(auditIndicesMissingCoverage(indices, work, old), indices);
+  assert.deepEqual(auditIndicesMissingCoverage(indices, work, [...old, ...indices.map(indexId => ({ platform: 'clearcompany', pattern, indexId }))]), []);
+  assert.equal(JSON.stringify(old), original);
+});
 
 test('ClearCompany hosted and migrated HRMDirect boards resolve to the same existing UUID identity', () => {
   assert.equal(publicAtsNeedsConfig('clearcompany', site), false);
