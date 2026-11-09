@@ -1,4 +1,5 @@
 import { symphonyBoardSlugFromUrl, symphonyBoardUrl, symphonyBoardRequest, parseSymphonyConfig, parseSymphonyListing, SYMPHONY_PAGE_SIZE } from './symphonyAtsBoard';
+import { clearCompanyPageUrl } from './clearcompanyBoard';
 import { TENANT_ATS_PLATFORMS, isTenantAtsPlatform, tenantAtsBoardSlugFromUrl, tenantAtsBoardUrl, tenantAtsPageSize, tenantAtsRequest, tenantAtsConfig, tenantAtsListingSlug, parseTenantAtsListing } from './tenantAtsBoards';
 import * as cheerio from 'cheerio';
 import { successFactorsBrandedEmployer } from './successFactorsPosting';
@@ -13,7 +14,9 @@ export type PublicAtsConfig = { company: string; token?: string; canonicalSlug?:
 export const isPublicAtsPlatform = (platform: string): platform is PublicAtsPlatform =>
   (PUBLIC_ATS_PLATFORMS as readonly string[]).includes(platform);
 export const atsListingUsesXml = (platform: string): boolean => ['personio', 'successfactors', 'jazzhr', 'kula'].includes(platform);
-export const publicAtsNeedsConfig = (platform: string): boolean => ['symphony', 'oracle', 'ukg', 'comeet', 'successfactors', 'zohorecruit', 'gem', 'manatal', 'hirehive', 'jobscore'].includes(platform);
+export const publicAtsNeedsConfig = (platform: string, slug?: string): boolean => platform === 'clearcompany'
+  ? !!slug && !!clearCompanyPageUrl(slug)
+  : ['symphony', 'oracle', 'ukg', 'comeet', 'successfactors', 'zohorecruit', 'gem', 'manatal', 'hirehive', 'jobscore'].includes(platform);
 const atom = /^[a-z0-9_.-]+$/i;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const sapHost = /^career\d*\.(?:successfactors|sapsf)\.(?:com|eu)$/i;

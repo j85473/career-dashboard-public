@@ -20,7 +20,7 @@ async function main() {
   if (selectedPlatforms.some(platform => !boards.some(board => board.platform === platform))) throw new Error('Unknown verification platform');
   for (const board of boards.filter(board => !selectedPlatforms.length || selectedPlatforms.includes(board.platform))) {
     let config: PublicAtsConfig | undefined;
-    if (isPublicAtsPlatform(board.platform) && publicAtsNeedsConfig(board.platform)) {
+    if (isPublicAtsPlatform(board.platform) && publicAtsNeedsConfig(board.platform, board.slug)) {
       config = parsePublicAtsConfig(board.platform, board.slug, await (await read(publicAtsBoardUrl(board.platform, board.slug))).text());
     }
     let offset = 0, pages = 0, reportedTotal: number | null = null;

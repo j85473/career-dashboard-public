@@ -39,7 +39,9 @@ export function taleoSearchPage(board: string, responseUrl: string, request: unk
             || (paging.currentPageNo as number) > 1000 || paging.currentPageNo !== input.pageNo
             || !Number.isSafeInteger(paging.pageSize) || (paging.pageSize as number) < 1 || (paging.pageSize as number) > 250
             || !Number.isSafeInteger(paging.totalCount) || (paging.totalCount as number) < 0 || (paging.totalCount as number) > 50000
-            || !Array.isArray(result.requisitionList) || !result.requisitionList.length || result.requisitionList.length > (paging.pageSize as number)) return null;
+            || !Array.isArray(result.requisitionList) || result.requisitionList.length > (paging.pageSize as number)
+            || !result.requisitionList.length && (paging.totalCount !== 0 || paging.currentPageNo !== 1)
+            || result.requisitionList.length > (paging.totalCount as number)) return null;
         const query = new URLSearchParams(typeof result.queryString === 'string' ? result.queryString : '');
         if ([...query.keys()].some(key => !['f', 's', 'a', 'page', 'multiline'].includes(key) || query.getAll(key).length !== 1)
             || query.get('f') !== 'null' || query.get('a') !== 'null' || Number(query.get('page') || '1') !== paging.currentPageNo) return null;

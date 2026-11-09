@@ -3,11 +3,12 @@ import { prisma } from './prisma';
 import { recordDiscoveredAtsBoard } from './atsBoardDiscovery';
 import { firstCollectionRetryAt } from './atsFirstCollectionRetry';
 import { isTenantAtsServiceAddress } from './tenantAtsBoards';
+import { admittedClearCompanySlug } from './clearcompanyBoard';
 import { FIRST_COLLECTION_POLICY_ID, FIRST_COLLECTION_HEALTH_WINDOW_MS, FIRST_COLLECTION_PLATFORMS,
   firstCollectionHealth, firstCollectionAllowance, firstCollectionCounts, reconcileFirstCollectionCompletion } from './atsFirstCollectionAdmission';
 import { catalogueMissingFirstCollectionCandidates } from './atsFirstCollectionAdmission';
 
-export type FirstCollectionValidation = { success: boolean; jobsFound?: number; reason?: string; sizeReview?: boolean };
+export type FirstCollectionValidation = { success: boolean; jobsFound?: number; reason?: string; sizeReview?: boolean; canonicalSlug?: string };
 export function nextFirstCollectionHealthySince(input: {
   healthy: boolean; items: number; persistence: number; previousItems: number | null;
   previousPersistence: number | null; previousObservedAt: Date | null; previousHealthySince: Date | null; now: Date;
@@ -83,14 +84,15 @@ export async function tickFirstCollections(validate: (platform: string, slug: st
       } });
       return { outcome: sizeReview ? 'size_review' : 'validation_deferred', platform: candidate.platform, slug: candidate.slug };
     }
-    const board = { platform: candidate.platform, slug: candidate.slug };
+    const board = { platform: candidate.platform, slug: candidate.platform === 'clearcompany'
+      ? admittedClearCompanySlug(candidate.slug, validation.canonicalSlug) : candidate.slug };
     const outcome = await recordDiscoveredAtsBoard(tx, board, finishedAt, { jobsFound: validation.jobsFound, reactivateExisting: false });
     if (outcome !== 'retired') await tx.atsCompany.updateMany({ where: { ...board, firstCollectionState: 'waiting' }, data: {
       firstCollectionState: 'ready', jobsFound: validation.jobsFound,
       // JobScore documents at most one feed request per hour.
       nextCheckDate: new Date(finishedAt.getTime() + (board.platform === 'jobscore' ? 60 * 60_000 : 0)),
     } });
-    await tx.atsFirstCollectionCandidate.update({ where: { slug_platform: board }, data: {
+    await tx.atsFirstCollectionCandidate.update({ where: { slug_platform: { platform: candidate.platform, slug: candidate.slug } }, data: {
       state: outcome === 'retired' ? 'retired' : 'validated', validatedAt: finishedAt,
       estimatedJobs: validation.jobsFound, lastError: null,
     } });

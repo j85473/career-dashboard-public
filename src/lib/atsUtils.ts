@@ -1,5 +1,5 @@
 import { symphonyBoardSlugFromUrl } from './symphonyAtsBoard';
-import { BROWSER_ATS_LABELS, BROWSER_ATS_PLATFORMS, isBrowserAtsPlatform } from './browserAtsBoards';
+import { BROWSER_ATS_LABELS, BROWSER_ATS_PLATFORMS, isBrowserAtsPlatform, browserAtsBoardFromUrl } from './browserAtsBoards';
 import { TENANT_ATS_PLATFORMS, tenantAtsIdentityFromUrl } from './tenantAtsBoards';
 import { hostnameMatches, parseHttpUrl } from './urlHost';
 import { isZohoRecruitHost } from './zohoRecruitHost';
@@ -82,7 +82,7 @@ export function identifyAts(job: { url?: string | null; source?: string | null; 
   if (['recruitingbypaycor.com', 'newton.newtonsoftware.com'].includes(host)) return 'Paycor';
   if (hasHost('paylocity.com')) return 'Paylocity';
   if (hasHost('paycomonline.net')) return 'Paycom';
-  if (hasHost('avature.net', 'apply.deloitte.com')) return 'Avature';
+  if (hasHost('avature.net', 'apply.deloitte.com') || job.url && browserAtsBoardFromUrl('avature', job.url)) return 'Avature';
   if (hasHost('dayforce.com', 'dayforcehcm.com')) return 'Dayforce';
   // Stepan fronts SuccessFactors with an employer-owned vanity domain. Keep
   // this exact-host check narrow: the path shape alone is shared by many

@@ -4,6 +4,7 @@ import { discoveredAtsBoardFromJobUrl } from './atsBoardDiscovery';
 import { identifyAts } from './atsUtils';
 import { gustoBoardSlugFromUrl } from './gustoBoard';
 import { assertSafeExternalNavigationUrl } from './safeExternalFetch';
+import { clearCompanyEmbeddedSiteIds } from './clearcompanyBoard';
 
 export type WebDiscoveredBoard = { platform: string; slug: string; matchedUrl: string };
 export type WebDiscoveryLink = { url: string; priority: number };
@@ -84,6 +85,10 @@ export function extractAtsDiscoveryLinks(html: string, pageUrl: string, maximumL
     if (/(?:^|\s)nofollow(?:$|\s)/i.test(element.attr('rel') || '')) return;
     consider(element.attr('href') || element.attr('src') || element.attr('action') || '', element.text().slice(0, 200), node.name !== 'a');
   });
+  for (const slug of clearCompanyEmbeddedSiteIds(html, pageUrl)) {
+    boards.set(`clearcompany:${slug}`, { platform: 'clearcompany', slug,
+      matchedUrl: `https://careers-content.clearcompany.com/js/v1/career-site-no-polyfill.js?siteId=${slug}` });
+  }
   $('script:not([src])').each((_index, node) => {
     const script = $(node).text().replaceAll('\\/', '/').replace(/\\u002f/gi, '/');
     for (const match of script.matchAll(/https?:\/\/[^\s"'<>\\]+/g)) consider(match[0], '', true);

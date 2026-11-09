@@ -1,6 +1,7 @@
 import { browserAtsDiscoveryAdapters, isBrowserAtsPlatform, browserAtsBoardFromUrl } from '../lib/browserAtsBoards';
 import { isFirstCollectionPlatform, reserveJobScoreFeedRequest } from '../lib/atsFirstCollectionAdmission';
 import { readBoundedAtsBody, AtsFirstCollectionSizeError } from '../lib/tenantAtsBoards';
+import { SYMPHONY_DISCOVERY_PATTERNS } from '../lib/symphonyAtsBoard';
 import { resolveUkgBoardEmployer } from '../lib/publicAtsEmployer';
 import { isPublicAtsPlatform, publicAtsBoardSlugFromUrl, publicAtsBoardUrl, parsePublicAtsConfig, buildPublicAtsBoardRequest, parsePublicAtsListing, publicAtsNeedsConfig } from '../lib/publicAtsBoards';
 export {};
@@ -84,13 +85,13 @@ export function subdomainSlug(url: string, pattern: RegExp): string | null {
 
 export const PLATFORMS = {
   ...browserAtsDiscoveryAdapters,
-  symphony: { cc_pattern: 'careers.deltek.com/*', extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'symphony'), test_api: '', get_jobs: (_data: any) => [] },
+  symphony: { cc_pattern: SYMPHONY_DISCOVERY_PATTERNS, extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'symphony'), test_api: '', get_jobs: (_data: any) => [] },
   kula: { cc_pattern: 'careers.kula.ai/*', extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'kula'), test_api: '', get_jobs: (_data: any) => [] },
   gem: { cc_pattern: ['jobs.gem.com/*', 'api.gem.com/job_board/v0/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'gem'), test_api: '', get_jobs: (_data: any) => [] },
   jobscore: { cc_pattern: ['careers.jobscore.com/careers/*', 'careers.jobscore.com/jobs/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'jobscore'), test_api: '', get_jobs: (_data: any) => [] },
   jazzhr: { cc_pattern: ['*.applytojob.com/*', 'app.jazz.co/feeds/export/jobs/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'jazzhr'), test_api: '', get_jobs: (_data: any) => [] },
   manatal: { cc_pattern: ['www.careers-page.com/*', 'careers-page.com/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'manatal'), test_api: '', get_jobs: (_data: any) => [] },
-  clearcompany: { cc_pattern: ['careers-content.clearcompany.com/*', 'careers-api.clearcompany.com/v1/*', '*.hrmdirect.com/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'clearcompany'), test_api: '', get_jobs: (_data: any) => [] },
+  clearcompany: { cc_pattern: ['careers-content.clearcompany.com/*', 'careers-api.clearcompany.com/v1/*', '*.hrmdirect.com/*', 'apply.clearcompany.com/*', '*.clearcompany.com/careers/jobs/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'clearcompany'), test_api: '', get_jobs: (_data: any) => [] },
   hirehive: { cc_pattern: '*.hirehive.com/*', extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'hirehive'), test_api: '', get_jobs: (_data: any) => [] },
   zohorecruit: { cc_pattern: ZOHO_RECRUIT_DOMAINS.map(domain => `*.${domain}/*`),
     extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'zohorecruit'), test_api: '',
@@ -428,7 +429,7 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
   if (isPublicAtsPlatform(platformKey)) {
     try {
       let config;
-      if (publicAtsNeedsConfig(platformKey)) {
+      if (publicAtsNeedsConfig(platformKey, slug)) {
         const boardUrl = publicAtsBoardUrl(platformKey, slug);
         const page = await safeExternalFetch(boardUrl, { signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'Mozilla/5.0' } });
         if (!page.ok) return { success: false, transient: true, reason: `Career page HTTP ${page.status}` };
@@ -452,7 +453,8 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
       if (platformKey === 'successfactors' && feed.jobs.some(job => !job.company)) {
         return { success: false, transient: true, reason: 'Feed employer identity needs verification' };
       }
-      return { success: true, jobsFound: feed.total ?? feed.jobs.length };
+      return { success: true, jobsFound: feed.total ?? feed.jobs.length,
+        ...(platformKey === 'clearcompany' && config?.canonicalSlug ? { canonicalSlug: config.canonicalSlug } : {}) };
     } catch (error) {
       if (error instanceof AtsFirstCollectionSizeError) return { success: false, sizeReview: true, reason: 'Career feed exceeds bounded response allowance' };
       // Public read tokens can occur in transport error URLs; never log them.

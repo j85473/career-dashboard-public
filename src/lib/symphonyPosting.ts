@@ -18,7 +18,8 @@ export function parseSymphonyPosting(payload: unknown, requestedUrl: string): At
     // A company overview is structured data too, but cannot replace the role.
     const duties = cleanHtmlText($('[data-field="responsibilities"]').html() || '');
     const qualifications = cleanHtmlText($('[data-field="qualifications"]').html() || '');
-    if (!duties || !qualifications || !assessJobDescriptionQuality(`${duties}\n\n${qualifications}`, { structuredSource: true }).scorable) return null;
+    if (identity.slug === 'deltek' && (!duties || !qualifications
+      || !assessJobDescriptionQuality(`${duties}\n\n${qualifications}`, { structuredSource: true }).scorable)) return null;
     const headings: Record<string, string> = { responsibilities: 'Responsibilities', description: 'Company Summary', businessSummary: 'Business Summary',
       qualifications: 'Qualifications', compensation: 'Compensation', travel: 'Travel Requirements', compliance: 'Compliance Requirements',
       EEO: 'EEO Statement', 'E-Verify': 'E-Verify Statement', Privacy: 'Applicant Privacy Notice' };
@@ -27,6 +28,7 @@ export function parseSymphonyPosting(payload: unknown, requestedUrl: string): At
       if (heading && cleanHtmlText($(element).html() || '')) $(element).prepend(`<h2>${heading}</h2>`);
     });
     const text = cleanHtmlText($.html());
+    if (!assessJobDescriptionQuality(text, { structuredSource: true }).scorable) return null;
     return { text, title: String(job.title), company: String(job.company), location: String(job.location),
       ats: 'Symphony Talent', platform: 'symphony', atsSlug: identity.slug };
   } catch { return null; }

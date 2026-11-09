@@ -298,7 +298,7 @@ export async function probeBoardLiveness(candidates: Candidate[], concurrency: n
         // An hourly-held JobScore probe must make no contact. A verified
         // rename also reserves the canonical feed key before downloading it.
         await reserveFeed(candidate.slug);
-        if (isPublicAtsPlatform(candidate.platform) && publicAtsNeedsConfig(candidate.platform)) {
+        if (isPublicAtsPlatform(candidate.platform) && publicAtsNeedsConfig(candidate.platform, candidate.slug)) {
           const page = await request(publicAtsBoardUrl(candidate.platform, candidate.slug), {}, true);
           if (page.status === 429) { await page.body?.cancel(); throw new ProbeProviderHeldError(); }
           if (!page.ok) throw new Error('Public liveness configuration is unavailable');

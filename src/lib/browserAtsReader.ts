@@ -142,12 +142,31 @@ export function postingLinksFromDocuments(platform: BrowserAtsPlatform, board: s
         throw Error('Board page exceeds its posting limit; retaining it for review');
     return [...result.values()];
 }
-export function verifiedEmptyBoard(platform: BrowserAtsPlatform, docs: BrowserDocument[], board?: string): boolean {
+export function verifiedEmptyBoard(platform: BrowserAtsPlatform, docs: BrowserDocument[], board?: string, taleoEvidence?: TaleoSearchPage): boolean {
     return docs.some(doc => {
         if (board && browserAtsBoardFromUrl(platform, doc.url) !== board) return false;
         if (platform === 'paycor' && board) return paycorPublicListing(doc, board)?.emptyVerified === true;
         if (platform === 'icims' && board) return icimsPublicListing(doc, board, 1)?.emptyVerified === true;
         const $ = cheerio.load(doc.html);
+        if (platform === 'brassring' && board && $('#gateway.searchResults').length && $('h2#noJobsAlert').text().trim()
+            && !$('h2#noJobsAlert').is('[hidden],[aria-hidden="true"],.ng-hide')
+            && doc.text.includes($('h2#noJobsAlert').text().trim())) {
+            const search = new URLSearchParams(new URL(doc.url).hash.replace(/^#/, ''));
+            const fields = [...search.keys()];
+            if (fields.length === 2 && new Set(fields).size === 2 && search.get('keyWordSearch') === '' && search.get('locationSearch') === '') {
+                const data = $('input#searchResults');
+                try {
+                    const published = data.length === 1 ? JSON.parse(data.attr('value') || '') : null;
+                    if (published?.TotalCount === 0 && published.HotJobs?.Job === null
+                        && postingLinksFromDocuments(platform, board, [doc]).length === 0) return true;
+                } catch { /* An unrendered/unsupported catalogue remains retryable. */ }
+            }
+        }
+        if (platform === 'taleo') return !!board && taleoEvidence?.total === 0 && taleoEvidence.ids.length === 0
+            && taleoPageMatches(board, [doc], [], 1, taleoEvidence)
+            && $('#noResults .no-results-info').text().trim().length > 0
+            && !$('#noResults').is('[hidden],[aria-hidden="true"]')
+            && !/display\s*:\s*none/i.test($('#noResults').attr('style') || '');
         if (platform === 'freshteam') {
             // This template's empty state refers to filters even on an empty,
             // unfiltered board. Require its publisher containers and branding,
@@ -328,7 +347,7 @@ export class BrowserAtsReader {
             const text = docs.map(d => d.text).join('\n');
             if (platform === 'taleo' && /Career Section Unavailable|The Career section you are trying to access is not available for the moment/i.test(text))
                 throw Error('Public employer career section is temporarily unavailable; retaining progress for retry');
-            if (verifiedEmptyBoard(platform, docs, board)) return docs;
+            if (verifiedEmptyBoard(platform, docs, board, this.taleoPages.get(pageNumber))) return docs;
             if (platform === 'freshteam' && /We couldn't find [\w.-]+\.freshteam\.com/i.test(text)) throw Error('Public employer tenant is unavailable; retain for weekly retry');
             if (attempt >= 5 && /(?:there are (?:currently )?no (?:open )?(?:jobs|positions|vacancies)|there are no jobs matching)/i.test(text) && !/(?:just a moment|verify you are human|access denied)/i.test(text))
                 return docs;
@@ -471,7 +490,8 @@ export class BrowserAtsReader {
                 if (docs.some(d=>/^This site is temporarily unavailable\.\s*Please try again later\.?$/i.test(d.text.trim())))
                     throw Error('Public employer site is temporarily unavailable; retaining progress for retry');
                 if (brassringResultsReady(docs, postingLinksFromDocuments(platform,board,docs).length) || verifiedEmptyBoard(platform,docs,board)) { ready=true; break; }
-                const search = await visible(page.getByRole('button', { name: /^(?:Search|Find Jobs|Search Jobs)$/i })) || await visible(page.getByText('Search', { exact: true }));
+                const search = await visible(page.locator('button#clearResumeJobsBtn[ng-click="searchMatchedJobs(this)"]'))
+                    || await visible(page.getByRole('button', { name: /^(?:Search|Find Jobs|Search Jobs)$/i })) || await visible(page.getByText('Search', { exact: true }));
                 if (search) { await search.click({timeout:5000}); ready=true; break; }
                 await page.waitForTimeout(500);
             }
@@ -511,7 +531,8 @@ export class BrowserAtsReader {
             return verified;
         }
         const links = postingLinksFromDocuments(platform, board, docs);
-        const total = listingTotal(docs.map(d => d.text).join('\n'));
+        const emptyVerified = !links.length && verifiedEmptyBoard(platform, docs, board, this.taleoPages.get(pageNumber));
+        const total = emptyVerified ? 0 : listingTotal(docs.map(d => d.text).join('\n'));
         let control = await nextControl(page, platform, pageNumber);
         const range=platform==='paycom' ? paycomRange(docs) : undefined;
         if (!control && platform === 'paycom' && total !== null && total > links.length && (!range || range.end<range.total))
@@ -521,7 +542,7 @@ export class BrowserAtsReader {
             next = paginationTarget(platform, board, page.url(), await control.getAttribute('href'));
         }
         this.position = { platform, board, page: pageNumber };
-        return { links, next, signature: listingSignature(links), total, pageNumberJump, terminal: verifiedBrowserPageEnd(platform,board,docs,pageNumber,links,!!next,this.taleoPages.get(pageNumber)), emptyVerified: !links.length && verifiedEmptyBoard(platform, docs, board) };
+        return { links, next, signature: listingSignature(links), total, pageNumberJump, terminal: verifiedBrowserPageEnd(platform,board,docs,pageNumber,links,!!next,this.taleoPages.get(pageNumber)), emptyVerified };
     }
     async detail(platform: BrowserAtsPlatform, board: string, link: BrowserPostingLink): Promise<BrowserPosting | null> {
         this.detailPage ??= await this.context.newPage();
@@ -544,6 +565,7 @@ export class BrowserAtsReader {
             }
             for (let attempt = 0; attempt < 12; attempt++) {
                 const docs = await documents(page);
+                for (const doc of docs) assertPublicBoardAvailable(platform, doc);
                 const result = parseBrowserPosting(platform, board, link, docs);
                 if (result)
                     return result;

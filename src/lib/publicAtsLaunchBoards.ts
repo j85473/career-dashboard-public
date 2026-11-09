@@ -1,6 +1,8 @@
 /** Public tenants verified for the first adapter rollout. No read tokens are stored here. */
 export const PUBLIC_ATS_LAUNCH_BOARDS = [
   { platform: 'symphony', slug: 'deltek' },
+  { platform: 'symphony', slug: 'hgv' },
+  { platform: 'symphony', slug: 'victoriassecret' },
   { platform: 'kula', slug: '10xgenomics' },
   { platform: 'kula', slug: 'invoca' },
   { platform: 'dayforce', slug: 'mydayforce' },
@@ -14,5 +16,7 @@ export const PUBLIC_ATS_LAUNCH_BOARDS = [
   { platform: 'jazzhr', slug: 'sbxgplusllc' },
   { platform: 'manatal', slug: 'manatal' },
   { platform: 'clearcompany', slug: 'adc5441f-f521-a46d-ad4d-ad46a1954fcc' },
+  { platform: 'clearcompany', slug: 'hosted::franklincovey' },
+  { platform: 'clearcompany', slug: 'hosted::lonestarforklift' },
   { platform: 'hirehive', slug: 'redo' },
 ] as const;

@@ -40,7 +40,8 @@ export function browserPostingLink(platform: BrowserAtsPlatform, board: string, 
     }
     try {
         const u = new URL(value, board), b = new URL(board);
-        if (u.protocol !== 'https:' || u.username || u.password || u.port || u.hostname !== b.hostname)
+        if (u.protocol !== 'https:' || u.username || u.password || u.port
+            || u.hostname !== b.hostname && !(platform === 'avature' && browserAtsBoardFromUrl(platform, u.href) === board))
             return null;
         const p = u.pathname;
         let id: string | undefined;

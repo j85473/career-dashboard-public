@@ -11,7 +11,7 @@ export function browserCrawlRetry(error: string, previousFailures: number, now =
     if (/\bHTTP (?:404|410)\b|ERR_NAME_NOT_RESOLVED|\bENOTFOUND\b|retain for weekly retry/i.test(error)) {
         kind = 'unavailable';
         delayMs = (failures >= 5 ? 28 : failures >= 3 ? 14 : 7) * DAY;
-    } else if (/\bHTTP (?:401|403|429)\b|access denied|verify you are human|captcha|cloudflare challenge/i.test(error)) {
+    } else if (/\bHTTP (?:401|403|429)\b|access denied|verify you are human|requires security verification|captcha|cloudflare challenge/i.test(error)) {
         kind = 'access';
         delayMs = Math.min(3 * DAY, 6 * HOUR * 2 ** Math.min(failures, 4));
     } else if (/did not expose verifiable|lacks a verified|job details lack verified|cannot validate|ADP employer is unverified|ADP exact posting validation failed|advertised jobs enumerated|retaining progress for review|saved.*(?:match|progress)|Pagination repeated|pagination.*(?:missing|timeout)|full-board search control is missing|Taleo turn exhausted/i.test(error)) {

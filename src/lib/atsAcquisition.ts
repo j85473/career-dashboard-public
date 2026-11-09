@@ -906,7 +906,7 @@ export async function fetchAtsBoardPage(
     }
   };
   let publicConfig: PublicAtsConfig | undefined;
-  if (isPublicAtsPlatform(board.platform) && publicAtsNeedsConfig(board.platform)) {
+  if (isPublicAtsPlatform(board.platform) && publicAtsNeedsConfig(board.platform, board.slug)) {
     const key = `${board.platform}:${board.slug}`;
     const cached = publicAtsConfigs.get(key);
     if (cached && cached.expiresAt > Date.now()) publicConfig = cached;

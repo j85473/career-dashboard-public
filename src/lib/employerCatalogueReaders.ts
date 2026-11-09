@@ -56,7 +56,7 @@ export async function readAdditionalEmployerCatalogue(board: BoardIdentity, read
   }
   if (!isPublicAtsPlatform(board.platform)) return null;
   let config = { company: '' };
-  if (publicAtsNeedsConfig(board.platform)) {
+  if (publicAtsNeedsConfig(board.platform, board.slug)) {
     const url = publicAtsBoardUrl(board.platform, board.slug);
     const response = await read(url);
     config = parsePublicAtsConfig(board.platform, board.slug, await readBoundedAtsBody(response), response.url || url);

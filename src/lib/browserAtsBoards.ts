@@ -22,13 +22,17 @@ export const NON_API_ATS_PLATFORMS = ['gusto', ...BROWSER_ATS_PLATFORMS];
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const tenant = (host: string, suffix: string) => host.endsWith('.' + suffix)
     && !/^(?:www|api|app|support|docs|help|blog|cdn|assets|qa|test|training)(?:[.-]|$)/i.test(host.slice(0, -suffix.length - 1));
+// Observed public redirect; retain the original board identity and saved sweep.
+const AVATURE_EMPLOYER_HOSTS: Readonly<Record<string, string>> = {
+    'clinicianjobs.advocatehealth.org': 'advocateaurorahealth.avature.net',
+};
 // Phenom often uses employer-owned domains. Harvest only verified hosts until a
 // public employer page establishes another host's publishing technology.
 export const PHENOM_BOARD_HOSTS = ['jobs.thecignagroup.com', 'careers.arrow.com'];
 export const BROWSER_ATS_PATTERNS: Record<BrowserAtsPlatform, string[]> = {
     paycor: PAYCOR_HOSTS.map(host => host + '/career/*'),
     adp: ['workforcenow.adp.com/mascsr/default/mdf/recruitment/*'],
-    avature: ['*.avature.net/*', 'apply.deloitte.com/*'],
+    avature: ['*.avature.net/*', 'apply.deloitte.com/*', ...Object.keys(AVATURE_EMPLOYER_HOSTS).map(host => host + '/*')],
     brassring: ['sjobs.brassring.com/TGnewUI/*'], dzconnex: ['*.dzconnex.com/*'],
     icims: ['*.icims.com/jobs/*'], paycom: ['www.paycomonline.net/v4/ats/*', 'paycomonline.net/v4/ats/*'],
     paylocity: ['recruiting.paylocity.com/recruiting/jobs/All/*', 'recruiting.paylocity.com/Recruiting/Jobs/All/*'],
@@ -56,9 +60,10 @@ export function browserAtsBoardFromUrl(platform: string, value: string): string 
         }
         if (platform === 'icims' && tenant(host, 'icims.com') && /^\/jobs(?:\/|$)/i.test(p))
             return origin + '/jobs/search?in_iframe=1';
-        if (platform === 'avature' && !/^(?:qa|test|training)/i.test(host) && (tenant(host, 'avature.net') || host === 'apply.deloitte.com')) {
+        if (platform === 'avature' && !/^(?:qa|test|training)/i.test(host)
+            && (tenant(host, 'avature.net') || host === 'apply.deloitte.com' || Object.hasOwn(AVATURE_EMPLOYER_HOSTS, host))) {
             const m = /^(\/(?:[\w-]+\/)*)(?:SearchJobs|JobDetail|FolderDetail|InviteToApply)(?:\/|$)/i.exec(p);
-            return m && !/example|training/i.test(m[1]) ? origin + m[1] + 'SearchJobs' : null;
+            return m && !/example|training/i.test(m[1]) ? 'https://' + (AVATURE_EMPLOYER_HOSTS[host] || host) + m[1] + 'SearchJobs' : null;
         }
         if (platform === 'paylocity' && host === 'recruiting.paylocity.com') {
             const id = /\/jobs\/All\/([a-f0-9-]{36})(?:\/|$)/i.exec(p)?.[1];

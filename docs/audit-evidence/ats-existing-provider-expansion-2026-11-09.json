@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "audit_date_local": "2026-11-09",
+  "timezone": "America/Chicago",
+  "scope": "Database-free public endpoint and native Chrome verification; no job, score, task, schedule, board-status, or production-service writes.",
+  "expansion_checks": [
+    {
+      "platform": "clearcompany",
+      "slug": "hosted::franklincovey",
+      "checkedAt": "2026-11-09T22:55:00.213Z",
+      "canonicalSlug": "4edf5447-97a4-5997-e378-68bb4af139ca",
+      "company": "",
+      "pages": [
+        {
+          "offset": 0,
+          "count": 17,
+          "total": 17,
+          "hasMore": false
+        }
+      ],
+      "first": {
+        "title": "On-Call Grant Writer - K12 Education",
+        "company": "FranklinCovey",
+        "location": "Remote (US)",
+        "descriptionCharacters": 8340
+      },
+      "wholeBoardVerified": true,
+      "uniquePostings": 17,
+      "ok": true
+    },
+    {
+      "platform": "clearcompany",
+      "slug": "hosted::lonestarforklift",
+      "checkedAt": "2026-11-09T22:55:00.767Z",
+      "canonicalSlug": "2689161f-e9d9-0c51-6eb1-9bd9001f4df7",
+      "company": "",
+      "pages": [
+        {
+          "offset": 0,
+          "count": 11,
+          "total": 11,
+          "hasMore": false
+        }
+      ],
+      "first": {
+        "title": "Service Dispatcher",
+        "company": "Lonestar Forklift",
+        "location": "Houston TX",
+        "descriptionCharacters": 7101
+      },
+      "wholeBoardVerified": true,
+      "uniquePostings": 11,
+      "ok": true
+    },
+    {
+      "platform": "symphony",
+      "slug": "hgv",
+      "checkedAt": "2026-11-09T22:55:00.953Z",
+      "canonicalSlug": "hgv",
+      "company": "Hilton Grand Vacations",
+      "pages": [
+        {
+          "offset": 0,
+          "count": 20,
+          "total": 1182,
+          "hasMore": true
+        },
+        {
+          "offset": 20,
+          "count": 20,
+          "total": 1182,
+          "hasMore": true
+        }
+      ],
+      "first": {
+        "title": "Sales Manager",
+        "company": "Hilton Grand Vacations",
+        "location": "Gainesville, VA, US",
+        "descriptionCharacters": 2720
+      },
+      "exactDetailVerified": true,
+      "uniquePostings": 40,
+      "ok": true
+    },
+    {
+      "platform": "symphony",
+      "slug": "victoriassecret",
+      "checkedAt": "2026-11-09T22:55:02.154Z",
+      "canonicalSlug": "victoriassecret",
+      "company": "Victorias Secret & Co",
+      "pages": [
+        {
+          "offset": 0,
+          "count": 20,
+          "total": 1369,
+          "hasMore": true
+        },
+        {
+          "offset": 20,
+          "count": 20,
+          "total": 1369,
+          "hasMore": true
+        }
+      ],
+      "first": {
+        "title": "Seasonal Associate-Greenville Mall",
+        "company": "Victorias Secret & Co",
+        "location": "Greenville, NC, US",
+        "descriptionCharacters": 7517
+      },
+      "exactDetailVerified": true,
+      "uniquePostings": 40,
+      "ok": true
+    }
+  ],
+  "recovery_checks": [
+    {
+      "platform": "avature",
+      "board": "https://advocateaurorahealth.avature.net/careers/SearchJobs",
+      "checkedAt": "2026-11-09T22:56:29.712Z",
+      "links": 6,
+      "total": 679,
+      "emptyVerified": false,
+      "next": {
+        "kind": "url",
+        "url": "https://clinicianjobs.advocatehealth.org/careers/SearchJobs/?jobRecordsPerPage=6&jobOffset=6"
+      },
+      "detail": {
+        "company": "Advocate Health",
+        "descriptionCharacters": 5723
+      },
+      "secondPageLinks": 6,
+      "secondPageNewIds": 6,
+      "outcome": "verified"
+    },
+    {
+      "platform": "brassring",
+      "board": "https://sjobs.brassring.com/TGnewUI/Search/Home/Home?partnerid=13900&siteid=5007",
+      "checkedAt": "2026-11-09T22:56:33.712Z",
+      "links": 0,
+      "total": 0,
+      "emptyVerified": true,
+      "next": null,
+      "outcome": "verified"
+    },
+    {
+      "platform": "jobvite",
+      "board": "https://jobs.jobvite.com/1901group/jobs",
+      "checkedAt": "2026-11-09T22:56:36.528Z",
+      "outcome": "retained_for_retry",
+      "error": "Jobvite reports this employer career site is unavailable; retain for weekly retry",
+      "retryKind": "unavailable"
+    },
+    {
+      "platform": "talemetry",
+      "board": "https://adr-careers.ttcportals.com/search/jobs",
+      "checkedAt": "2026-11-09T22:56:37.327Z",
+      "outcome": "retained_for_retry",
+      "error": "Public career site requires security verification; retaining progress for retry",
+      "retryKind": "access"
+    },
+    {
+      "platform": "taleo",
+      "board": "https://aa010.taleo.net/careersection/swd_summer_internship/jobsearch.ftl",
+      "checkedAt": "2026-11-09T22:56:38.547Z",
+      "links": 0,
+      "total": 0,
+      "emptyVerified": true,
+      "next": null,
+      "outcome": "verified"
+    }
+  ],
+  "interpretation": [
+    "Source totals are reported listings, not incremental suitable jobs or imported cards.",
+    "ClearCompany whole-board checks completed. Symphony checks read two distinct 20-record pages and exact full descriptions; they did not traverse the whole boards.",
+    "Jobvite unavailable tenants and Talemetry security challenges remain retryable. No access restrictions were bypassed.",
+    "New Symphony seed boards exceed the current 250-job first-collection allowance and remain subject to size review."
+  ]
+}
