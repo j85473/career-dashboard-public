@@ -1,4 +1,4 @@
-import { smartRecruitersLocation } from './smartRecruitersLocation';
+import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
 import { browserAtsBoardFromUrl, isBrowserAtsPlatform } from './browserAtsBoards';
 import { isPublicAtsPlatform, publicAtsBoardSlugFromUrl } from './publicAtsBoards';
 import { tenantAtsIdentityFromUrl } from './tenantAtsBoards';
@@ -543,7 +543,7 @@ function parseRawBoardPostings(platform: string, body: unknown, slug: string): B
         return {
           title: text(job.name) || '',
           url: id ? `https://jobs.smartrecruiters.com/${identifier}/${id}` : '',
-          location: smartRecruitersLocation(job.location),
+          location: smartRecruitersPostingLocation(job),
           description: null,
         };
       });

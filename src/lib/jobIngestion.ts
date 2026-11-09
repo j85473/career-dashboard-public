@@ -1,4 +1,4 @@
-import { smartRecruitersLocation } from './smartRecruitersLocation';
+import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
 import { readAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
 import { AtsPlatformDeferredError, RateLimitedError, PLATFORM_THROTTLE_MS, fetchAtsPlatformResponse, platformPauseRemainingMs, waitForPlatformSlot, IngestionInterruptedError, interruptionError } from './atsProviderRequest';
 // Compatibility exports for consumers that predate the separate request runtime.
@@ -5717,7 +5717,7 @@ export async function ingestJobs(
                 if (res.ok) {
                   markSourceSuccess(detailSource);
                   const detail = await res.json();
-                  smartRecruitersDetailLocation = smartRecruitersLocation(detail?.location);
+                  smartRecruitersDetailLocation = smartRecruitersPostingLocation(detail);
                   // companyDescription is left out on purpose: it is boilerplate
                   // marketing that inflates length without describing the role,
                   // which is exactly what the 650-character gate exists to catch.
@@ -6046,7 +6046,7 @@ export async function ingestJobs(
                 ?? workdayLocationsText;
             } else if (board.platform === "smartrecruiters") {
               company = data.company?.name || board.slug;
-              locationStr = smartRecruitersDetailLocation || smartRecruitersLocation(job.location) || "Unknown Location";
+              locationStr = smartRecruitersDetailLocation || smartRecruitersPostingLocation(job) || "Unknown Location";
             } else if (board.platform === "workable") {
               company = data.name || titleCaseSlug(board.slug);
               locationStr = locationObject?.city

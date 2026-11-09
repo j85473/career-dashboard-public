@@ -1192,3 +1192,14 @@ test('SmartRecruiters detail remote metadata replaces a city-only listing withou
   assert.deepEqual(job, original);
   assert.equal(harness.urls.length, 1);
 });
+
+test('SmartRecruiters detail candidate location restricts an otherwise broad remote listing', async () => {
+  const job = { id: '744000156787039', name: 'Strategic Account Manager', location: { city: 'Remote' } };
+  const original = structuredClone(job);
+  const harness = createHarness({ body: { location: { city: 'Remote', remote: true },
+    customField: [{ fieldLabel: 'Candidate Location', valueLabel: 'Germany' }],
+    jobAd: { sections: { jobDescription: { text: 'Manage strategic enterprise accounts.' } } } } });
+  const enriched = await enrichAtsListingJob({ platform: 'smartrecruiters', slug: 'TheAdaptavistGroup', job, requestTimeoutMs: 1000 }, harness.dependencies);
+  assert.equal(readAtsJobEnrichmentMarker(enriched)?.location, 'Remote - Germany');
+  assert.deepEqual(job, original);
+});

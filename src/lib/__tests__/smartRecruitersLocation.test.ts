@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { smartRecruitersLocation } from '../smartRecruitersLocation';
+import { smartRecruitersLocation, smartRecruitersPostingLocation } from '../smartRecruitersLocation';
 import { parseBoardPostings, locationsCompatibleForDirectMatch } from '../atsDirectMatch';
 import { evaluateAuthoritativeGeography } from '../authoritativeMetadataGate';
 
@@ -38,4 +38,35 @@ test('listing without fullLocation retains country and remote flag without inven
   assert.equal(smartRecruitersLocation({ remote: true, country: 'ca' }), 'Remote - Canada');
   assert.equal(smartRecruitersLocation({ remote: true }), 'Remote');
   assert.equal(smartRecruitersLocation(null), null);
+});
+
+test('Adaptavist remote city retains Germany and the authored candidate location', () => {
+  const job = { id: '744000156787039', name: 'Strategic Account Manager (DACH) (f/m/d)',
+    location: { city: 'Remote', country: 'de', remote: false, hybrid: true, fullLocation: 'Remote, , Germany' },
+    customField: [{ fieldLabel: 'Candidate Location', valueLabel: 'Germany' }] };
+  assert.equal(smartRecruitersLocation(job.location), 'Hybrid - Remote, Germany');
+  assert.equal(smartRecruitersPostingLocation(job), 'Hybrid - Germany');
+  const [posting] = parseBoardPostings('smartrecruiters', { content: [job] }, 'TheAdaptavistGroup');
+  assert.equal(posting.location, 'Hybrid - Germany');
+  assert.equal(evaluateAuthoritativeGeography({ title: posting.title, location: posting.location }).passes, false);
+});
+
+test('generic remote address cannot discard its country, even with empty comma components', () => {
+  for (const remote of [true, false]) {
+    for (const fullLocation of ['Remote', 'Remote,', 'Remote, ,']) {
+      const location = { city: 'Remote', country: 'de', remote, fullLocation };
+      assert.match(smartRecruitersLocation(location)!, /Germany/);
+      assert.equal(passes(location, 'Account Manager'), false);
+    }
+  }
+});
+
+test('candidate eligibility takes precedence over broad remote metadata, but not unrelated custom fields', () => {
+  const job = { location: { remote: true, country: 'us' },
+    customField: [{ fieldLabel: 'Candidate Location', valueLabel: 'Germany' }] };
+  assert.equal(smartRecruitersPostingLocation(job), 'Remote - Germany');
+  assert.equal(evaluateAuthoritativeGeography({ title: 'Account Manager', location: smartRecruitersPostingLocation(job) }).passes, false);
+  assert.equal(smartRecruitersPostingLocation({ ...job, customField: [{ fieldLabel: 'Sales Territory', valueLabel: 'Germany' }] }), 'Remote - United States');
+  assert.equal(smartRecruitersPostingLocation({ ...job, customField: [{ fieldLabel: 'Candidate Location', valueLabel: 'United States' }] }), 'Remote - United States');
+  assert.equal(smartRecruitersPostingLocation({ ...job, customField: [{ fieldLabel: 'Candidate Location', valueLabel: '' }] }), 'Remote - United States');
 });

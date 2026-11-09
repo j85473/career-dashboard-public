@@ -1,4 +1,4 @@
-import { smartRecruitersLocation } from './smartRecruitersLocation';
+import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
 import { readAtsRetryReason, withAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
 import { createAtsDetailRequestSession, AtsDetailHttpError, AtsDetailResponseError, AtsEnrichmentControlError, isAbortError } from './atsDetailRequest';
 import { publishedEmployerName } from './publicAtsEmployer';
@@ -586,7 +586,7 @@ function preparedDetailPlan(input: {
   }
 
   if (platform === 'smartrecruiters') {
-    fields.location = smartRecruitersLocation(job.location);
+    fields.location = smartRecruitersPostingLocation(job);
     if (rawDescriptionPresent) return { plan: null, reason: 'description_already_present', fields };
     if (immutableListingTitleRejected(input)) {
       return { plan: null, reason: 'title_gate_rejected', fields };
@@ -598,7 +598,7 @@ function preparedDetailPlan(input: {
         `https://api.smartrecruiters.com/v1/companies/${slug}/postings/${jobId}`,
         fields,
         (payload) => {
-          const location = isRecord(payload) ? smartRecruitersLocation(payload.location) : null;
+          const location = isRecord(payload) ? smartRecruitersPostingLocation(payload) : null;
           const jobAd = isRecord(payload) && isRecord(payload.jobAd) ? payload.jobAd : null;
           const sections = jobAd && isRecord(jobAd.sections) ? jobAd.sections : null;
           const sectionText = (name: string) => {
