@@ -70,15 +70,15 @@ function harness(blockCount = 1, discoveryPattern = { platform: 'greenhouse', pa
 }
 
 test('future-source blocks atomically retain candidates without requesting collection admission', async () => {
-  const h = harness(1, { platform: 'cornerstone', pattern: '*.csod.com/*' });
-  const sourceUrl = 'https://interfor.csod.com/ux/ats/careersite/7/home/requisition/123';
+  const h = harness(1, { platform: 'homerun', pattern: '*.homerun.co/*' });
+  const sourceUrl = 'https://example.homerun.co/channel-manager';
   await saveLocalCrawlBlock(h.client, h.scan(), [{ url: sourceUrl }, { url: sourceUrl }]);
   assert.equal(h.scan().nextBlock, 1);
   assert.equal(h.total(), 1);
   assert.equal(h.firstCollectionWrites(), 0);
-  assert.deepEqual(h.candidates(), [{ runId: 'run', platform: 'cornerstone',
-    slug: 'https://interfor.csod.com/ux/ats/careersite/7/home',
-    normalizedSlug: 'https://interfor.csod.com/ux/ats/careersite/7/home',
+  assert.deepEqual(h.candidates(), [{ runId: 'run', platform: 'homerun',
+    slug: 'https://example.homerun.co/',
+    normalizedSlug: 'https://example.homerun.co/',
     sourceUrl, sourceIndexId: indexId, status: 'awaiting_adapter' }]);
 });
 

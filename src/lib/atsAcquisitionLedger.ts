@@ -1005,6 +1005,13 @@ export async function commitAtsV2ListingPage(input: AtsLedgerPageInput): Promise
     if (batch.acquisitionPhase !== 'listing') {
       throw new AtsLedgerAuthorityError(`ATS batch ${batch.id} is no longer in listing phase.`);
     }
+    // These newly admitted paged APIs must not count an earlier page toward
+    // their advertised total. Retain the current cursor for retry/review.
+    if (['cornerstone', 'hireology'].includes(input.claim.platform) && input.requestedOffset > 0 && input.jobs.length
+      && await earlierMatchingPage(transaction, input.claim.batchId, input.claim.listingGeneration,
+        input.requestedOffset, hashes.identityMultisetHash)) {
+      throw new Error(`${input.claim.platform} returned an earlier listing page at a new offset`);
+    }
     const repeatedPageCandidate = isRepeatedAtsV2ListingEnd({
       platform: input.claim.platform,
       requestedOffset: input.requestedOffset,

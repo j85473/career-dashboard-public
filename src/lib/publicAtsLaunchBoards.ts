@@ -1,5 +1,11 @@
 /** Public tenants verified for the first adapter rollout. No read tokens are stored here. */
 export const PUBLIC_ATS_LAUNCH_BOARDS = [
+  { platform: 'cornerstone', slug: 'interfor.csod.com::7::default' },
+  { platform: 'cornerstone', slug: 'worldbankgroup.csod.com::1::default' },
+  { platform: 'hireology', slug: 'beachchevrolet' },
+  { platform: 'hireology', slug: 'capitalfordinc' },
+  { platform: 'polymer', slug: 'aboard' },
+  { platform: 'polymer', slug: 'select' },
   { platform: 'symphony', slug: 'deltek' },
   { platform: 'symphony', slug: 'hgv' },
   { platform: 'symphony', slug: 'victoriassecret' },

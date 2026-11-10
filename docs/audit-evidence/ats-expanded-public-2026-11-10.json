@@ -1,0 +1,89 @@
+{
+  "verifiedAt": "2026-11-10T17:20:04.227Z",
+  "results": [
+    {
+      "platform": "cornerstone",
+      "slug": "interfor.csod.com::7::default",
+      "jobs": 45,
+      "distinctPostingViews": 45,
+      "pages": 3,
+      "reportedTotal": 45,
+      "sample": {
+        "title": "Industrial Electrician",
+        "company": "Interfor",
+        "location": "Monticello, AR, US",
+        "descriptionCharacters": 3858
+      }
+    },
+    {
+      "platform": "cornerstone",
+      "slug": "worldbankgroup.csod.com::1::default",
+      "jobs": 60,
+      "distinctPostingViews": 60,
+      "pages": 3,
+      "reportedTotal": 60,
+      "sample": {
+        "title": "E T Consultant - Eastern Europe, Central Asia and Türkiye",
+        "company": "World Bank Group",
+        "location": "Vienna, AT",
+        "descriptionCharacters": 3884
+      }
+    },
+    {
+      "platform": "hireology",
+      "slug": "beachchevrolet",
+      "jobs": 4,
+      "distinctPostingViews": 4,
+      "pages": 1,
+      "reportedTotal": 4,
+      "sample": {
+        "title": "Automotive Sales Associate",
+        "company": "Beach Chevrolet",
+        "location": "Little River, SC",
+        "descriptionCharacters": 2656
+      }
+    },
+    {
+      "platform": "hireology",
+      "slug": "capitalfordinc",
+      "jobs": 13,
+      "distinctPostingViews": 13,
+      "pages": 1,
+      "reportedTotal": 13,
+      "sample": {
+        "title": "Automotive Service Technician",
+        "company": "Capital Ford Raleigh",
+        "location": "Raleigh, NC",
+        "descriptionCharacters": 7291
+      }
+    },
+    {
+      "platform": "polymer",
+      "slug": "aboard",
+      "jobs": 3,
+      "distinctPostingViews": 3,
+      "pages": 1,
+      "reportedTotal": 3,
+      "sample": {
+        "title": "Senior Software Engineer",
+        "company": "Aboard",
+        "location": "Remote (Worldwide)",
+        "descriptionCharacters": 3062
+      }
+    },
+    {
+      "platform": "polymer",
+      "slug": "select",
+      "jobs": 9,
+      "distinctPostingViews": 9,
+      "pages": 1,
+      "reportedTotal": 9,
+      "sample": {
+        "title": "Account Manager",
+        "company": "Select",
+        "location": "Burlington, VT - No remote",
+        "descriptionCharacters": 1300
+      }
+    }
+  ]
+}

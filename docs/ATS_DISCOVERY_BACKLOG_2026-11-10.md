@@ -8,8 +8,8 @@ exhaustion of its published archives for these exact patterns, not a census of
 every employer on the internet.
 
 The exhaustive audit uses a discovery registry separate from the schedulable
-collector registry. Both direct-file and CDX/Athena paths save these candidates
-as `awaiting_adapter`. They do not create ATS company rows, first-collection
+collector registry. Until a collector is connected, both direct-file and
+CDX/Athena paths save its candidates as `awaiting_adapter`. They do not create ATS company rows, first-collection
 reservations, ingestion batches or job cards. Public source addresses identify
 unverified candidates; they are not accepted employer names or guessed tenant
 IDs. Configuration and full employer/job validation belong to later adapters.
@@ -36,3 +36,7 @@ When a collector is implemented, its registry entry takes precedence. Its saved
 source-address candidates must then be explicitly resolved into the collector's
 canonical board identities and normal first-collection admission. Merely adding
 the adapter does not silently admit or replay the retained discovery inventory.
+
+The subsequent [Cornerstone, Hireology and Polymer integration](ATS_CORNERSTONE_HIREOLOGY_POLYMER_2026-11-10.md)
+provides an explicit handoff for those three families. Homerun, Softgarden,
+d.vinci and Flatchr remain discovery-only.

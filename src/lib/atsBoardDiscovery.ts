@@ -27,6 +27,7 @@ export type DiscoveredAtsBoardOutcome =
  * actually run.
  */
 export const DISCOVERABLE_ATS_PLATFORM_BY_LABEL: Readonly<Record<string, string>> = {
+  Cornerstone: 'cornerstone', Hireology: 'hireology', Polymer: 'polymer',
   Ashby: 'ashby',
   BambooHR: 'bamboohr',
   Breezy: 'breezy',

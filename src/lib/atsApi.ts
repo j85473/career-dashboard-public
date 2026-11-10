@@ -32,6 +32,8 @@ import { talentsConnectPage, fetchTalentsConnectPosting } from './talentsConnect
 import { isTalemetryPostingUrl, talemetryPublishedEmployer } from './talemetryEmployer';
 import { browserAtsBoardFromUrl } from './browserAtsBoards';
 import { fetchRipplingPosting, ripplingPostingIdentity } from './ripplingPosting';
+import { expandedPostingIdentity } from './expandedPublicAts';
+import { fetchExpandedAtsPosting } from './expandedAtsPosting';
 
 function isDomain(hostname: string, domain: string) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
@@ -539,6 +541,7 @@ export async function scrapeAtsApi(url: string): Promise<AtsScrapeResult | null>
     if (adpPostingIdentity(url)) return fetchAdpPosting(url);
     if (umantisPostingIdentity(url)) return fetchUmantisPosting(url);
     if (symphonyPostingIdentity(url)) return fetchSymphonyPosting(url);
+    if (expandedPostingIdentity(url)?.platform !== 'hireology' && expandedPostingIdentity(url)) return fetchExpandedAtsPosting(url);
     if (bambooHrPostingIdentity(url)) return fetchBambooHrPosting(url);
     if (ripplingPostingIdentity(url)) return fetchRipplingPosting(url);
 

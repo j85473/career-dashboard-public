@@ -160,7 +160,7 @@ export const ATS_ACQUISITION_ATTEMPT_LEASE_MS = boundedInteger(
 
 const WORKDAY_PAGE_SIZE = 20;
 const SMARTRECRUITERS_PAGE_SIZE = 100;
-const PAGINATED_PLATFORMS = new Set(['symphony', 'workday', 'smartrecruiters', 'eightfold', 'teamtailor', 'oracle', 'ukg', 'manatal', 'clearcompany', 'hirehive']);
+const PAGINATED_PLATFORMS = new Set(['cornerstone', 'hireology', 'symphony', 'workday', 'smartrecruiters', 'eightfold', 'teamtailor', 'oracle', 'ukg', 'manatal', 'clearcompany', 'hirehive']);
 const SAME_DAY_RETRY_DELAYS_MS = [15 * 60_000, 60 * 60_000] as const;
 const PROCESSING_RETRY_DELAYS_MS = [5 * 60_000, 30 * 60_000] as const;
 const ATS_OBSERVATION_LOOKUP_CHUNK_SIZE = 500;
@@ -927,7 +927,7 @@ export async function fetchAtsBoardPage(
         publicConfig.company = await recoverPublishedAtsBoardEmployer(board.platform, board.slug,
           { url: page.url || pageUrl, html: pageHtml });
       }
-      publicAtsConfigs.set(key, { ...publicConfig, expiresAt: Date.now() + (publicConfig.company ? 3600000 : 300000) });
+      publicAtsConfigs.set(key, { ...publicConfig, expiresAt: Math.min(publicConfig.tokenExpiresAt || Infinity, Date.now() + (publicConfig.company ? 3600000 : 300000)) });
     }
     const configuredRequest = buildPublicAtsBoardRequest(board.platform, board.slug, offset, publicConfig);
     request.url = configuredRequest.url; request.init = configuredRequest.init;
@@ -990,9 +990,14 @@ export async function fetchAtsBoardPage(
         throw new AtsBoardOffHostError(board.platform, new URL(received.url).host);
       }
       if (received.status === 429) throw new RateLimitedError(board.platform);
-      if (!received.ok) throw new AtsHttpError(received.status);
+      if (!received.ok) {
+        if ((board.platform === 'cornerstone' || board.platform === 'hireology') && [401, 403].includes(received.status)) publicAtsConfigs.delete(`${board.platform}:${board.slug}`);
+        throw new AtsHttpError(received.status);
+      }
 
       const contentType = received.headers.get('content-type') || '';
+      if (['cornerstone', 'hireology', 'polymer'].includes(board.platform) && received.url
+        && new URL(received.url).href !== new URL(request.url).href) throw new Error('Public ATS listing redirected away from its verified endpoint');
       if (!responseMatchesPlatform(board.platform, contentType)) {
         throw new AtsBoardContentTypeError(
           board.platform,
@@ -1026,6 +1031,26 @@ export async function fetchAtsBoardPage(
     throw new Error(`${board.platform} ATS listing schema validation produced no payload.`);
   }
   const payload = validatedPayload as ReturnType<typeof parseAtsListingPayload>;
+  if (board.platform === 'cornerstone' || board.platform === 'polymer') {
+    const { completeExpandedListing } = await import('./expandedPublicAts');
+    const completed = await completeExpandedListing(board.platform, board.slug, payload, async (url, init) => {
+      const response = await fetchAtsPlatformResponse(board.platform, signal, async () => {
+        await reserveAtsRequest(source);
+        await onRequestStarted?.();
+        return safeExternalFetch(url, { ...init, signal: requestSignal(signal) });
+      }, { requestedUrl: url, boardSlug: board.slug, onResponse: async received => {
+        await onResponseReceived?.({ status: received.status, respondedAt: new Date() });
+        if (received.status === 429) throw new RateLimitedError(board.platform);
+        if (!received.ok) throw new AtsHttpError(received.status);
+      } });
+      return { url: response.url, body: await readManagedBody(response) };
+    });
+    Object.assign(payload, completed);
+    if (publicConfig && typeof payload.metadata.name === 'string' && payload.metadata.name) {
+      publicAtsConfigs.set(`${board.platform}:${board.slug}`, { ...publicConfig, company: payload.metadata.name,
+        expiresAt: Math.min(publicConfig.tokenExpiresAt || Infinity, Date.now() + 3600000) });
+    }
+  }
   // Oracle/UKG often publish the employer only on the exact posting detail.
   // Save identity-validated listings so enrichment can obtain that evidence.
   // requirePublicAtsEmployer still defers before persistence/card creation.

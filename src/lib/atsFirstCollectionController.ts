@@ -85,7 +85,9 @@ export async function tickFirstCollections(validate: (platform: string, slug: st
       return { outcome: sizeReview ? 'size_review' : 'validation_deferred', platform: candidate.platform, slug: candidate.slug };
     }
     const board = { platform: candidate.platform, slug: candidate.platform === 'clearcompany'
-      ? admittedClearCompanySlug(candidate.slug, validation.canonicalSlug) : candidate.slug };
+      ? admittedClearCompanySlug(candidate.slug, validation.canonicalSlug)
+      : candidate.platform === 'hireology' && candidate.slug.startsWith('site::') && validation.canonicalSlug
+        ? validation.canonicalSlug : candidate.slug };
     const outcome = await recordDiscoveredAtsBoard(tx, board, finishedAt, { jobsFound: validation.jobsFound, reactivateExisting: false });
     if (outcome !== 'retired') await tx.atsCompany.updateMany({ where: { ...board, firstCollectionState: 'waiting' }, data: {
       firstCollectionState: 'ready', jobsFound: validation.jobsFound,

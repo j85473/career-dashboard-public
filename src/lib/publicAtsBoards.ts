@@ -1,4 +1,5 @@
 import { symphonyBoardSlugFromUrl, symphonyBoardUrl, symphonyBoardRequest, parseSymphonyConfig, parseSymphonyListing, SYMPHONY_PAGE_SIZE } from './symphonyAtsBoard';
+import { EXPANDED_PUBLIC_ATS, isExpandedPublicAts, expandedBoardSlug, expandedBoardUrl, expandedConfig, expandedRequest, parseExpandedListing, type ExpandedAtsConfig } from './expandedPublicAts';
 import { clearCompanyPageUrl } from './clearcompanyBoard';
 import { TENANT_ATS_PLATFORMS, isTenantAtsPlatform, tenantAtsBoardSlugFromUrl, tenantAtsBoardUrl, tenantAtsPageSize, tenantAtsRequest, tenantAtsConfig, tenantAtsListingSlug, parseTenantAtsListing } from './tenantAtsBoards';
 import * as cheerio from 'cheerio';
@@ -8,15 +9,15 @@ import { oracleBrandedEmployer, ukgBoardBranding } from './publicAtsEmployer';
 import { zohoRecruitBoardSlugFromUrl, zohoRecruitBoardUrl, zohoRecruitBoardRequest, parseZohoRecruitBoardConfig, parseZohoRecruitListing } from './zohoRecruitBoard';
 
 type RecordValue = Record<string, unknown>;
-export const PUBLIC_ATS_PLATFORMS = ['symphony', 'dayforce', 'oracle', 'ukg', 'comeet', 'successfactors', 'zohorecruit', ...TENANT_ATS_PLATFORMS] as const;
+export const PUBLIC_ATS_PLATFORMS = [...EXPANDED_PUBLIC_ATS, 'symphony', 'dayforce', 'oracle', 'ukg', 'comeet', 'successfactors', 'zohorecruit', ...TENANT_ATS_PLATFORMS] as const;
 export type PublicAtsPlatform = typeof PUBLIC_ATS_PLATFORMS[number];
-export type PublicAtsConfig = { company: string; token?: string; canonicalSlug?: string };
+export type PublicAtsConfig = ExpandedAtsConfig;
 export const isPublicAtsPlatform = (platform: string): platform is PublicAtsPlatform =>
   (PUBLIC_ATS_PLATFORMS as readonly string[]).includes(platform);
 export const atsListingUsesXml = (platform: string): boolean => ['personio', 'successfactors', 'jazzhr', 'kula'].includes(platform);
 export const publicAtsNeedsConfig = (platform: string, slug?: string): boolean => platform === 'clearcompany'
   ? !!slug && !!clearCompanyPageUrl(slug)
-  : ['symphony', 'oracle', 'ukg', 'comeet', 'successfactors', 'zohorecruit', 'gem', 'manatal', 'hirehive', 'jobscore'].includes(platform);
+  : ['cornerstone', 'hireology', 'symphony', 'oracle', 'ukg', 'comeet', 'successfactors', 'zohorecruit', 'gem', 'manatal', 'hirehive', 'jobscore'].includes(platform);
 const atom = /^[a-z0-9_.-]+$/i;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const sapHost = /^career\d*\.(?:successfactors|sapsf)\.(?:com|eu)$/i;
@@ -37,6 +38,7 @@ const required = (value: unknown): string => {
 
 /** Vendor-owned URLs identify a board. Employer vanity domains never supply guessed IDs. */
 export function publicAtsBoardSlugFromUrl(value: string, platform: PublicAtsPlatform): string | null {
+  if (isExpandedPublicAts(platform)) return expandedBoardSlug(platform, value);
   if (platform === 'symphony') return symphonyBoardSlugFromUrl(value);
   if (isTenantAtsPlatform(platform)) return tenantAtsBoardSlugFromUrl(value, platform);
   if (platform === 'zohorecruit') return zohoRecruitBoardSlugFromUrl(value);
@@ -71,6 +73,7 @@ export function publicAtsBoardSlugFromUrl(value: string, platform: PublicAtsPlat
 }
 
 export function publicAtsBoardUrl(platform: PublicAtsPlatform, slug: string): string {
+  if (isExpandedPublicAts(platform)) return expandedBoardUrl(platform, slug);
   if (platform === 'symphony') return symphonyBoardUrl(slug);
   if (isTenantAtsPlatform(platform)) return tenantAtsBoardUrl(platform, slug);
   if (platform === 'zohorecruit') return zohoRecruitBoardUrl(slug);
@@ -90,11 +93,13 @@ export function publicAtsBoardUrl(platform: PublicAtsPlatform, slug: string): st
 }
 
 export function publicAtsPageSize(platform: string): number | null {
+  if (platform === 'cornerstone' || platform === 'hireology') return 20;
   return platform === 'symphony' ? SYMPHONY_PAGE_SIZE : platform === 'oracle' ? 25 : platform === 'ukg' ? 20 : tenantAtsPageSize(platform);
 }
 
 export function buildPublicAtsBoardRequest(platform: PublicAtsPlatform, slug: string, offset = 0,
   config?: PublicAtsConfig): { url: string; init: RequestInit } {
+  if (isExpandedPublicAts(platform)) return expandedRequest(platform, slug, offset, config);
   if (platform === 'symphony') return symphonyBoardRequest(slug, offset);
   if (isTenantAtsPlatform(platform)) return tenantAtsRequest(platform, tenantAtsListingSlug(platform, slug, config), offset);
   if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid ATS listing offset');
@@ -146,6 +151,7 @@ export function assignedPublicJson(source: string, name: string): RecordValue | 
 }
 
 export function parsePublicAtsConfig(platform: PublicAtsPlatform, slug: string, html: string, landedUrl?: string): PublicAtsConfig {
+  if (isExpandedPublicAts(platform)) return expandedConfig(platform, slug, html, landedUrl);
   if (platform === 'symphony') return parseSymphonyConfig(slug, html, landedUrl);
   if (isTenantAtsPlatform(platform)) return tenantAtsConfig(platform, slug, html, landedUrl);
   if (platform === 'zohorecruit') return parseZohoRecruitBoardConfig(slug, html);
@@ -188,6 +194,7 @@ function sameBoardPosting(url: string, platform: PublicAtsPlatform, slug: string
 export function parsePublicAtsListing(platform: PublicAtsPlatform, slug: string, parsed: unknown,
   bodyText: string | null = null, config: PublicAtsConfig = { company: '' }, offset = 0):
   { jobs: RecordValue[]; metadata: RecordValue; total: number | null } {
+  if (isExpandedPublicAts(platform)) return parseExpandedListing(platform, slug, parsed, config, offset);
   if (platform === 'symphony') return parseSymphonyListing(slug, parsed, offset);
   if (isTenantAtsPlatform(platform)) return parseTenantAtsListing(platform, slug, parsed, bodyText, config, offset);
   if (platform === 'zohorecruit') {

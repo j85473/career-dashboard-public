@@ -18,6 +18,12 @@ const samples = {
 
 test('future platforms are harvested without creating a schedulable collector or admission path', () => {
   for (const platform of Object.keys(samples) as (keyof typeof samples)[]) {
+    if (['cornerstone', 'hireology', 'polymer'].includes(platform)) {
+      assert.equal(Object.hasOwn(PLATFORMS, platform), true);
+      assert.equal(isFirstCollectionPlatform(platform), true);
+      assert.equal(discoveryCandidateStatus(platform), 'pending');
+      continue;
+    }
     assert.equal(Object.hasOwn(PLATFORMS, platform), false);
     assert.equal(isFirstCollectionPlatform(platform), false);
     assert.equal(discoveryCandidateStatus(platform), 'awaiting_adapter');

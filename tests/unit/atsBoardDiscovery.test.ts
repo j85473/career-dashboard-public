@@ -12,6 +12,9 @@ import { identifyAts } from '../../src/lib/atsUtils';
 
 test('link-only updates learn every schedulable public ATS board', () => {
   const cases: Array<[string, string, string, string]> = [
+    ['Cornerstone', 'cornerstone', 'example.csod.com::1::default', 'https://example.csod.com/ux/ats/careersite/1/home/requisition/123'],
+    ['Hireology', 'hireology', 'example', 'https://careers.hireology.com/example/123/description'],
+    ['Polymer', 'polymer', 'example', 'https://jobs.polymer.co/example/123'],
     ['Symphony Talent', 'symphony', 'deltek', 'https://careers.deltek.com/job/23859428/partner-enablement-specialist-remote/'],
     ['Kula', 'kula', 'example', 'https://careers.kula.ai/example/123/apply'],
     ['Gem', 'gem', 'example', 'https://jobs.gem.com/example/123'],

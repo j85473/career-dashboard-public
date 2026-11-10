@@ -1,4 +1,5 @@
 import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
+import { polymerDetailRequest, parsePolymerDetail } from './expandedPublicAts';
 import { readAtsRetryReason, withAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
 import { createAtsDetailRequestSession, AtsDetailHttpError, AtsDetailResponseError, AtsEnrichmentControlError, isAbortError } from './atsDetailRequest';
 import { publishedEmployerName } from './publicAtsEmployer';
@@ -112,6 +113,7 @@ type DetailMutableField = keyof EnrichmentFields | 'title';
  * false even if the request itself still worked.
  */
 const DETAIL_MUTABLE_FIELDS: Readonly<Record<string, ReadonlySet<DetailMutableField>>> = {
+  polymer: new Set(['description', 'location', 'compensation']),
   manatal: new Set(['description']),
   gem: new Set(['description']),
   zohorecruit: new Set(['description', 'location']),
@@ -449,10 +451,26 @@ function preparedDetailPlan(input: {
   const rawDescriptionPresent = hasRawDescription(job);
   const fields: EnrichmentFields = {
     ...EMPTY_FIELDS,
-    compensation: platform === 'breezy' ? parseBreezySalaryRange(job.salary) : platform === 'kula' ? stringValue(job.postedCompensation) || null : null,
+    compensation: platform === 'breezy' ? parseBreezySalaryRange(job.salary) : ['kula', 'polymer', 'hireology'].includes(platform) ? stringValue(job.postedCompensation) || null : null,
     ...(isPublicAtsPlatform(platform) ? { company: stringValue(job.company) || null,
       location: stringValue(job.location) || null, description: stringValue(job.description) || null } : {}),
   };
+
+  if (platform === 'polymer') {
+    if (rawDescriptionPresent) return { plan: null, reason: 'description_already_present', fields };
+    if (immutableListingTitleRejected(input)) return { plan: null, reason: 'title_gate_rejected', fields };
+    const requested = stringValue(job.url), url = polymerDetailRequest(requested);
+    if (!url || publicAtsBoardSlugFromUrl(requested, 'polymer') !== slug
+      || new URL(requested).pathname.split('/')[2] !== stringValue(job.publicAtsPostingId)) return { plan: null, reason: 'missing_detail_identity', fields };
+    return { plan: { url, transport: 'fetch', fields, parse: async response => {
+      if (response.url && new URL(response.url).href !== url) throw new AtsDetailResponseError('Polymer detail redirected away from its exact identity');
+      let detail;
+      try { detail = parsePolymerDetail(await readDetailJson(response), requested); }
+      catch { throw new AtsDetailResponseError('Polymer exact detail schema or identity mismatch'); }
+      if (detail.company !== fields.company || detail.title !== stringValue(job.title)) throw new AtsDetailResponseError('Polymer exact detail changed employer or title');
+      return { ...fields, description: stringValue(detail.description), location: stringValue(detail.location), compensation: stringValue(detail.compensation) || null };
+    } }, reason: '', fields };
+  }
 
   if (platform === 'zohorecruit') {
     if (rawDescriptionPresent) return { plan: null, reason: 'description_already_present', fields };

@@ -7,7 +7,9 @@ import { catalogueFirstCollectionCandidate, isFirstCollectionPlatform } from '..
 /** Default is live validation only. --apply adds verified NEW boards to normal rotation. */
 async function main() {
   const apply = process.argv.includes('--apply');
-  for (const board of PUBLIC_ATS_LAUNCH_BOARDS) {
+  const selected = process.argv.filter(arg => arg.startsWith('--platform=')).map(arg => arg.slice(11));
+  if (selected.some(platform => !PUBLIC_ATS_LAUNCH_BOARDS.some(board => board.platform === platform))) throw Error('Unknown seed platform');
+  for (const board of PUBLIC_ATS_LAUNCH_BOARDS.filter(board => !selected.length || selected.includes(board.platform))) {
     if (isFirstCollectionPlatform(board.platform)) {
       if (apply) await catalogueFirstCollectionCandidate(prisma, board);
       console.log(JSON.stringify({ ...board, outcome: apply ? 'catalogued_waiting' : 'catalogue_preview' }));

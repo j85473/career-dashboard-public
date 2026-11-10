@@ -84,6 +84,9 @@ export function subdomainSlug(url: string, pattern: RegExp): string | null {
 }
 
 export const PLATFORMS = {
+  cornerstone: { cc_pattern: ['*.csod.com/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'cornerstone'), test_api: '', get_jobs: (_data: unknown) => [] },
+  hireology: { cc_pattern: ['careers.hireology.com/*', '*.hireology.careers/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'hireology'), test_api: '', get_jobs: (_data: unknown) => [] },
+  polymer: { cc_pattern: ['jobs.polymer.co/*', 'api.polymer.co/v1/hire/organizations/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'polymer'), test_api: '', get_jobs: (_data: unknown) => [] },
   ...browserAtsDiscoveryAdapters,
   symphony: { cc_pattern: SYMPHONY_DISCOVERY_PATTERNS, extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'symphony'), test_api: '', get_jobs: (_data: any) => [] },
   kula: { cc_pattern: 'careers.kula.ai/*', extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'kula'), test_api: '', get_jobs: (_data: any) => [] },
@@ -447,10 +450,23 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
       if (platformKey === 'jobscore' && !await reserveJobScoreFeedRequest(prisma, config?.canonicalSlug || slug)) return { success: false, transient: true, reason: 'JobScore hourly feed interval' };
       const response = await safeExternalFetch(request.url, { ...request.init, signal: AbortSignal.timeout(15000) });
       if (!response.ok) return { success: false, transient: true, reason: `Feed HTTP ${response.status}` };
+      if (['cornerstone', 'hireology', 'polymer'].includes(platformKey) && response.url
+        && new URL(response.url).href !== new URL(request.url).href) return { success: false, transient: true, reason: 'Career feed redirected away from its verified endpoint' };
       const body = isFirstCollectionPlatform(platformKey) ? await readBoundedAtsBody(response, maximumBytes) : null;
       const xml = ['successfactors', 'jazzhr', 'kula'].includes(platformKey);
-      const feed = parsePublicAtsListing(platformKey, slug, xml ? {} : body === null ? await response.json() : JSON.parse(body),
+      let feed = parsePublicAtsListing(platformKey, slug, xml ? {} : body === null ? await response.json() : JSON.parse(body),
         xml ? body ?? await response.text() : null, config);
+      if (platformKey === 'cornerstone' || platformKey === 'polymer') {
+        // Size review precedes follow-up reads; discovery never downloads an
+        // arbitrarily large catalogue while estimating its first collection.
+        if ((feed.total || 0) > 250) return { success: true, jobsFound: feed.total };
+        const { completeExpandedListing } = await import('../lib/expandedPublicAts');
+        feed = await completeExpandedListing(platformKey, slug, feed, async (url, init) => {
+          const detail = await safeExternalFetch(url, { ...init, signal: AbortSignal.timeout(15000) });
+          if (!detail.ok) throw Error('Public ATS verification follow-up failed');
+          return { url: detail.url, body: await readBoundedAtsBody(detail, maximumBytes) };
+        });
+      }
       // SAP's generic tenant IDs are not employer names. Defer anonymous feeds
       // lacking branding instead of importing those opaque IDs as companies.
       // Oracle/UKG exact posting detail can supply identity after discovery;
@@ -459,7 +475,7 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
         return { success: false, transient: true, reason: 'Feed employer identity needs verification' };
       }
       return { success: true, jobsFound: feed.total ?? feed.jobs.length,
-        ...(platformKey === 'clearcompany' && config?.canonicalSlug ? { canonicalSlug: config.canonicalSlug } : {}) };
+        ...((platformKey === 'clearcompany' || platformKey === 'hireology') && config?.canonicalSlug ? { canonicalSlug: config.canonicalSlug } : {}) };
     } catch (error) {
       if (error instanceof AtsFirstCollectionSizeError) return { success: false, sizeReview: true, reason: 'Career feed exceeds bounded response allowance' };
       // Public read tokens can occur in transport error URLs; never log them.
