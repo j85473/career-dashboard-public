@@ -90,6 +90,7 @@ test('Polymer preserves published remote country restrictions and validates exac
   const detail = parsePolymerDetail(polymerJob(), 'https://jobs.polymer.co/example/123?utm_source=test');
   assert.equal(detail.company, 'Example Inc');
   assert.throws(() => parsePolymerDetail(polymerJob(124), 'https://jobs.polymer.co/example/123'));
+  assert.throws(() => parsePolymerDetail({ ...polymerJob(), job_post_url: 'https://careers.hireology.com/example/123/description' }, 'https://jobs.polymer.co/example/123'));
   assert.throws(() => parsePolymerDetail({ ...polymerJob(), archived_at: '2026-11-10' }, 'https://jobs.polymer.co/example/123'));
 });
 

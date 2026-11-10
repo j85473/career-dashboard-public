@@ -265,7 +265,7 @@ export function polymerDetailRequest(input: string): string | null {
 export function parsePolymerDetail(payload: unknown, requested: string): Row {
   const identity = expandedPostingIdentity(requested), job = object(payload);
   const published = expandedPostingIdentity(value(job.job_post_url));
-  if (!identity || identity.platform !== 'polymer' || !published || published.slug !== identity.slug || published.id !== identity.id || id(job.id) !== identity.id
+  if (!identity || identity.platform !== 'polymer' || published?.platform !== 'polymer' || published.slug !== identity.slug || published.id !== identity.id || id(job.id) !== identity.id
     || !value(job.title) || !value(job.description) || !publishedEmployerName(job.organization_name) || job.archived_at) throw Error('Polymer exact detail identity mismatch');
   return { title: value(job.title), company: publishedEmployerName(job.organization_name), description: value(job.description), location: polymerLocation(job), compensation: value(job.salary_pretty) || null };
 }
