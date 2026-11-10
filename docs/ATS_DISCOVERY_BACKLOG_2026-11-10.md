@@ -38,5 +38,7 @@ canonical board identities and normal first-collection admission. Merely adding
 the adapter does not silently admit or replay the retained discovery inventory.
 
 The subsequent [Cornerstone, Hireology and Polymer integration](ATS_CORNERSTONE_HIREOLOGY_POLYMER_2026-11-10.md)
-provides an explicit handoff for those three families. Homerun, Softgarden,
-d.vinci and Flatchr remain discovery-only.
+provides an explicit handoff for those three families. The later
+[Homerun, Softgarden, d.vinci and Flatchr integration](ATS_HOMERUN_SOFTGARDEN_DVINCI_FLATCHR_2026-11-10.md)
+extends that handoff to all seven families. Discovery inventory still requires
+normal validation and admission before collection.

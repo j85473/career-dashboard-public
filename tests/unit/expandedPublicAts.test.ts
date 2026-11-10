@@ -4,6 +4,7 @@ import { completeExpandedListing, expandedBoardSlug, expandedBoardUrl, expandedC
   parseExpandedListing, parsePolymerDetail, polymerLocation } from '../../src/lib/expandedPublicAts';
 import { publicAtsTestFixtures as fixtures } from '../../src/lib/__tests__/publicAtsFixtures';
 import { enrichAtsListingJob, readAtsJobEnrichmentMarker } from '../../src/lib/atsJobEnrichment';
+import { requirePublicAtsEmployer } from '../../src/lib/jobIngestion';
 
 const token = (corp = 'example') => `eyJhbGciOiJub25lIn0.${btoa(JSON.stringify({ corp, exp: 4102444800 })).replace(/=+$/, "")}.signature`;
 const slug = 'example.csod.com::1::default';
@@ -57,16 +58,45 @@ test('Hireology aliases resolve only from their public configuration and emit no
   assert.throws(() => parseExpandedListing('hireology', 'example', { ...raw, data: [{ ...raw.data[0], career_site_url: 'https://careers.hireology.com/other/123/description' }] }));
 });
 
-test('Cornerstone verifies the exact posting before assigning an employer to its listing', async () => {
-  const feed = parseExpandedListing('cornerstone', slug, fixtures.cornerstone);
+test('Cornerstone never promotes a sampled employer to a board or later page', async () => {
+  const feed = parseExpandedListing('cornerstone', slug, fixtures.cornerstone, { company: 'Unrelated sampled employer' });
   assert.equal(feed.jobs[0].company, '');
-  const completed = await completeExpandedListing('cornerstone', slug, feed, async url => ({ url, body: posting() }));
-  assert.equal(completed.jobs[0].company, 'Example Inc');
+  const completed = await completeExpandedListing('cornerstone', slug, feed, async () => { throw Error('Listing must not sample an employer'); });
+  assert.equal(completed.jobs[0].company, '');
+  assert.equal(completed.metadata.name, '');
   assert.equal(feed.jobs[0].company, '', 'the downloaded input remains immutable');
   assert.equal(parseCornerstonePosting(posting(), String(feed.jobs[0].url)).location, 'Austin, TX, US');
   assert.throws(() => parseCornerstonePosting(posting().replace('"reqid":"123"', '"reqid":"999"'), String(feed.jobs[0].url)));
-  await assert.rejects(completeExpandedListing('cornerstone', slug, feed, async () => ({ url: 'https://other.csod.com/ux/ats/careersite/1/home/requisition/123', body: posting() })));
   assert.throws(() => parseCornerstonePosting(posting(), String(feed.jobs[0].url), 'Different Title'));
+  assert.throws(() => requirePublicAtsEmployer('cornerstone', 'Unknown Company'), /verified employer/);
+});
+
+test('Cornerstone binds each retained posting to its own employer and retries unverifiable details', async () => {
+  const raw = parseExpandedListing('cornerstone', slug, fixtures.cornerstone).jobs[0];
+  const deps = {
+    safeExternalFetch: async () => new Response(posting()),
+    fetchPlatformResponse: async (_p: string, _s: unknown, request: () => Promise<Response>, options?: { onResponse?: (response: Response) => Promise<void> }) => {
+      const response = await request(); await options?.onResponse?.(response); return response;
+    },
+    reserveProviderBudgetForSource: async () => ({ allowed: true }), recordProviderSuccess: async () => {}, recordProviderFailure: async () => null,
+    passesPreFilter: () => ({ passes: true, reason: '' }),
+    createDeferredError: () => Object.assign(new Error('Retain for retry'), { name: 'AtsPlatformDeferredError' }),
+  };
+  const first = await enrichAtsListingJob({ platform: 'cornerstone', slug, job: raw, requestTimeoutMs: 1000 }, deps);
+  assert.equal(readAtsJobEnrichmentMarker(first)?.company, 'Example Inc');
+  const second = { ...raw, id: `${slug}::124`, publicAtsPostingId: '124', url: String(raw.url).replace('/123', '/124'), company: 'Example Inc' };
+  const before = structuredClone(second);
+  const result = await enrichAtsListingJob({ platform: 'cornerstone', slug, job: second, requestTimeoutMs: 1000 }, {
+    ...deps, safeExternalFetch: async () => new Response(posting().replace('"reqid":"123"', '"reqid":"124"').replace('Example Inc', 'Separate Employer LLC')),
+  });
+  assert.equal(readAtsJobEnrichmentMarker(result)?.company, 'Separate Employer LLC');
+  assert.deepEqual(second, before);
+  await assert.rejects(enrichAtsListingJob({ platform: 'cornerstone', slug, job: second, requestTimeoutMs: 1000 }, deps), { name: 'AtsPlatformDeferredError' });
+  const rejected = await enrichAtsListingJob({ platform: 'cornerstone', slug, job: { ...raw, title: 'Registered Nurse' }, requestTimeoutMs: 1000 }, {
+    ...deps, passesPreFilter: () => ({ passes: false, reason: 'Title excluded' }),
+    safeExternalFetch: async () => { throw Error('Rejected title must not spend a detail request'); },
+  });
+  assert.equal(readAtsJobEnrichmentMarker(rejected)?.attempted, false);
 });
 
 test('Polymer follows provider page numbers without guessing a page size or losing repeated-page failures', async () => {

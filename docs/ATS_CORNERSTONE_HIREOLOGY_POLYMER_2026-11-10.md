@@ -8,9 +8,10 @@ patterns, historical receipts and saved direct-file scans.
 Cornerstone retains the tenant host, career-site number and explicit language.
 Its public anonymous configuration binds the token to that tenant and career
 site and supplies the regional API. Search traverses twenty-record pages. A
-public exact requisition verifies the employer through the publisher's structured
-job data before a populated catalogue can proceed. Tenant slugs never supply
-employer names. Hireology likewise reads anonymous career-page configuration,
+public exact requisition verifies each retained posting's employer through the
+publisher's structured job data after title triage. An employer from one posting
+never supplies neighbouring postings or later pages; unresolved details remain
+pending for retry. Tenant slugs never supply employer names. Hireology likewise reads anonymous career-page configuration,
 verifies hosted aliases, traverses twenty-record pages and preserves the employer
 published for each posting. Anonymous tokens remain in process memory and
 request headers; they are omitted from saved listings, metadata and receipts.
@@ -63,8 +64,8 @@ node --import tsx scripts/catalogue_expanded_ats_backlog.ts --apply
 The handoff only changes discovery inventory and creates missing first-collection
 candidates. Existing validation attempts, holds, due dates, completed work and
 retired board identities survive. Archived addresses without a canonical board
-identity remain separately held. Homerun, Softgarden, d.vinci and Flatchr remain
-discovery-only. Their candidates do not become schedulable boards.
+identity remain separately held. The later [four-provider integration](ATS_HOMERUN_SOFTGARDEN_DVINCI_FLATCHR_2026-11-10.md)
+connects Homerun, Softgarden, d.vinci and Flatchr through the same controlled admission.
 
 The normal first-collection timer validates and admits candidates as capacity
 allows; this release does not raise its limits or release oversized boards.

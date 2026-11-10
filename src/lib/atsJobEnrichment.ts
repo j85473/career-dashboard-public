@@ -1,6 +1,6 @@
 import { parseAdditionalDetail } from './additionalPublicAts';
 import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
-import { polymerDetailRequest, parsePolymerDetail } from './expandedPublicAts';
+import { expandedPostingIdentity, parseCornerstonePosting, polymerDetailRequest, parsePolymerDetail } from './expandedPublicAts';
 import { readAtsRetryReason, withAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
 import { createAtsDetailRequestSession, AtsDetailHttpError, AtsDetailResponseError, AtsEnrichmentControlError, isAbortError } from './atsDetailRequest';
 import { publishedEmployerName } from './publicAtsEmployer';
@@ -114,6 +114,7 @@ type DetailMutableField = keyof EnrichmentFields | 'title';
  * false even if the request itself still worked.
  */
 const DETAIL_MUTABLE_FIELDS: Readonly<Record<string, ReadonlySet<DetailMutableField>>> = {
+  cornerstone: new Set(['company', 'location']),
   homerun: new Set(['location', 'compensation']),
   softgarden: new Set(['description', 'company', 'location', 'compensation']),
   polymer: new Set(['description', 'location', 'compensation']),
@@ -458,6 +459,22 @@ function preparedDetailPlan(input: {
     ...(isPublicAtsPlatform(platform) ? { company: stringValue(job.company) || null,
       location: stringValue(job.location) || null, description: stringValue(job.description) || null } : {}),
   };
+
+  if (platform === 'cornerstone') {
+    // Never reuse a sampled board employer, including one in retained listings.
+    fields.company = null;
+    if (immutableListingTitleRejected(input)) return { plan: null, reason: 'title_gate_rejected', fields };
+    const url = stringValue(job.url), identity = expandedPostingIdentity(url);
+    if (identity?.platform !== platform || identity.slug !== slug || identity.id !== stringValue(job.publicAtsPostingId)) {
+      throw new AtsDetailResponseError('Cornerstone listing lacks exact posting identity');
+    }
+    return { plan: { url, transport: 'safe_fetch', fields, parse: async response => {
+      const landed = expandedPostingIdentity(response.url || url);
+      if (landed?.platform !== platform || landed.slug !== slug || landed.id !== identity.id) throw new AtsDetailResponseError('Cornerstone detail changed posting identity');
+      const detail = parseCornerstonePosting(await response.text(), url, stringValue(job.title));
+      return { ...fields, company: stringValue(detail.company), location: stringValue(detail.location) || fields.location };
+    } }, reason: '', fields };
+  }
 
   if (platform === 'homerun') {
     if (immutableListingTitleRejected(input)) return { plan: null, reason: 'title_gate_rejected', fields };
@@ -1051,6 +1068,10 @@ export async function enrichAtsListingJob(
       });
     }
     const message = error instanceof Error ? error.message : String(error);
+    if (platform === 'cornerstone') {
+      throw await deferredError(dependencies, platform, new Date(dependencies.now().getTime() + 3600_000),
+        { code: 'employer_unverified', scope: 'posting' });
+    }
     if (platform === 'successfactors') {
       throw await successFactorsDetailDeferredError(dependencies, message, input.detailAttemptCount,
         readAtsRetryReason(error) || { code: 'network_failure', scope: 'posting' });

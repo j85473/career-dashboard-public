@@ -182,7 +182,8 @@ export function parseExpandedListing(platform: ExpandedPublicAts, slug: string, 
     if (!title || !description || seen.has(postingId)) throw Error('Public ATS posting is incomplete or repeated');
     seen.add(postingId);
     if (platform === 'hireology' && (job.blind_posted === true || job.status !== 'Open')) throw Error('Hireology posting is not publicly attributable and open');
-    const company = platform === 'cornerstone' ? config.company : publishedEmployerName(object(job.organization).name);
+    // An exact requisition proves only its own employer, not its neighbours.
+    const company = platform === 'cornerstone' ? '' : publishedEmployerName(object(job.organization).name);
     if (platform === 'hireology' && !company) throw Error('Hireology posting has no verified employer');
     const url = platform === 'cornerstone' ? `${expandedBoardUrl(platform, slug).split('?')[0]}/requisition/${postingId}${slug.split('::')[2] === 'default' ? '' : `?lang=${slug.split('::')[2]}`}` : value(job.career_site_url);
     if (platform === 'hireology' && (expandedBoardSlug(platform, url) !== (config.canonicalSlug || slug)
@@ -192,7 +193,7 @@ export function parseExpandedListing(platform: ExpandedPublicAts, slug: string, 
       location: `${location(places)}${job.remote === true ? ' (Remote)' : ''}`,
       ...(platform === 'hireology' ? { postedCompensation: hireologyCompensation(job.compensation) } : {}) };
   });
-  return { jobs, metadata: { name: config.company, listingHasMore: hasMore }, total };
+  return { jobs, metadata: { name: platform === 'cornerstone' ? '' : config.company, listingHasMore: hasMore }, total };
 }
 
 export function expandedPostingIdentity(input: string): { platform: ExpandedPublicAts; slug: string; id: string } | null {
@@ -232,13 +233,6 @@ export function parseCornerstonePosting(html: string, requested: string, expecte
 
 export async function completeExpandedListing(platform: ExpandedPublicAts, slug: string, feed: ExpandedAtsListing,
   read: (url: string, init?: RequestInit) => Promise<{ url: string; body: string }>): Promise<ExpandedAtsListing> {
-  if (platform === 'cornerstone' && feed.jobs.length && !feed.jobs[0].company) {
-    const sample = feed.jobs[0], url = String(sample.url), response = await read(url);
-    const landed = expandedPostingIdentity(response.url || url), expected = expandedPostingIdentity(url);
-    if (!landed || !expected || landed.slug !== expected.slug || landed.id !== expected.id) throw Error('Cornerstone posting redirected away from its exact identity');
-    const detail = parseCornerstonePosting(response.body, url, String(sample.title));
-    return { ...feed, jobs: feed.jobs.map(job => ({ ...job, company: detail.company })), metadata: { ...feed.metadata, name: detail.company } };
-  }
   if (platform !== 'polymer') return feed;
   const jobs = [...feed.jobs], seen = new Set(jobs.map(job => job.id));
   let next = feed.metadata.polymerNextPage, pages = 1, bytes = 0;

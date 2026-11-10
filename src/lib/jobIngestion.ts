@@ -322,7 +322,7 @@ export class AtsEmployerDeferredError extends AtsPlatformDeferredError {
 }
 
 export function requirePublicAtsEmployer(platform: string, company: string, location?: string): void {
-  if (['oracle', 'ukg', 'zohorecruit', 'successfactors'].includes(platform) && company !== 'Oracle' && !publishedEmployerName(company)) {
+  if (['cornerstone', 'oracle', 'ukg', 'zohorecruit', 'successfactors'].includes(platform) && company !== 'Oracle' && !publishedEmployerName(company)) {
     throw new AtsEmployerDeferredError(platform);
   }
   if (platform === 'successfactors' && (!location?.trim() || /^(?:unknown(?: location)?|n\/a|not specified)$/i.test(location.trim()))) {

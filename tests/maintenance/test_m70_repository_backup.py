@@ -1,5 +1,6 @@
 """Failure and retention tests use actual temporary receipts and archive files."""
 import hashlib
+import fcntl
 import importlib.util
 import json
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import time
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -17,6 +19,30 @@ spec.loader.exec_module(m)
 
 
 class RepositoryTests(unittest.TestCase):
+    def test_backup_waits_for_cleanup_and_keeps_exclusive_ownership(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'backup.lock'
+            with path.open('a') as cleanup, path.open('a') as backup, path.open('a') as rival:
+                fcntl.flock(cleanup, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                release = threading.Timer(0.05, lambda: fcntl.flock(cleanup, fcntl.LOCK_UN))
+                release.start()
+                try:
+                    m.acquire_backup_lock(backup, timeout=2, interval=0.01)
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    release.join()
+
+    def test_backup_lock_wait_is_bounded_and_does_not_steal_a_live_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'backup.lock'
+            with path.open('a') as owner, path.open('a') as backup:
+                fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaisesRegex(RuntimeError, 'remained busy'):
+                    m.acquire_backup_lock(backup, timeout=0.02, interval=0.01)
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(backup, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

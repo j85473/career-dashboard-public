@@ -61,7 +61,7 @@ async function main() {
     if ((board.platform === 'teamtailor' || publicAtsPageSize(board.platform) !== null) && new Set(ids).size !== ids.length) throw new Error(`${board.platform} repeated posting IDs across pages`);
     let sample = jobs.find(job => /(?:channel|account|sales|business).*manager/i.test(String(job.title || job.name))) || jobs[0];
     if (!sample) throw new Error('Expected a live sample posting');
-    if (board.platform === 'oracle' || board.platform === 'ukg' || board.platform === 'polymer' || board.platform === 'homerun' || board.platform === 'softgarden' && !sample.description) {
+    if (board.platform === 'cornerstone' || board.platform === 'oracle' || board.platform === 'ukg' || board.platform === 'polymer' || board.platform === 'homerun' || board.platform === 'softgarden' && !sample.description) {
       const enriched = await enrichAtsListingJob({ ...board, job: sample, requestTimeoutMs: 15000 }, {
         fetch: (input, init) => read(String(input), init), safeExternalFetch: (input, init) => read(String(input), init),
         fetchPlatformResponse: async (_platform, _signal, request, options) => {

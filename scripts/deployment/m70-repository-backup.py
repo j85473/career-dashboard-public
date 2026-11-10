@@ -541,6 +541,24 @@ def database_producer():
             '--username', unquote(url.username), '--dbname', unquote(url.path.lstrip('/'))], env
 
 
+def acquire_backup_lock(lock, timeout=300, interval=1):
+    """Wait through a bounded cleanup turn without competing for backup space."""
+    deadline = time.monotonic() + timeout
+    announced = False
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if not announced:
+                print('Waiting for the shared backup/storage lock.', flush=True)
+                announced = True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError('Backup storage remained busy; retry required')
+            time.sleep(min(interval, remaining))
+
+
 @contextlib.contextmanager
 def production_lock():
     if os.geteuid() != 0 or socket.gethostname() != 'm70' or not os.path.ismount('/mnt/backup'):
@@ -548,7 +566,9 @@ def production_lock():
     if Path('/var/lib/m70-auto-maintenance/hold-background').exists():
         raise RuntimeError('Automatic maintenance owns the background hold')
     with open('/var/lib/career-dashboard/backup.lock', 'a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        acquire_backup_lock(lock)
+        if Path('/var/lib/m70-auto-maintenance/hold-background').exists():
+            raise RuntimeError('Automatic maintenance owns the background hold')
         yield
 
 
