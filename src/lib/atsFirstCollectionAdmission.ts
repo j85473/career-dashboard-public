@@ -2,6 +2,8 @@ import { Prisma } from './prismaClient';
 import { storageAllows } from './storagePressure';
 import { TENANT_ATS_PLATFORMS, AtsFirstCollectionSizeError } from './tenantAtsBoards';
 import { atsRunnableLegacyBatchSql, atsRunnableSegmentSql, atsSegmentPersistenceCapacitySql } from './atsAdmissionCapacity';
+import { REVIEWED_FIRST_COLLECTION_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionBoards,
+  reviewedFirstCollectionReserveJobs } from './atsReviewedFirstCollection';
 
 export const FIRST_COLLECTION_PLATFORMS = ['symphony', 'zohorecruit', ...TENANT_ATS_PLATFORMS] as const;
 export const isFirstCollectionPlatform = (platform: string): boolean =>
@@ -122,12 +124,24 @@ export async function firstCollectionSelectionWhere(client: Client, now = new Da
   await reconcileFirstCollectionCompletion(client);
   const policy = await client.atsFirstCollectionPolicy.findUnique({ where: { id: FIRST_COLLECTION_POLICY_ID } });
   if (!policy || policy.mode === 'held') return established;
+  const reviewed = await client.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
+  const reviewedBoards = reviewedFirstCollectionBoards(reviewed);
+  const choices = [...(established.OR || [])];
+  if (reviewed?.mode === 'capacity' && reviewedBoards.length
+    && !await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: reviewedBoards } })
+    && (await firstCollectionHealth(client, reviewedFirstCollectionReserveJobs(reviewed), reviewed.maxResponseBytes, now)).healthy) {
+    const next = await client.atsCompany.findFirst({ where: {
+      status: 'active', firstCollectionState: 'ready', nextCheckDate: { lte: now }, OR: reviewedBoards,
+    }, orderBy: [{ jobsFound: 'asc' }, { platform: 'asc' }, { slug: 'asc' }], select: { platform: true, slug: true } });
+    if (next) choices.push({ ...next, firstCollectionState: 'ready' });
+  }
   const counts = await firstCollectionCounts(client, now, policy.mode === 'capacity');
-  if (!firstCollectionAllowance({ ...policy, ...counts, now })) return established;
+  if (!firstCollectionAllowance({ ...policy, ...counts, now })) return { OR: choices };
   const pilotBoards = Array.isArray(policy.pilotBoards) ? policy.pilotBoards.filter((x): x is string => typeof x === 'string') : [];
   const pilots = pilotBoards.map(value => { const split = value.indexOf('::'); return { platform: value.slice(0, split), slug: value.slice(split + 2) }; });
-  return { OR: [...(established.OR || []), {
+  return { OR: [...choices, {
     platform: { in: [...FIRST_COLLECTION_PLATFORMS] }, firstCollectionState: 'ready',
+    ...(reviewedBoards.length ? { NOT: { OR: reviewedBoards } } : {}),
     ...(policy.mode === 'pilot' ? { OR: pilots.length ? pilots : [{ slug: '__no_pilot__' }] } : {}),
   }] };
 }
@@ -175,6 +189,23 @@ export async function reserveFirstCollection(client: Client, board: { slug: stri
   if (current.firstCollectionState !== 'ready') return false;
   const policy = await client.atsFirstCollectionPolicy.findUnique({ where: { id: FIRST_COLLECTION_POLICY_ID } });
   if (!policy) return false;
+  const reviewed = await client.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
+  if (isReviewedFirstCollection(reviewed, board)) {
+    // All admission callers already hold the ordinary policy row. Keep this
+    // lock order, and retain the slot through retries and persistence errors.
+    await client.$queryRaw`SELECT id FROM "AtsFirstCollectionPolicy" WHERE id=${REVIEWED_FIRST_COLLECTION_POLICY_ID} FOR UPDATE`;
+    const exact = await client.atsFirstCollectionPolicy.findUniqueOrThrow({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
+    if (!['pilot', 'ramp', 'capacity'].includes(policy.mode) || exact.mode !== 'capacity' || !isReviewedFirstCollection(exact, board)
+      || current.jobsFound > exact.maxCatalogueJobs
+      || await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: reviewedFirstCollectionBoards(exact) } })) return false;
+    const health = await firstCollectionHealth(client, reviewedFirstCollectionReserveJobs(exact), exact.maxResponseBytes, now);
+    if (!health.healthy) return false;
+    const reserved = await client.atsCompany.updateMany({
+      where: { slug: board.slug, platform: board.platform, status: 'active', firstCollectionState: 'ready' },
+      data: { firstCollectionState: 'admitted', firstCollectionBatchId: batchId, firstCollectionAdmittedAt: now },
+    });
+    return reserved.count === 1;
+  }
   const health = await firstCollectionHealth(client, policy.maxCatalogueJobs, policy.maxResponseBytes, now);
   if (policy.mode === 'capacity') {
     await client.atsFirstCollectionPolicy.update({ where: { id: policy.id }, data: {
@@ -207,6 +238,9 @@ export async function firstCollectionBodyLimits(client: Pick<Client, 'atsCompany
   if (!isFirstCollectionPlatform(board.platform)) return { maximumBytes: 50 * 1024 * 1024, maximumJobs: null };
   const current = await client.atsCompany.findUnique({ where: { slug_platform: { slug: board.slug, platform: board.platform } }, select: { firstCollectionState: true, firstCollectionHoldReason: true } });
   if (current?.firstCollectionHoldReason) throw new AtsFirstCollectionSizeError(`ATS catalogue deferred by first-collection review: ${current.firstCollectionHoldReason}`);
+  if (current?.firstCollectionState === 'established') return { maximumBytes: 15 * 1024 * 1024, maximumJobs: null };
+  const reviewed = await client.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
+  if (isReviewedFirstCollection(reviewed, board)) return { maximumBytes: reviewed!.maxResponseBytes, maximumJobs: reviewed!.maxCatalogueJobs };
   const policy = await client.atsFirstCollectionPolicy.findUnique({ where: { id: FIRST_COLLECTION_POLICY_ID } });
   return { maximumBytes: current?.firstCollectionState === 'established' ? 15 * 1024 * 1024 : policy?.maxResponseBytes || 5242880,
     maximumJobs: current?.firstCollectionState !== 'established' ? policy?.maxCatalogueJobs || 250 : null };

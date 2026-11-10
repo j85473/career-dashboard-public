@@ -107,6 +107,36 @@ them. The older audit catch-up script can adjust a due date but cannot bypass th
 new batch fence. The live adapter verification script is a separate, bounded
 read-only check and creates no jobs or first-collection batches.
 
+### Explicit release of oversized ClearCompany and Symphony catalogues
+
+`scripts/release_oversized_ats_boards.ts` previews the currently size-held
+ClearCompany candidates and the two verified Symphony expansion employers.
+`--apply` revalidates them, resolves ClearCompany aliases to published site UUIDs,
+preserves retired identities and existing completed work, and records a separate
+`reviewed-oversized` policy with an exact canonical-board allowlist. The ordinary
+policy and its 250-job limit stay unchanged. No schema migration is required.
+Use `--receipt=data/runtime/oversized-release.json` to retain an operator receipt;
+`--status` reports the durable release and each board's first-collection progress.
+A repeated application reports the existing release without adding more boards.
+
+The reviewed policy permits at most 5,000 listings and retains the ordinary
+decoded-response bound. Selection offers the smallest ready reviewed catalogue;
+the exact batch transaction shares the normal policy lock and reserves only one
+reviewed first collection. That slot remains occupied through provider retries,
+holds, listing completion and persistence errors. Only successful zero-error
+persistence permits the next reviewed board. Normal established-board work can
+continue in the other existing worker slots.
+
+The initial capacity check reserves the usual bounded 250-listing window instead
+of the entire oversized catalogue. Existing page, segment, publication and
+persistence backpressure bounds the remaining resumable work. Otherwise a
+catalogue larger than the 1,000-job persistence window could never start. Global
+operator holds, the shared runtime gate, storage pressure, provider pacing,
+posting validation, duplicate checks and ingestion filters remain authoritative.
+Putting either policy in `held` stops new reviewed admissions while retaining
+already-admitted work and its allowance. Do not delete the reviewed policy until
+every admitted board has finished; it carries their body/job limits across restarts.
+
 ## Verification
 
 The release includes parser, pagination, response-size, failure-scope and health
