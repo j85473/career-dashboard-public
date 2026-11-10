@@ -1,7 +1,7 @@
 import { load } from 'cheerio';
 import { gunzipSync } from 'node:zlib';
 import { kulaBoardSlugFromUrl, kulaBoardUrl, parseKulaRssListing } from './kulaRssBoard';
-import { clearCompanyPageSlug, clearCompanyPageUrl, resolveClearCompanyPage } from './clearcompanyBoard';
+import { clearCompanyPageSlug, clearCompanyPageUrl, resolveClearCompanyPage, clearCompanyEmailPostingUrl } from './clearcompanyBoard';
 
 export const TENANT_ATS_PLATFORMS = ['gem', 'jobscore', 'jazzhr', 'manatal', 'clearcompany', 'hirehive', 'kula'] as const;
 export type TenantAtsPlatform = typeof TENANT_ATS_PLATFORMS[number];
@@ -196,6 +196,9 @@ export function parseTenantAtsListing(platform: TenantAtsPlatform, slug: string,
     // Summary feeds can publish a valid posting with an empty description. Retain its
     // exact identity for posting-level recovery instead of rejecting its page.
     if (!title || (!description && !['manatal', 'gem'].includes(platform)) || !url || !employer) throw new Error('Tenant ATS listing schema has no title, description, employer or posting URL');
+    const postedApplyLink = url;
+    const emailPostingUrl = platform === 'clearcompany' ? clearCompanyEmailPostingUrl(url, id, list) : null;
+    if (emailPostingUrl) url = emailPostingUrl;
     const parsed = new URL(url);
     // Legacy JazzHR exports still use HTTP on the verified vendor tenant.
     // Upgrade those exact links; arbitrary custom HTTP domains stay rejected.
@@ -228,6 +231,7 @@ export function parseTenantAtsListing(platform: TenantAtsPlatform, slug: string,
     const compensation = stringValue(j.formatted_public_compensation) || stringValue(j.salary);
     const createdAt = stringValue(j.first_published_at || j.opened_date || j.publish_date || j.published_date || j.postedDate);
     return { id: `${platform === 'clearcompany' ? listingSlug : slug}::${id}`, publicAtsPostingId: id, title, description, company: employer, url,
+      ...(emailPostingUrl ? { clearcompanyApplyLink: postedApplyLink } : {}),
       location, ...(createdAt ? { createdAt } : {}), ...(compensation ? { salary: compensation } : {}) };
   });
   return { jobs, metadata: { name: company, listingHasMore: hasMore, tenantListingOffset: offset }, total };

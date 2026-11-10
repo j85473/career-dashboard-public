@@ -61,3 +61,34 @@ export function admittedClearCompanySlug(slug: string, canonicalSlug?: string): 
   if (!clearCompanyPageUrl(slug) || !isClearCompanySiteId(canonicalSlug)) throw new Error('Invalid resolved ClearCompany site identity');
   return canonicalSlug.toLowerCase();
 }
+
+/** Some feeds publish a vendor-issued email application channel. Its tenant
+ * must agree with the page's independently valid, exact-ID posting links before
+ * using the vendor's public canonical posting page. Keep the original channel
+ * in the saved listing; an email address is never treated as a fetch URL. */
+export function clearCompanyEmailPostingUrl(link: string, postingId: string,
+  postings: ReadonlyArray<Record<string, unknown>>): string | null {
+  const email = /^(?:mailto:)?\d+@([a-z0-9][a-z0-9-]*)\.apply\.clrco\.com$/i.exec(link);
+  if (!email || !isClearCompanySiteId(postingId)) return null;
+  const emailTenant = email[1].toLowerCase();
+  if (reserved.test(emailTenant)) throw new Error('ClearCompany email application uses a reserved tenant');
+  const publishedTenants = new Set<string>();
+  for (const posting of postings) {
+    const id = typeof posting.id === 'string' ? posting.id.trim() : '';
+    if (!isClearCompanySiteId(id)) continue;
+    const value = posting.absolute_url || posting.detail_url || posting.url || posting.hosted_url || posting.applyLink;
+    if (typeof value !== 'string') continue;
+    try {
+      const url = new URL(value.trim());
+      if (url.protocol !== 'https:' || url.username || url.password || url.port) continue;
+      const alias = clearCompanyPageSlug(url.href);
+      if (!alias?.startsWith('hosted::')) continue;
+      const exactId = url.hostname === 'apply.clearcompany.com' ? url.searchParams.get('jobId') : url.pathname.split('/')[3];
+      if (exactId?.toLowerCase() === id.toLowerCase()) publishedTenants.add(alias.slice('hosted::'.length));
+    } catch { /* Email channels and malformed peers cannot establish identity. */ }
+  }
+  if (publishedTenants.size !== 1 || !publishedTenants.has(emailTenant)) {
+    throw new Error('ClearCompany email application tenant lacks corroborating posting links');
+  }
+  return `https://apply.clearcompany.com/${emailTenant}?jobId=${postingId.toLowerCase()}`;
+}

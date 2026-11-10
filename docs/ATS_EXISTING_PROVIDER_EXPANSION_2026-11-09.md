@@ -37,6 +37,14 @@ per-index completion receipts with the expanded parser. The original
 Local discovery inherits completed coverage for the existing patterns and reads
 the selected index sections for missing coverage, beginning with recent crawls.
 
+Some ClearCompany postings publish a numeric application email on the vendor's
+`apply.clrco.com` domain. Collection uses the public canonical hosted-page format
+only when independently valid posting links on the same API page establish the
+same employer tenant and retain their exact job IDs. The email channel stays in
+saved source metadata. Arbitrary email domains, conflicting tenants and peers
+with mismatched IDs remain rejected. AVI Foodsystems supplied the live case: its
+legacy public posting confirms the same canonical job UUID and career-site UUID.
+
 Two new seed candidates passed complete live reads:
 
 | Employer | Listing records | Verification |
