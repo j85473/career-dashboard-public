@@ -1,4 +1,5 @@
 export const publicAtsTestSlugs: Record<string, string> = {
+  homerun: 'example', softgarden: 'example.softgarden.io', dvinci: 'example.dvinci.de', flatchr: 'example',
   cornerstone: 'example.csod.com::1::default', hireology: 'example', polymer: 'example',
   symphony: 'deltek', dayforce: 'mydayforce', oracle: 'ehtl.fa.us6.oraclecloud.com::CX',
   ukg: 'recruiting2.ultipro.com::dre1001dryg::6ca32cd1-ca64-4d8f-82e7-f65b3aaa0e9b',
@@ -40,3 +41,10 @@ export const publicAtsTestFixtures: Record<string, unknown> = {
     Publish: true, Remote_Job: 'Yes', City: 'Austin', State: 'TX', Country: 'US', Date_Opened: '2026-09-28',
   }] },
 };
+
+export const additionalAtsTestBodies: Record<string, string> = {
+  homerun: '<feed xmlns="http://www.w3.org/2005/Atom"><id>https://example.homerun.co/</id><entry><id>job_123</id><title>Channel Manager</title><author><name>Example Inc</name></author><link rel="alternate" type="text/html" href="https://example.homerun.co/channel-manager"/><description>Full description</description></entry></feed>',
+  softgarden: '<html><script>var complete_job_id_list = jobs_selected = [123];</script><div id="job_id_123"><a href="../job/123/channel-manager">Channel Manager</a></div></html>',
+  flatchr: `<html><script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ page: '/company/[companySlug]', query: { companySlug: 'example' }, props: { config: { published: true, company: { id: 'co123', slug: 'example' } }, data: { items: [{ published: true, status: 'published', vacancy: { status: 1, id: 'AbC123', slug: 'abc123-channel-manager', title: 'Channel Manager', description: 'Full description', company: { id: 'co123', slug: 'example', name: 'Example Inc' }, address: { locality: 'Paris', country: 'France' } } }] } } })}</script></html>`,
+};
+publicAtsTestFixtures.dvinci = [{ id: 123, position: 'Channel Manager', jobPublicationURL: 'https://example.dvinci.de/de/jobs/123/channel-manager', tasks: 'Full description', jobOpening: { company: { name: 'Example Inc' }, location: 'Berlin' } }];

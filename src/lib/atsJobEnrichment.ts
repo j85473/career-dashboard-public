@@ -1,3 +1,4 @@
+import { parseAdditionalDetail } from './additionalPublicAts';
 import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
 import { polymerDetailRequest, parsePolymerDetail } from './expandedPublicAts';
 import { readAtsRetryReason, withAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
@@ -113,6 +114,8 @@ type DetailMutableField = keyof EnrichmentFields | 'title';
  * false even if the request itself still worked.
  */
 const DETAIL_MUTABLE_FIELDS: Readonly<Record<string, ReadonlySet<DetailMutableField>>> = {
+  homerun: new Set(['location', 'compensation']),
+  softgarden: new Set(['description', 'company', 'location', 'compensation']),
   polymer: new Set(['description', 'location', 'compensation']),
   manatal: new Set(['description']),
   gem: new Set(['description']),
@@ -451,10 +454,36 @@ function preparedDetailPlan(input: {
   const rawDescriptionPresent = hasRawDescription(job);
   const fields: EnrichmentFields = {
     ...EMPTY_FIELDS,
-    compensation: platform === 'breezy' ? parseBreezySalaryRange(job.salary) : ['kula', 'polymer', 'hireology'].includes(platform) ? stringValue(job.postedCompensation) || null : null,
+    compensation: platform === 'breezy' ? parseBreezySalaryRange(job.salary) : ['kula', 'polymer', 'hireology', 'softgarden', 'dvinci'].includes(platform) ? stringValue(job.postedCompensation) || null : null,
     ...(isPublicAtsPlatform(platform) ? { company: stringValue(job.company) || null,
       location: stringValue(job.location) || null, description: stringValue(job.description) || null } : {}),
   };
+
+  if (platform === 'homerun') {
+    if (immutableListingTitleRejected(input)) return { plan: null, reason: 'title_gate_rejected', fields };
+    const url = stringValue(job.url), postingId = stringValue(job.publicAtsPostingId);
+    if (!postingId || publicAtsBoardSlugFromUrl(url, platform) !== slug) return { plan: null, reason: 'missing_detail_identity', fields };
+    return { plan: { url, transport: 'safe_fetch', fields, parse: async response => {
+      if (response.url && new URL(response.url).href !== new URL(url).href) throw new AtsDetailResponseError('Homerun detail changed posting URL');
+      const detail = parseAdditionalDetail(platform, slug, await response.text(), url, stringValue(job.title), postingId);
+      if (detail.company !== fields.company) throw new AtsDetailResponseError('Homerun detail changed employer');
+      return { ...fields, location: stringValue(detail.location) || fields.location, compensation: stringValue(detail.postedCompensation) || null };
+    } }, reason: '', fields };
+  }
+
+  if (platform === 'softgarden' && !rawDescriptionPresent) {
+    if (immutableListingTitleRejected(input)) return { plan: null, reason: 'title_gate_rejected', fields };
+    const url = stringValue(job.url), postingId = stringValue(job.publicAtsPostingId);
+    if (!/^[1-9]\d*$/.test(postingId) || publicAtsBoardSlugFromUrl(url, platform) !== slug
+      || !new URL(url).pathname.startsWith(`/job/${postingId}/`)) return { plan: null, reason: 'missing_detail_identity', fields };
+    return { plan: { url, transport: 'safe_fetch', fields, parse: async response => {
+      const landed = response.url || url;
+      if (publicAtsBoardSlugFromUrl(landed, platform) !== slug || !new URL(landed).pathname.startsWith(`/job/${postingId}/`)) throw new AtsDetailResponseError('Softgarden detail changed posting identity');
+      const detail = parseAdditionalDetail(platform, slug, await response.text(), url, stringValue(job.title));
+      return { ...fields, description: stringValue(detail.description), company: stringValue(detail.company),
+        location: stringValue(detail.location) || fields.location, compensation: stringValue(detail.postedCompensation) || null };
+    } }, reason: '', fields };
+  }
 
   if (platform === 'polymer') {
     if (rawDescriptionPresent) return { plan: null, reason: 'description_already_present', fields };

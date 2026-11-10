@@ -1,3 +1,4 @@
+import { ADDITIONAL_PUBLIC_ATS, ADDITIONAL_ATS_LABELS, additionalBoardSlug } from './additionalPublicAts';
 import { symphonyBoardSlugFromUrl } from './symphonyAtsBoard';
 import { EXPANDED_PUBLIC_ATS, expandedBoardSlug } from './expandedPublicAts';
 import { BROWSER_ATS_LABELS, BROWSER_ATS_PLATFORMS, isBrowserAtsPlatform, browserAtsBoardFromUrl } from './browserAtsBoards';
@@ -6,7 +7,7 @@ import { hostnameMatches, parseHttpUrl } from './urlHost';
 import { isZohoRecruitHost } from './zohoRecruitHost';
 
 export const ATS_OPTIONS = [
-  'Cornerstone', 'Polymer',
+  ...Object.values(ADDITIONAL_ATS_LABELS), 'Cornerstone', 'Polymer',
   'Symphony Talent', 'Jobvite', 'Freshteam', 'CATS', 'Kula',
   'Gem', 'JobScore', 'JazzHR', 'Manatal', 'ClearCompany', 'HireHive', 'Ashby', 'Avature', 'BambooHR', 'BrassRing', 'Breezy', 'Comeet', 'Dayforce', 'Eightfold', 'Greenhouse',
   'Gusto', 'Hireology', 'Dover', 'Trakstar Hire', 'Prevue APS', 'HiringThing', 'iCIMS', 'Lever', 'Oracle Cloud', 'Paycor', 'Paycom', 'Paylocity', 'Personio', 'Phenom', 'Pinpoint', 'Recruitee', 'Rippling', 'Sage HR', 'SmartRecruiters', 'SuccessFactors', 'Taleo', 'Teamtailor',
@@ -27,12 +28,12 @@ export function identifyAts(job: { url?: string | null; source?: string | null; 
   const pathname = parsedUrl?.pathname || '';
   const hasHost = (...domains: string[]) => domains.some((domain) => hostnameMatches(host, domain));
   const source = (job.source || '').toLowerCase();
-
   // If we directly ingested it via an ATS source tag
   if (source.startsWith('ats-')) {
     const parts = source.split('-');
     if (parts.length > 1) {
       const platform = parts[1];
+      if (platform === 'dvinci') return 'd.vinci';
       if (isBrowserAtsPlatform(platform)) return BROWSER_ATS_LABELS[platform];
       if (platform === 'oracle') return 'Oracle Cloud';
       if (platform === 'symphony') return 'Symphony Talent';
@@ -42,6 +43,10 @@ export function identifyAts(job: { url?: string | null; source?: string | null; 
       if (matchedPlatform) return matchedPlatform;
       return platform.charAt(0).toUpperCase() + platform.slice(1);
     }
+  }
+
+  for (const platform of ADDITIONAL_PUBLIC_ATS) {
+    if (job.url && (additionalBoardSlug(platform, job.url) || platform === 'flatchr' && host === 'careers.flatchr.io' && /^\/(?:[a-z]{2}\/)?vacancy\/[^/]+\/?$/.test(pathname))) return ADDITIONAL_ATS_LABELS[platform];
   }
 
   if (job.url && symphonyBoardSlugFromUrl(job.url)) return 'Symphony Talent';
@@ -131,7 +136,7 @@ export const ATS_PER_BOARD_HOST_PLATFORMS = new Set([
   'pinpoint',
   'recruitee',
   'personio',
-  'symphony', 'zohorecruit', ...EXPANDED_PUBLIC_ATS, ...TENANT_ATS_PLATFORMS, ...BROWSER_ATS_PLATFORMS,
+  'symphony', 'zohorecruit', ...ADDITIONAL_PUBLIC_ATS, ...EXPANDED_PUBLIC_ATS, ...TENANT_ATS_PLATFORMS, ...BROWSER_ATS_PLATFORMS,
 ]);
 
 /**
@@ -162,7 +167,7 @@ export function atsAuthFailureIsPlatformWide(platform?: string): boolean {
  * platforms retain their existing schema-failure behavior.
  */
 export function atsResponseSchemaFailureIsPlatformWide(platform?: string): boolean {
-  return !isBrowserAtsPlatform(platform || '') && platform !== 'symphony' && platform !== 'oracle' && platform !== 'zohorecruit' && !(EXPANDED_PUBLIC_ATS as readonly (string | undefined)[]).includes(platform) && !(TENANT_ATS_PLATFORMS as readonly (string | undefined)[]).includes(platform);
+  return !(ADDITIONAL_PUBLIC_ATS as readonly (string | undefined)[]).includes(platform) && !isBrowserAtsPlatform(platform || '') && platform !== 'symphony' && platform !== 'oracle' && platform !== 'zohorecruit' && !(EXPANDED_PUBLIC_ATS as readonly (string | undefined)[]).includes(platform) && !(TENANT_ATS_PLATFORMS as readonly (string | undefined)[]).includes(platform);
 }
 
 /**

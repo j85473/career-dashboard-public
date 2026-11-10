@@ -1,3 +1,4 @@
+import { ADDITIONAL_PUBLIC_ATS } from './additionalPublicAts';
 import { atsRotationCohortWhere } from './atsRotationCohort';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import { nextAtsProcessingContinuationAt } from './atsProcessingSchedule';
@@ -808,6 +809,9 @@ export function parseAtsListingPayload(
 }
 
 export function responseMatchesPlatform(platform: string, contentType: string): boolean {
+  if (platform === 'homerun') return /xml/i.test(contentType);
+  if (platform === 'softgarden') return /json|text\/html/i.test(contentType);
+  if (platform === 'flatchr') return /text\/html/i.test(contentType);
   if (platform === 'kula') return /xml/i.test(contentType);
   if (platform === 'jazzhr') return /xml|text\/html/i.test(contentType);
   if (platform === 'successfactors') return /xml|application\/octet-stream/i.test(contentType);
@@ -996,7 +1000,7 @@ export async function fetchAtsBoardPage(
       }
 
       const contentType = received.headers.get('content-type') || '';
-      if (['cornerstone', 'hireology', 'polymer'].includes(board.platform) && received.url
+      if (['cornerstone', 'hireology', 'polymer', ...ADDITIONAL_PUBLIC_ATS].includes(board.platform) && received.url
         && new URL(received.url).href !== new URL(request.url).href) throw new Error('Public ATS listing redirected away from its verified endpoint');
       if (!responseMatchesPlatform(board.platform, contentType)) {
         throw new AtsBoardContentTypeError(

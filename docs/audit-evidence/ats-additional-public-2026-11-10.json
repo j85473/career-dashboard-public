@@ -1,0 +1,117 @@
+{
+  "verifiedAt": "2026-11-10T18:45:51.660Z",
+  "results": [
+    {
+      "platform": "homerun",
+      "slug": "013-poppodium",
+      "jobs": 1,
+      "distinctPostingViews": 1,
+      "pages": 1,
+      "reportedTotal": 1,
+      "sample": {
+        "title": "Stagiair Hospitality/Horeca",
+        "company": "013 Poppodium",
+        "location": "Tilburg, Noord-Brabant, Netherlands",
+        "descriptionCharacters": 2757
+      }
+    },
+    {
+      "platform": "homerun",
+      "slug": "jobs",
+      "jobs": 5,
+      "distinctPostingViews": 5,
+      "pages": 1,
+      "reportedTotal": 5,
+      "sample": {
+        "title": "Sales Manager",
+        "company": "Homerun",
+        "location": "Amsterdam, Noord-Holland, Netherlands",
+        "descriptionCharacters": 7761
+      }
+    },
+    {
+      "platform": "softgarden",
+      "slug": "softgarden.softgarden.io",
+      "jobs": 5,
+      "distinctPostingViews": 5,
+      "pages": 1,
+      "reportedTotal": 5,
+      "sample": {
+        "title": "Senior Key Account Manager (m/w/d) – Media & Job Ad Sales",
+        "company": "softgarden e-recruiting GmbH",
+        "location": "Düsseldorf, Nordrhein-Westfalen, Deutschland",
+        "descriptionCharacters": 3233
+      }
+    },
+    {
+      "platform": "softgarden",
+      "slug": "abeking.career.softgarden.de",
+      "jobs": 38,
+      "distinctPostingViews": 38,
+      "pages": 1,
+      "reportedTotal": 38,
+      "sample": {
+        "title": "Fertigungskoordinator (m/w/d) Schwerpunkt Ausrüstung",
+        "company": "ABEKING & RASMUSSEN Schiffs- und Yachtwerft SE",
+        "location": "Emden, Niedersachsen, Deutschland",
+        "descriptionCharacters": 3928
+      }
+    },
+    {
+      "platform": "dvinci",
+      "slug": "adstec-karriere.dvinci-hr.com",
+      "jobs": 19,
+      "distinctPostingViews": 19,
+      "pages": 1,
+      "reportedTotal": 19,
+      "sample": {
+        "title": "Business Development Manager Industrial Firewalls (m/w/d)",
+        "company": "ads-tec Industrial IT GmbH",
+        "location": "Nürtingen, Germany",
+        "descriptionCharacters": 3386
+      }
+    },
+    {
+      "platform": "dvinci",
+      "slug": "ada-karriere.dvinci-easy.com",
+      "jobs": 10,
+      "distinctPostingViews": 10,
+      "pages": 1,
+      "reportedTotal": 10,
+      "sample": {
+        "title": "Ausbildung Chemikant (m|w|d)",
+        "company": "ADA Cosmetics International GmbH",
+        "location": "Kehl, Germany",
+        "descriptionCharacters": 2838
+      }
+    },
+    {
+      "platform": "flatchr",
+      "slug": "flatchr",
+      "jobs": 7,
+      "distinctPostingViews": 7,
+      "pages": 1,
+      "reportedTotal": 7,
+      "sample": {
+        "title": "commercial",
+        "company": "Flatchr",
+        "location": "Boulogne-Billancourt, Île-de-France, France",
+        "descriptionCharacters": 1506
+      }
+    },
+    {
+      "platform": "flatchr",
+      "slug": "abe",
+      "jobs": 4,
+      "distinctPostingViews": 4,
+      "pages": 1,
+      "reportedTotal": 4,
+      "sample": {
+        "title": "Gestionnaire production IARD",
+        "company": "ABE",
+        "location": "Hybrid; Treillières, Pays de la Loire, France",
+        "descriptionCharacters": 3658
+      }
+    }
+  ]
+}

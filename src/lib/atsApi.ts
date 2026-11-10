@@ -1,3 +1,4 @@
+import { additionalPostingPlatform, fetchAdditionalAtsPosting } from './additionalAtsPosting';
 import { INCOMPLETE_LOCATION } from './postingLocation';
 import { adpPostingIdentity, fetchAdpPosting } from './adpPosting';
 import { gunzipSync } from 'node:zlib';
@@ -541,6 +542,7 @@ export async function scrapeAtsApi(url: string): Promise<AtsScrapeResult | null>
     if (adpPostingIdentity(url)) return fetchAdpPosting(url);
     if (umantisPostingIdentity(url)) return fetchUmantisPosting(url);
     if (symphonyPostingIdentity(url)) return fetchSymphonyPosting(url);
+    if (additionalPostingPlatform(url)) return fetchAdditionalAtsPosting(url);
     if (expandedPostingIdentity(url)?.platform !== 'hireology' && expandedPostingIdentity(url)) return fetchExpandedAtsPosting(url);
     if (bambooHrPostingIdentity(url)) return fetchBambooHrPosting(url);
     if (ripplingPostingIdentity(url)) return fetchRipplingPosting(url);

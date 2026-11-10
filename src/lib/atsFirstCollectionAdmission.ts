@@ -1,3 +1,4 @@
+import { ADDITIONAL_PUBLIC_ATS } from './additionalPublicAts';
 import { Prisma } from './prismaClient';
 import { EXPANDED_PUBLIC_ATS } from './expandedPublicAts';
 import { storageAllows } from './storagePressure';
@@ -6,7 +7,7 @@ import { atsRunnableLegacyBatchSql, atsRunnableSegmentSql, atsSegmentPersistence
 import { REVIEWED_FIRST_COLLECTION_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionBoards,
   reviewedFirstCollectionReserveJobs } from './atsReviewedFirstCollection';
 
-export const FIRST_COLLECTION_PLATFORMS = [...EXPANDED_PUBLIC_ATS, 'symphony', 'zohorecruit', ...TENANT_ATS_PLATFORMS] as const;
+export const FIRST_COLLECTION_PLATFORMS = [...ADDITIONAL_PUBLIC_ATS, ...EXPANDED_PUBLIC_ATS, 'symphony', 'zohorecruit', ...TENANT_ATS_PLATFORMS] as const;
 export const isFirstCollectionPlatform = (platform: string): boolean =>
   (FIRST_COLLECTION_PLATFORMS as readonly string[]).includes(platform);
 export const FIRST_COLLECTION_POLICY_ID = 'new-providers';

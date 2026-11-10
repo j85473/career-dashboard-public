@@ -69,17 +69,17 @@ function harness(blockCount = 1, discoveryPattern = { platform: 'greenhouse', pa
     addReceipt: (value: unknown) => receipts.set(pattern, value) };
 }
 
-test('future-source blocks atomically retain candidates without requesting collection admission', async () => {
+test('newly implemented sources atomically retain candidates and queue normal first validation', async () => {
   const h = harness(1, { platform: 'homerun', pattern: '*.homerun.co/*' });
   const sourceUrl = 'https://example.homerun.co/channel-manager';
   await saveLocalCrawlBlock(h.client, h.scan(), [{ url: sourceUrl }, { url: sourceUrl }]);
   assert.equal(h.scan().nextBlock, 1);
   assert.equal(h.total(), 1);
-  assert.equal(h.firstCollectionWrites(), 0);
+  assert.equal(h.firstCollectionWrites(), 1);
   assert.deepEqual(h.candidates(), [{ runId: 'run', platform: 'homerun',
-    slug: 'https://example.homerun.co/',
-    normalizedSlug: 'https://example.homerun.co/',
-    sourceUrl, sourceIndexId: indexId, status: 'awaiting_adapter' }]);
+    slug: 'example',
+    normalizedSlug: 'example',
+    sourceUrl, sourceIndexId: indexId, status: 'pending' }]);
 });
 
 test('a failed database save rolls back candidates and cursor and cannot delete its block', async () => {

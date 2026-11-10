@@ -4,7 +4,7 @@ import { PUBLIC_ATS_LAUNCH_BOARDS } from '../src/lib/publicAtsLaunchBoards';
 /** Read-only live smoke test. It imports no records and spends no production leases. */
 import { writeFile } from 'node:fs/promises';
 import { isPublicAtsPlatform, publicAtsBoardUrl, buildPublicAtsBoardRequest, parsePublicAtsConfig,
-  parsePublicAtsListing, publicAtsPageSize, teamtailorHasMore, publicAtsNeedsConfig, type PublicAtsConfig } from '../src/lib/publicAtsBoards';
+  parsePublicAtsListing, publicAtsPageSize, teamtailorHasMore, publicAtsNeedsConfig, type PublicAtsConfig, atsListingUsesXml } from '../src/lib/publicAtsBoards';
 import { safeExternalFetch } from '../src/lib/safeExternalFetch';
 import { enrichAtsListingJob, readAtsJobEnrichmentMarker } from '../src/lib/atsJobEnrichment';
 
@@ -31,7 +31,7 @@ async function main() {
         ? buildPublicAtsBoardRequest(board.platform, board.slug, offset, config)
         : { url: `https://${board.slug}.teamtailor.com/jobs.json?page=${offset / 100 + 1}&per_page=100`, init: {} };
       const response = await read(request.url, request.init);
-      const xml = ['successfactors', 'jazzhr', 'kula'].includes(board.platform);
+      const xml = atsListingUsesXml(board.platform);
       const body = await readBoundedAtsBody(response);
       const parsed = xml ? body : JSON.parse(body);
       let feed = isPublicAtsPlatform(board.platform)
@@ -61,7 +61,7 @@ async function main() {
     if ((board.platform === 'teamtailor' || publicAtsPageSize(board.platform) !== null) && new Set(ids).size !== ids.length) throw new Error(`${board.platform} repeated posting IDs across pages`);
     let sample = jobs.find(job => /(?:channel|account|sales|business).*manager/i.test(String(job.title || job.name))) || jobs[0];
     if (!sample) throw new Error('Expected a live sample posting');
-    if (board.platform === 'oracle' || board.platform === 'ukg' || board.platform === 'polymer') {
+    if (board.platform === 'oracle' || board.platform === 'ukg' || board.platform === 'polymer' || board.platform === 'homerun' || board.platform === 'softgarden' && !sample.description) {
       const enriched = await enrichAtsListingJob({ ...board, job: sample, requestTimeoutMs: 15000 }, {
         fetch: (input, init) => read(String(input), init), safeExternalFetch: (input, init) => read(String(input), init),
         fetchPlatformResponse: async (_platform, _signal, request, options) => {

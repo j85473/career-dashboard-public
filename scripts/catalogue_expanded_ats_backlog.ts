@@ -1,15 +1,16 @@
+import { ADDITIONAL_PUBLIC_ATS, isAdditionalPublicAts, additionalBoardSlug } from '../src/lib/additionalPublicAts';
 import { prisma } from '../src/lib/prisma';
 import { expandedBoardSlug, EXPANDED_PUBLIC_ATS, type ExpandedPublicAts } from '../src/lib/expandedPublicAts';
 import { isPermanentAtsBoardRetirement } from '../src/lib/atsBoardDiscovery';
 
-/** Move only the three implemented adapters' saved addresses into ordinary
+/** Move only implemented adapters' saved addresses into ordinary
  * validation. Existing first-collection holds and schedules are never reset. */
 export async function catalogueExpandedAtsBacklog(client = prisma, apply = false) {
   const counts = { catalogued: 0, retired: 0, identityPending: 0, concurrent: 0 };
   let after: { runId: string; platform: string; slug: string } | undefined;
   for (;;) {
     const candidates = await client.atsDiscoveryAuditCandidate.findMany({
-      where: { status: 'awaiting_adapter', platform: { in: [...EXPANDED_PUBLIC_ATS] } },
+      where: { status: 'awaiting_adapter', platform: { in: [...EXPANDED_PUBLIC_ATS, ...ADDITIONAL_PUBLIC_ATS] } },
       orderBy: [{ runId: 'asc' }, { platform: 'asc' }, { slug: 'asc' }], take: 250,
       // Applied rows leave the eligibility filter. Re-read its first page;
       // a filtered-out Prisma cursor would otherwise stop after 250 rows.
@@ -20,7 +21,8 @@ export async function catalogueExpandedAtsBacklog(client = prisma, apply = false
     for (const candidate of candidates) {
       after = { runId: candidate.runId, platform: candidate.platform, slug: candidate.slug };
       const platform = candidate.platform as ExpandedPublicAts;
-      const slug = expandedBoardSlug(platform, candidate.sourceUrl || candidate.slug);
+      const slug = isAdditionalPublicAts(candidate.platform)
+        ? additionalBoardSlug(candidate.platform, candidate.sourceUrl || candidate.slug) : expandedBoardSlug(platform, candidate.sourceUrl || candidate.slug);
       if (!apply) {
         counts[slug ? 'catalogued' : 'identityPending']++;
         continue;

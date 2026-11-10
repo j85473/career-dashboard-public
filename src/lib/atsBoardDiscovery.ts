@@ -1,3 +1,4 @@
+import { ADDITIONAL_ATS_LABELS } from './additionalPublicAts';
 import { BROWSER_ATS_LABELS, BROWSER_ATS_PLATFORMS, NON_API_ATS_PLATFORMS, browserAtsBoardFromUrl, isBrowserAtsPlatform } from './browserAtsBoards';
 import type { Prisma } from './prismaClient';
 
@@ -27,6 +28,7 @@ export type DiscoveredAtsBoardOutcome =
  * actually run.
  */
 export const DISCOVERABLE_ATS_PLATFORM_BY_LABEL: Readonly<Record<string, string>> = {
+  ...Object.fromEntries(Object.entries(ADDITIONAL_ATS_LABELS).map(([platform, label]) => [label, platform])),
   Cornerstone: 'cornerstone', Hireology: 'hireology', Polymer: 'polymer',
   Ashby: 'ashby',
   BambooHR: 'bamboohr',

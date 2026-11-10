@@ -3,7 +3,7 @@ import test from 'node:test';
 import { ATS_DISCOVERY_PLATFORMS, FUTURE_ATS_DISCOVERY_PATTERNS, discoveryCandidateStatus, futureAtsCandidateUrl } from '../../src/lib/atsDiscoveryPlatforms';
 import { PLATFORMS } from '../../src/scripts/discoverATS';
 import { isFirstCollectionPlatform } from '../../src/lib/atsFirstCollectionAdmission';
-import { extractAuditCandidates, auditIndicesMissingCoverage } from '../../scripts/audit_ats_common_crawl';
+import { auditIndicesMissingCoverage } from '../../scripts/audit_ats_common_crawl';
 import { localCrawlPatternMatches } from '../../src/lib/localCommonCrawl';
 
 const samples = {
@@ -16,21 +16,14 @@ const samples = {
   flatchr: ['https://careers.flatchr.io/fr/company/example.json', 'https://careers.flatchr.io/company/example'],
 } as const;
 
-test('future platforms are harvested without creating a schedulable collector or admission path', () => {
+test('all seven harvested platforms now use controlled collection without losing their discovery patterns', () => {
   for (const platform of Object.keys(samples) as (keyof typeof samples)[]) {
-    if (['cornerstone', 'hireology', 'polymer'].includes(platform)) {
-      assert.equal(Object.hasOwn(PLATFORMS, platform), true);
-      assert.equal(isFirstCollectionPlatform(platform), true);
-      assert.equal(discoveryCandidateStatus(platform), 'pending');
-      continue;
-    }
-    assert.equal(Object.hasOwn(PLATFORMS, platform), false);
-    assert.equal(isFirstCollectionPlatform(platform), false);
-    assert.equal(discoveryCandidateStatus(platform), 'awaiting_adapter');
+    assert.equal(Object.hasOwn(PLATFORMS, platform), true);
+    assert.equal(isFirstCollectionPlatform(platform), true);
+    assert.equal(discoveryCandidateStatus(platform), 'pending');
     const [url, expected] = samples[platform];
     assert.equal(futureAtsCandidateUrl(platform, url), expected);
     assert.ok(FUTURE_ATS_DISCOVERY_PATTERNS[platform].some(pattern => localCrawlPatternMatches(pattern, url)));
-    assert.deepEqual(extractAuditCandidates(platform, [{ url }, { url }]), [{ slug: expected, normalizedSlug: expected.toLowerCase() }]);
   }
   assert.equal(discoveryCandidateStatus('greenhouse'), 'pending');
   assert.equal(ATS_DISCOVERY_PLATFORMS.greenhouse, PLATFORMS.greenhouse);

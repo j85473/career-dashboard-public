@@ -16,7 +16,8 @@ async function main() {
     INSERT INTO "Job" (id,title,company,"postedAt","updatedAt","aimFitScore","reqFitScore",status) VALUES ('preserved','Channel Manager','Example Inc',NOW(),NOW(),91,87,'interviewing');`);
   const before = await connection.query('SELECT row_to_json(j) AS row FROM "Job" j WHERE id=\'preserved\'');
   await connection.query(readFileSync('prisma/migrations/20261110180000_expanded_public_ats_admission/migration.sql', 'utf8'));
-  for (const platform of ['cornerstone', 'hireology', 'polymer']) {
+  await connection.query(readFileSync('prisma/migrations/20261110193000_additional_public_ats_admission/migration.sql', 'utf8'));
+  for (const platform of ['cornerstone', 'hireology', 'polymer', 'homerun', 'softgarden', 'dvinci', 'flatchr']) {
     await connection.query('INSERT INTO "AtsCompany" (slug,platform,"checkDay","firstCollectionState") VALUES ($1,$2,1,\'established\')', ['new', platform]);
     const board = await connection.query('SELECT "firstCollectionState" AS state FROM "AtsCompany" WHERE slug=\'new\' AND platform=$1', [platform]);
     assert.equal(board.rows[0].state, 'waiting');
@@ -28,6 +29,6 @@ async function main() {
   const existing = await connection.query('SELECT "firstCollectionState" AS state FROM "AtsCompany" WHERE slug=\'existing\' AND platform=\'cornerstone\'');
   assert.equal(existing.rows[0].state, 'established');
   assert.deepEqual((await connection.query('SELECT row_to_json(j) AS row FROM "Job" j WHERE id=\'preserved\'')).rows, before.rows);
-  console.log('All three raw-writer admission fences passed; existing board state, job lifecycle and scores were preserved.');
+  console.log('All seven raw-writer admission fences passed; existing board state, job lifecycle and scores were preserved.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => connection.end());

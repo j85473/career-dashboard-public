@@ -1,5 +1,13 @@
 /** Public tenants verified for the first adapter rollout. No read tokens are stored here. */
 export const PUBLIC_ATS_LAUNCH_BOARDS = [
+  { platform: 'homerun', slug: '013-poppodium' },
+  { platform: 'homerun', slug: 'jobs' },
+  { platform: 'softgarden', slug: 'softgarden.softgarden.io' },
+  { platform: 'softgarden', slug: 'abeking.career.softgarden.de' },
+  { platform: 'dvinci', slug: 'adstec-karriere.dvinci-hr.com' },
+  { platform: 'dvinci', slug: 'ada-karriere.dvinci-easy.com' },
+  { platform: 'flatchr', slug: 'flatchr' },
+  { platform: 'flatchr', slug: 'abe' },
   { platform: 'cornerstone', slug: 'interfor.csod.com::7::default' },
   { platform: 'cornerstone', slug: 'worldbankgroup.csod.com::1::default' },
   { platform: 'hireology', slug: 'beachchevrolet' },

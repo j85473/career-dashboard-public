@@ -1,9 +1,11 @@
+import { ADDITIONAL_PUBLIC_ATS, additionalBoardSlug } from '../lib/additionalPublicAts';
+import { FUTURE_ATS_DISCOVERY_PATTERNS } from '../lib/atsDiscoveryBacklog';
 import { browserAtsDiscoveryAdapters, isBrowserAtsPlatform, browserAtsBoardFromUrl } from '../lib/browserAtsBoards';
 import { isFirstCollectionPlatform, reserveJobScoreFeedRequest } from '../lib/atsFirstCollectionAdmission';
 import { readBoundedAtsBody, AtsFirstCollectionSizeError } from '../lib/tenantAtsBoards';
 import { SYMPHONY_DISCOVERY_PATTERNS } from '../lib/symphonyAtsBoard';
 import { resolveUkgBoardEmployer } from '../lib/publicAtsEmployer';
-import { isPublicAtsPlatform, publicAtsBoardSlugFromUrl, publicAtsBoardUrl, parsePublicAtsConfig, buildPublicAtsBoardRequest, parsePublicAtsListing, publicAtsNeedsConfig } from '../lib/publicAtsBoards';
+import { isPublicAtsPlatform, publicAtsBoardSlugFromUrl, publicAtsBoardUrl, parsePublicAtsConfig, buildPublicAtsBoardRequest, parsePublicAtsListing, publicAtsNeedsConfig, atsListingUsesXml } from '../lib/publicAtsBoards';
 export {};
 import { PrismaClient } from '../lib/prismaClient';
 
@@ -84,6 +86,7 @@ export function subdomainSlug(url: string, pattern: RegExp): string | null {
 }
 
 export const PLATFORMS = {
+  ...Object.fromEntries(ADDITIONAL_PUBLIC_ATS.map(platform => [platform, { cc_pattern: [...FUTURE_ATS_DISCOVERY_PATTERNS[platform]], extract_slug: (url: string) => additionalBoardSlug(platform, url), test_api: '', get_jobs: (_data: unknown) => [] }])) as unknown as Record<typeof ADDITIONAL_PUBLIC_ATS[number], { cc_pattern: string[]; extract_slug: (url: string) => string | null; test_api: string; get_jobs: (data: unknown) => unknown[] }>,
   cornerstone: { cc_pattern: ['*.csod.com/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'cornerstone'), test_api: '', get_jobs: (_data: unknown) => [] },
   hireology: { cc_pattern: ['careers.hireology.com/*', '*.hireology.careers/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'hireology'), test_api: '', get_jobs: (_data: unknown) => [] },
   polymer: { cc_pattern: ['jobs.polymer.co/*', 'api.polymer.co/v1/hire/organizations/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'polymer'), test_api: '', get_jobs: (_data: unknown) => [] },
@@ -450,10 +453,10 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
       if (platformKey === 'jobscore' && !await reserveJobScoreFeedRequest(prisma, config?.canonicalSlug || slug)) return { success: false, transient: true, reason: 'JobScore hourly feed interval' };
       const response = await safeExternalFetch(request.url, { ...request.init, signal: AbortSignal.timeout(15000) });
       if (!response.ok) return { success: false, transient: true, reason: `Feed HTTP ${response.status}` };
-      if (['cornerstone', 'hireology', 'polymer'].includes(platformKey) && response.url
+      if (['cornerstone', 'hireology', 'polymer', ...ADDITIONAL_PUBLIC_ATS].includes(platformKey) && response.url
         && new URL(response.url).href !== new URL(request.url).href) return { success: false, transient: true, reason: 'Career feed redirected away from its verified endpoint' };
       const body = isFirstCollectionPlatform(platformKey) ? await readBoundedAtsBody(response, maximumBytes) : null;
-      const xml = ['successfactors', 'jazzhr', 'kula'].includes(platformKey);
+      const xml = atsListingUsesXml(platformKey);
       let feed = parsePublicAtsListing(platformKey, slug, xml ? {} : body === null ? await response.json() : JSON.parse(body),
         xml ? body ?? await response.text() : null, config);
       if (platformKey === 'cornerstone' || platformKey === 'polymer') {
