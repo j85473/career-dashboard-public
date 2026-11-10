@@ -116,6 +116,25 @@ export async function firstCollectionCounts(client: Pick<Client, 'atsCompany' | 
   return { unfinished, startedInWindow };
 }
 
+/** The explicitly reviewed queue gets the next coverage turn in the shared pool.
+ * Its bounded window uses the existing hard ceiling: the publisher refills at
+ * the low watermark, so requiring another full window below it can starve forever. */
+export async function nextReviewedFirstCollectionBoard(client: Client, now = new Date(),
+  extraWhere: Prisma.AtsCompanyWhereInput = {}) {
+  const ordinary = await client.atsFirstCollectionPolicy.findUnique({ where: { id: FIRST_COLLECTION_POLICY_ID } });
+  if (!ordinary || !['pilot', 'ramp', 'capacity'].includes(ordinary.mode)) return null;
+  const reviewed = await client.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
+  const boards = reviewedFirstCollectionBoards(reviewed);
+  if (reviewed?.mode !== 'capacity' || !boards.length) return null;
+  const next = await client.atsCompany.findFirst({ where: {
+    status: 'active', acquisitionEngine: 'v2', firstCollectionState: 'ready', nextCheckDate: { lte: now },
+    AND: [{ OR: boards }, extraWhere],
+  }, orderBy: [{ jobsFound: 'asc' }, { platform: 'asc' }, { slug: 'asc' }] });
+  if (!next || await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: boards } })
+    || !(await firstCollectionHealth(client, reviewedFirstCollectionReserveJobs(reviewed), reviewed.maxResponseBytes, now, 'high')).healthy) return null;
+  return next;
+}
+
 /** Filter before the candidate limit so held boards cannot hide established work. */
 export async function firstCollectionSelectionWhere(client: Client, now = new Date()): Promise<Prisma.AtsCompanyWhereInput> {
   const established: Prisma.AtsCompanyWhereInput = { OR: [
@@ -127,14 +146,8 @@ export async function firstCollectionSelectionWhere(client: Client, now = new Da
   const reviewed = await client.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
   const reviewedBoards = reviewedFirstCollectionBoards(reviewed);
   const choices = [...(established.OR || [])];
-  if (reviewed?.mode === 'capacity' && reviewedBoards.length
-    && !await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: reviewedBoards } })
-    && (await firstCollectionHealth(client, reviewedFirstCollectionReserveJobs(reviewed), reviewed.maxResponseBytes, now)).healthy) {
-    const next = await client.atsCompany.findFirst({ where: {
-      status: 'active', firstCollectionState: 'ready', nextCheckDate: { lte: now }, OR: reviewedBoards,
-    }, orderBy: [{ jobsFound: 'asc' }, { platform: 'asc' }, { slug: 'asc' }], select: { platform: true, slug: true } });
-    if (next) choices.push({ ...next, firstCollectionState: 'ready' });
-  }
+  const nextReviewed = await nextReviewedFirstCollectionBoard(client, now);
+  if (nextReviewed) choices.push({ platform: nextReviewed.platform, slug: nextReviewed.slug, firstCollectionState: 'ready' });
   const counts = await firstCollectionCounts(client, now, policy.mode === 'capacity');
   if (!firstCollectionAllowance({ ...policy, ...counts, now })) return { OR: choices };
   const pilotBoards = Array.isArray(policy.pilotBoards) ? policy.pilotBoards.filter((x): x is string => typeof x === 'string') : [];
@@ -146,7 +159,7 @@ export async function firstCollectionSelectionWhere(client: Client, now = new Da
   }] };
 }
 
-export async function firstCollectionHealth(client: Pick<Client, '$queryRaw'>, reserveJobs = 250, reserveBytes = 5242880, now = new Date()) {
+export async function firstCollectionHealth(client: Pick<Client, '$queryRaw'>, reserveJobs = 250, reserveBytes = 5242880, now = new Date(), persistenceWatermark: 'low' | 'high' = 'low') {
   const [snapshot] = await client.$queryRaw<Array<{ items: bigint; bytes: bigint; persistence: bigint; totalPersistence: bigint; gate: string }>>(Prisma.sql`
     SELECT
       COALESCE((SELECT SUM(GREATEST("rawObservationCount"-"compactedOccurrenceCount"-"publishedItemCount",0))
@@ -165,7 +178,9 @@ export async function firstCollectionHealth(client: Pick<Client, '$queryRaw'>, r
   const limit = (value: string | undefined, fallback: number) => value && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : fallback;
   const itemLimit = Math.min(limit(process.env.ATS_LEDGER_STAGING_ITEM_LOW_WATERMARK, 50000), limit(process.env.ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK, 100000));
   const byteLimit = Math.min(limit(process.env.ATS_LEDGER_STAGING_BYTE_LOW_WATERMARK, 750000000), limit(process.env.ATS_LEDGER_STAGING_BYTE_HIGH_WATERMARK, 1500000000));
-  const persistenceLimit = limit(process.env.ATS_ACQUISITION_JOB_LOW_WATERMARK, 1000);
+  const persistenceLimit = persistenceWatermark === 'high'
+    ? limit(process.env.ATS_ACQUISITION_JOB_HIGH_WATERMARK, 2000)
+    : limit(process.env.ATS_ACQUISITION_JOB_LOW_WATERMARK, 1000);
   // Reserve every bounded page, not just the first response, for a paged catalogue.
   const catalogueByteReserve = reserveBytes * Math.max(1, Math.ceil(reserveJobs / 20));
   const healthy = storageAllows('collection') && !!snapshot && snapshot.gate === 'open'
@@ -198,7 +213,7 @@ export async function reserveFirstCollection(client: Client, board: { slug: stri
     if (!['pilot', 'ramp', 'capacity'].includes(policy.mode) || exact.mode !== 'capacity' || !isReviewedFirstCollection(exact, board)
       || current.jobsFound > exact.maxCatalogueJobs
       || await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: reviewedFirstCollectionBoards(exact) } })) return false;
-    const health = await firstCollectionHealth(client, reviewedFirstCollectionReserveJobs(exact), exact.maxResponseBytes, now);
+    const health = await firstCollectionHealth(client, reviewedFirstCollectionReserveJobs(exact), exact.maxResponseBytes, now, 'high');
     if (!health.healthy) return false;
     const reserved = await client.atsCompany.updateMany({
       where: { slug: board.slug, platform: board.platform, status: 'active', firstCollectionState: 'ready' },

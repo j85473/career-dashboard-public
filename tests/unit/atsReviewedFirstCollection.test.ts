@@ -4,6 +4,8 @@ import type { AtsFirstCollectionPolicy } from '../../src/lib/prismaClient';
 import { REVIEWED_FIRST_COLLECTION_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionBoards,
   reviewedFirstCollectionReserveJobs } from '../../src/lib/atsReviewedFirstCollection';
 import { firstCollectionBodyLimits, reserveFirstCollection } from '../../src/lib/atsFirstCollectionAdmission';
+import { selectNextAtsV2CoverageBoard } from '../../src/lib/atsAcquisitionDispatcherV2';
+import { prisma } from '../../src/lib/prisma';
 
 const board = { platform: 'clearcompany', slug: '11111111-1111-1111-1111-111111111111' };
 const ordinary = { id: 'new-providers', mode: 'capacity', maxCatalogueJobs: 250, maxResponseBytes: 5242880 } as AtsFirstCollectionPolicy;
@@ -54,13 +56,30 @@ test('reviewed reservation stops for every unfinished reviewed board, pressure, 
     },
   } as unknown as Parameters<typeof reserveFirstCollection>[0];
   assert.equal(await reserveFirstCollection(tx, board, 'retry-held-neighbor'), false);
-  unfinished = 0; pressure = 750;
+  unfinished = 0; pressure = 1750;
   assert.equal(await reserveFirstCollection(tx, board, 'pressure'), false);
   pressure = 0; globalMode = 'held';
   assert.equal(await reserveFirstCollection(tx, board, 'global-hold'), false);
   globalMode = 'capacity'; reviewedMode = 'held';
   assert.equal(await reserveFirstCollection(tx, board, 'review-hold'), false);
-  reviewedMode = 'capacity';
+  reviewedMode = 'capacity'; pressure = 1500;
   assert.equal(await reserveFirstCollection(tx, board, 'allowed'), true);
   assert.equal(reservations, 1);
+});
+
+test('the reviewed queue receives the next coverage turn before ordinary rotation lookup', async () => {
+  const original = { query: prisma.$queryRaw, policy: prisma.atsFirstCollectionPolicy.findUnique,
+    first: prisma.atsCompany.findFirst, count: prisma.atsCompany.count, many: prisma.atsCompany.findMany };
+  const ready = { ...board, status: 'active', jobsFound: 251, firstCollectionState: 'ready', acquisitionEngine: 'v2' };
+  prisma.$queryRaw = (async () => [{ items: BigInt(0), bytes: BigInt(0), persistence: BigInt(1500), totalPersistence: BigInt(1500), gate: 'open' }]) as typeof prisma.$queryRaw;
+  prisma.atsFirstCollectionPolicy.findUnique = (async ({ where }: { where: { id: string } }) =>
+    where.id === REVIEWED_FIRST_COLLECTION_POLICY_ID ? reviewed : ordinary) as unknown as typeof prisma.atsFirstCollectionPolicy.findUnique;
+  prisma.atsCompany.findFirst = (async () => ready) as typeof prisma.atsCompany.findFirst;
+  prisma.atsCompany.count = (async () => 0) as typeof prisma.atsCompany.count;
+  prisma.atsCompany.findMany = (async () => { throw new Error('ordinary lookup must follow the reviewed turn'); }) as typeof prisma.atsCompany.findMany;
+  try { assert.deepEqual(await selectNextAtsV2CoverageBoard(), ready); }
+  finally {
+    prisma.$queryRaw = original.query; prisma.atsFirstCollectionPolicy.findUnique = original.policy;
+    prisma.atsCompany.findFirst = original.first; prisma.atsCompany.count = original.count; prisma.atsCompany.findMany = original.many;
+  }
 });

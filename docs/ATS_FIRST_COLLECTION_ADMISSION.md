@@ -127,8 +127,12 @@ holds, listing completion and persistence errors. Only successful zero-error
 persistence permits the next reviewed board. Normal established-board work can
 continue in the other existing worker slots.
 
-The initial capacity check reserves the usual bounded 250-listing window instead
-of the entire oversized catalogue. Existing page, segment, publication and
+The reviewed queue gets the next available coverage turn within the existing
+worker pool. Its initial capacity check reserves the usual bounded 250-listing
+window below the existing overall persistence high watermark, instead of waiting
+below the low watermark that triggers publication refill. Ordinary admissions
+retain their low-watermark check. It reserves a window instead of the entire
+oversized catalogue. Existing page, segment, publication and
 persistence backpressure bounds the remaining resumable work. Otherwise a
 catalogue larger than the 1,000-job persistence window could never start. Global
 operator holds, the shared runtime gate, storage pressure, provider pacing,

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { Client } from 'pg';
 import { PrismaClient } from '../../src/lib/prismaClient';
-import { firstCollectionSelectionWhere, reconcileFirstCollectionCompletion, reserveFirstCollection,
+import { firstCollectionSelectionWhere, firstCollectionHealth, reconcileFirstCollectionCompletion, reserveFirstCollection,
   firstCollectionBodyLimits } from '../../src/lib/atsFirstCollectionAdmission';
 import { REVIEWED_FIRST_COLLECTION_POLICY_ID } from '../../src/lib/atsReviewedFirstCollection';
 
@@ -29,7 +29,7 @@ async function main() {
     maxUnfinished: 1, maxCatalogueJobs: 5000, pilotBoards: boards.map(b => `${b.platform}::${b.slug}`) } });
   await db.atsAcquisitionRuntimeGate.create({ data: { id: 'global', admissionState: 'open' } });
   for (const board of boards) {
-    await db.atsCompany.create({ data: { ...board, checkDay: 1 } });
+    await db.atsCompany.create({ data: { ...board, checkDay: 1, acquisitionEngine: 'v2' } });
     await db.atsCompany.update({ where: { slug_platform: { platform: board.platform, slug: board.slug } }, data: { firstCollectionState: 'ready' } });
   }
   const unreviewed = { platform: 'clearcompany', slug: '22222222-2222-2222-2222-222222222222' };
@@ -44,6 +44,13 @@ async function main() {
     if (!await reserveFirstCollection(tx, board, id)) return null;
     return tx.atsIngestionBatch.create({ data: { id, platform: board.platform, slug: board.slug, writerMode: 'v2' } });
   }, { timeout: 30_000 });
+  const backlog = { platform: 'greenhouse', slug: 'ordinary-publication-backlog' };
+  await db.atsCompany.create({ data: { ...backlog, checkDay: 1 } });
+  await db.atsIngestionBatch.create({ data: { id: 'ordinary-backlog', ...backlog, writerMode: 'legacy', status: 'queued', jobCount: 1750 } });
+  assert.equal(await start(boards[0], 'high-watermark-full'), null, 'the reviewed window must fit below the existing hard ceiling');
+  await db.atsIngestionBatch.update({ where: { id: 'ordinary-backlog' }, data: { jobCount: 1500 } });
+  assert.equal((await firstCollectionHealth(db)).healthy, false, 'ordinary starts retain the low-watermark requirement');
+  assert.equal((await firstCollectionHealth(db, 250, 5242880, new Date(), 'high')).healthy, true, 'the reviewed window fits without raising the hard ceiling');
   const results = await Promise.all(boards.map((board, i) => start(board, `reviewed-${i}`)));
   assert.equal(results.filter(Boolean).length, 1, 'simultaneous hosts share exactly one reviewed reservation');
   const first = results.find(Boolean)!;

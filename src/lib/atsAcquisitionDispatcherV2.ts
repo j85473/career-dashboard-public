@@ -1,7 +1,7 @@
 import { atsRotationCohortWhere } from './atsRotationCohort';
 import { storageAllows } from './storagePressure';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
-import { firstCollectionSelectionWhere } from './atsFirstCollectionAdmission';
+import { firstCollectionSelectionWhere, nextReviewedFirstCollectionBoard } from './atsFirstCollectionAdmission';
 import { Prisma, type AtsCompany } from './prismaClient';
 
 import {
@@ -388,6 +388,8 @@ export function orderAtsV2ContinuationCandidates<T extends AtsV2ContinuationCand
 
 export async function selectNextAtsV2CoverageBoard(now = new Date(), cohortOnly = false): Promise<AtsBoardForAcquisition | null> {
   const today = rotationDayFor(now);
+  const reviewed = await nextReviewedFirstCollectionBoard(prisma, now, cohortOnly ? atsRotationCohortWhere(today) : {});
+  if (reviewed) return reviewed;
   const sizeAware = await atsDistributedArchitectureActive();
   const tiers: Prisma.AtsCompanyWhereInput[] = [
     {
