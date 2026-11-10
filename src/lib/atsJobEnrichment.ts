@@ -114,7 +114,7 @@ type DetailMutableField = keyof EnrichmentFields | 'title';
  * false even if the request itself still worked.
  */
 const DETAIL_MUTABLE_FIELDS: Readonly<Record<string, ReadonlySet<DetailMutableField>>> = {
-  cornerstone: new Set(['company', 'location']),
+  cornerstone: new Set(['description', 'company', 'location']),
   homerun: new Set(['location', 'compensation']),
   softgarden: new Set(['description', 'company', 'location', 'compensation']),
   polymer: new Set(['description', 'location', 'compensation']),
@@ -472,7 +472,8 @@ function preparedDetailPlan(input: {
       const landed = expandedPostingIdentity(response.url || url);
       if (landed?.platform !== platform || landed.slug !== slug || landed.id !== identity.id) throw new AtsDetailResponseError('Cornerstone detail changed posting identity');
       const detail = parseCornerstonePosting(await response.text(), url, stringValue(job.title));
-      return { ...fields, company: stringValue(detail.company), location: stringValue(detail.location) || fields.location };
+      return { ...fields, company: stringValue(detail.company), location: stringValue(detail.location) || fields.location,
+        description: stringValue(detail.description) };
     } }, reason: '', fields };
   }
 

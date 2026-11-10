@@ -209,6 +209,21 @@ export function expandedPostingIdentity(input: string): { platform: ExpandedPubl
   return null;
 }
 
+/** Country-only structured addresses can omit the posting's authored location header. */
+function cornerstoneDescriptionLocation(description: string): string | null {
+  const $ = load(description);
+  $('script, style').remove();
+  $('br').replaceWith('\n');
+  $('p, div, li, tr, h1, h2, h3, h4').append('\n');
+  const lines = $.root().text().split(/\r?\n/).map(line => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const locations = new Set<string>();
+  for (const line of lines.slice(0, 30)) {
+    const candidate = /^(?:job |work )?locations?\s*:\s*([^:]{1,160})$/i.exec(line)?.[1]?.trim();
+    if (candidate && !/https?:\/\/|^(?:unknown|not specified|n\/a)$/i.test(candidate)) locations.add(candidate);
+  }
+  return locations.size === 1 ? [...locations][0] : null;
+}
+
 export function parseCornerstonePosting(html: string, requested: string, expectedTitle?: string): Row {
   const identity = expandedPostingIdentity(requested);
   if (!identity || identity.platform !== 'cornerstone') throw Error('Invalid Cornerstone posting URL');
@@ -224,10 +239,25 @@ export function parseCornerstonePosting(html: string, requested: string, expecte
   const description = value(job.Description || job.description);
   if (!company || !title || !description || expectedTitle && title !== expectedTitle) throw Error('Cornerstone exact posting metadata mismatch');
   const places = rows(Array.isArray(job.jobLocation) ? job.jobLocation : job.jobLocation ? [job.jobLocation] : []);
-  const postingLocation = places.map(place => {
-    const address = object(place.Address || place.address || {}), country = address.addressCountry;
-    return [address.addressLocality, address.addressRegion, typeof country === 'string' ? country : country ? object(country).Name || object(country).name : ''].map(value).filter(Boolean).join(', ');
+  const addresses = places.map(place => object(place.Address || place.address || {}));
+  const countryOf = (address: Row): string => {
+    const country = address.addressCountry;
+    return value(typeof country === 'string' ? country : country ? object(country).Name || object(country).name : '');
+  };
+  let postingLocation = addresses.map(address => {
+    const country = countryOf(address);
+    return [address.addressLocality, address.addressRegion, country].map(value).filter(Boolean).join(', ');
   }).filter(Boolean).join('; ');
+  if (!addresses.some(address => value(address.addressLocality) || value(address.addressRegion))) {
+    const authoredLocation = cornerstoneDescriptionLocation(description);
+    if (authoredLocation) {
+      const countries = [...new Set(addresses.map(countryOf).filter(Boolean))];
+      const country = countries.length === 1 ? countries[0] : '';
+      const alreadyNamed = country && authoredLocation.split(/[,;()]/).some(part =>
+        [country.toLowerCase(), countryName(country).toLowerCase()].includes(part.trim().toLowerCase()));
+      postingLocation = country && !alreadyNamed ? `${authoredLocation}, ${country}` : authoredLocation;
+    }
+  }
   return { company, title, description, location: postingLocation };
 }
 

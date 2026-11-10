@@ -71,6 +71,25 @@ test('Cornerstone never promotes a sampled employer to a board or later page', a
   assert.throws(() => requirePublicAtsEmployer('cornerstone', 'Unknown Company'), /verified employer/);
 });
 
+test('Cornerstone recovers an explicit location header when structured evidence gives only a country', () => {
+  const url = 'https://example.csod.com/ux/ats/careersite/1/home/requisition/123';
+  const detail = (description: string, address: Record<string, unknown> = { addressCountry: { Name: 'US' } }) =>
+    page() + `<script type="application/ld+json">${JSON.stringify({ '@type': 'JobPosting', Title: 'Channel Manager',
+      Description: description, HiringOrganization: { Name: 'Example Inc' }, jobLocation: [{ Address: address }] })}</script>`;
+  const full = '<p>We operate in India, the Netherlands and Hungary.</p><p><span><strong>Location</strong>: Atlanta<br>'
+    + '<strong>Reports to (Position)</strong>: National Sales Head (Americas)<br><p>Support distributors across North America.</p>';
+  assert.equal(parseCornerstonePosting(detail(full), url).location, 'Atlanta, US');
+  assert.equal(parseCornerstonePosting(detail(full), url).description, full);
+  assert.equal(parseCornerstonePosting(detail(full, { addressLocality: 'Austin', addressRegion: 'TX', addressCountry: 'US' }), url).location, 'Austin, TX, US');
+  assert.equal(parseCornerstonePosting(detail('<p>Location: Atlanta, US</p>'), url).location, 'Atlanta, US');
+  assert.equal(parseCornerstonePosting(detail('<p>Location: Atlanta, United States</p>'), url).location, 'Atlanta, United States');
+  assert.equal(parseCornerstonePosting(detail('<p>Location: Atlanta</p>', {}), url).location, 'Atlanta');
+  for (const text of ['<p>Visit our Atlanta office and US distributors.</p>',
+    '<p>Location: Atlanta</p><p>Location: Austin</p>', '<p>Location: Not specified</p>']) {
+    assert.equal(parseCornerstonePosting(detail(text), url).location, 'US');
+  }
+});
+
 test('Cornerstone binds each retained posting to its own employer and retries unverifiable details', async () => {
   const raw = parseExpandedListing('cornerstone', slug, fixtures.cornerstone).jobs[0];
   const deps = {
@@ -84,6 +103,15 @@ test('Cornerstone binds each retained posting to its own employer and retries un
   };
   const first = await enrichAtsListingJob({ platform: 'cornerstone', slug, job: raw, requestTimeoutMs: 1000 }, deps);
   assert.equal(readAtsJobEnrichmentMarker(first)?.company, 'Example Inc');
+  assert.equal(readAtsJobEnrichmentMarker(first)?.description, '<p>Full role description.</p>');
+  const header = '<p><strong>Location</strong>: Atlanta<br>Reports to: National Sales Head</p><p>Full role description.</p>';
+  const fullDetail = posting().replace(JSON.stringify('<p>Full role description.</p>'), JSON.stringify(header))
+    .replace('"addressLocality":"Austin","addressRegion":"TX",', '');
+  const improved = await enrichAtsListingJob({ platform: 'cornerstone', slug, job: { ...raw, location: 'US' }, requestTimeoutMs: 1000 }, {
+    ...deps, safeExternalFetch: async () => new Response(fullDetail),
+  });
+  assert.equal(readAtsJobEnrichmentMarker(improved)?.location, 'Atlanta, US');
+  assert.equal(readAtsJobEnrichmentMarker(improved)?.description, header, 'keep the header omitted from the listing feed');
   const second = { ...raw, id: `${slug}::124`, publicAtsPostingId: '124', url: String(raw.url).replace('/123', '/124'), company: 'Example Inc' };
   const before = structuredClone(second);
   const result = await enrichAtsListingJob({ platform: 'cornerstone', slug, job: second, requestTimeoutMs: 1000 }, {
