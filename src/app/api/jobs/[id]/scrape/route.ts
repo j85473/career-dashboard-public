@@ -76,7 +76,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Unsafe redirect target' }, { status: 400 });
   }
   const cleanedUrl = cleanUrl(resolvedUrl);
-  const detectedAts = identifyAts({ url: cleanedUrl });
+  let detectedAts = identifyAts({ url: cleanedUrl });
 
   let existingJob = await prisma.job.findUnique({
     where: { id },
@@ -111,6 +111,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     postingVerificationError = 'The careers API did not return this opening’s complete duties and qualifications. The saved description and scores were kept.';
   }
   const directPostingResult = await completePostingMetadata(directAtsResult, () => scrapeJobPostingMetadata(cleanedUrl));
+  // Employer-branded domains reveal their provider in the fetched page,
+  // rather than the URL. Use that evidence in reconciliation and both refresh choices.
+  if (directPostingResult?.ats && directPostingResult.ats !== 'Unknown') detectedAts = directPostingResult.ats;
   if (ukgReadyPage(cleanedUrl) && (!directPostingResult?.title || !directPostingResult.company
     || looksLikeCareersListingPage(directPostingResult.text)
     || !assessJobDescriptionQuality(directPostingResult.text, { structuredSource: true }).scorable)) {

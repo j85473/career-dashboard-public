@@ -3,6 +3,7 @@ import type { Prisma } from '../../../../lib/prismaClient';
 import { prisma } from '@/lib/prisma';
 import { scrapeAtsApi } from '@/lib/atsApi';
 import { scoreJobs } from '@/lib/jobScoring';
+import { cleanJobDescriptionText } from '@/lib/jobDescriptionText';
 import {
   cleanHtmlText,
   fetchGlassdoorJobDescription,
@@ -325,7 +326,7 @@ export async function POST(request: Request) {
             }
 
             if (markdown) {
-              markdown = cleanHtmlText(markdown);
+              markdown = cleanHtmlText(cleanJobDescriptionText(markdown));
               markdown = markdown.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
             }
             attempt.body = markdown;

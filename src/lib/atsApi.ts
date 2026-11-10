@@ -35,6 +35,7 @@ import { browserAtsBoardFromUrl } from './browserAtsBoards';
 import { fetchRipplingPosting, ripplingPostingIdentity } from './ripplingPosting';
 import { expandedPostingIdentity } from './expandedPublicAts';
 import { fetchExpandedAtsPosting } from './expandedAtsPosting';
+import { isSuccessFactorsCareerSite, parseSuccessFactorsCareerSitePosting } from './successFactorsCareerSite';
 
 function isDomain(hostname: string, domain: string) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
@@ -921,7 +922,7 @@ async function scrapeJsonLdJobPosting(url: string): Promise<AtsScrapeResult | nu
     const detail = await scrapeEightfoldPostingDetail(url, html);
     if (detail && assessJobDescriptionQuality(detail.text, { structuredSource: true }).scorable) return detail;
   }
-  return parseJsonLdPostingHtml(html, url);
+  return parseSuccessFactorsCareerSitePosting(html, url) || parseJsonLdPostingHtml(html, url);
 }
 
 /** Prefer the page's formatted copy only when it contains the same posting text. */
@@ -958,7 +959,7 @@ export function parseJsonLdPostingHtml(html: string, url: string): AtsScrapeResu
     ...eightfoldPostingPageMetadata(url, html),
     ...(eightfoldPostingPageConfig(url, html)
       ? { ats: 'Eightfold', platform: 'eightfold', ...(eightfoldBoardSlugFromUrl(url) ? { atsSlug: eightfoldBoardSlugFromUrl(url)! } : {}) }
-      : { ats: identifyAts({ url }) }),
+      : { ats: isSuccessFactorsCareerSite(html) ? 'SuccessFactors' : identifyAts({ url }) }),
   };
 }
 

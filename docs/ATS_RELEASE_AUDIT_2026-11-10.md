@@ -7,7 +7,9 @@ At audit start, remote `main` and M70 both pointed to
 [workflow 42882086857](https://github.com/j85473/career-dashboard/actions/runs/42882086857).
 No additional November 10 commits existed outside that remote history. Cancelled
 intermediate workflows did not leave their commits absent from the final release.
-The original local checkout's older, uncommitted edits were preserved separately.
+The original checkout also contained uncommitted SuccessFactors and description
+cleanup edits from the morning of November 10. These were reviewed and carried
+forward into the final candidate without including unrelated `.tasks` material.
 
 ## Corrections
 
@@ -26,10 +28,16 @@ The original local checkout's older, uncommitted edits were preserved separately
   archives also existed; they are distinct from the failed nightly paired backup.
 - Provider documentation now reflects that all seven adapters are connected,
   while retaining validation and controlled first-collection admission.
+- The morning edits recognize employer-branded SuccessFactors configuration and
+  exact posting microdata, retain that provider on a link refresh, and strip
+  reader transport/navigation/decorative images from verified description
+  envelopes. Requirements, meaningful image alt text, accommodation links and
+  closure warnings are retained. Historical presentation changes only the
+  returned description; stored descriptions, scores and lifecycle remain intact.
 
 ## Validation before release
 
-- Node 24.19.0; full suite: 3,150 passed, 10 skipped, zero failed.
+- Node 24.19.0; final combined suite: 3,161 passed, 10 skipped, zero failed.
 - Production Next.js build passed using an unusable database address.
 - Real temporary PostgreSQL tests passed the admission triggers for all seven
   providers, concurrent single-slot reviewed admission, raw-writer refusal,
@@ -42,6 +50,9 @@ The original local checkout's older, uncommitted edits were preserved separately
 - New regression cases exercise two employers on the same Cornerstone board,
   stale sampled configuration, wrong posting details, title triage, and actual
   exclusive backup-lock contention and timeout.
+- The morning edits' 11 regression cases passed, including an actual refresh
+  route invocation proving that provider detection preserves saved scores and
+  application lifecycle when the operator chooses a link-only refresh.
 
 ## Production observations and limits
 

@@ -2,7 +2,7 @@ import { hasIncompleteLocations, INCOMPLETE_LOCATION, US_STATE_LOCATION_PATTERN 
 import type { AtsScrapeResult } from '@/lib/atsApi';
 import { assessJobDescriptionQuality } from '@/lib/jobDescriptionQuality';
 import { reviewedTalemetryEmployer } from './talemetryEmployer';
-import { cleanJobDescriptionPage } from './jobDescriptionCleanup';
+import { cleanJobDescriptionText } from './jobDescriptionText';
 
 export type PostingMetadata = Pick<AtsScrapeResult, 'title' | 'company' | 'location'>;
 
@@ -73,7 +73,7 @@ export function postingRefreshDescription(input: {
   preserveScores: boolean;
   metadata: PostingMetadata;
 }): { description: string; verified: boolean } {
-  const description = cleanJobDescriptionPage(input.description);
+  const description = cleanJobDescriptionText(input.description);
   const verified = assessJobDescriptionQuality(description, { structuredSource: input.structuredSource }).scorable;
   if (input.preserveScores && !verified) {
     if (!input.metadata.title && !input.metadata.company && !input.metadata.location) {
