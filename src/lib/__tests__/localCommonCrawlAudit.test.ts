@@ -11,14 +11,14 @@ const pattern = 'job-boards.greenhouse.io/*';
 const config = localCrawlConfig();
 const url = (slug: string) => ({ url: `https://job-boards.greenhouse.io/${slug}/posting` });
 
-function harness(blockCount = 1) {
+function harness(blockCount = 1, discoveryPattern = { platform: 'greenhouse', pattern }) {
   const plan: LocalCrawlPlan = { version: 1, indexId, manifestSha256: 'a'.repeat(64), directoryBytes: 100,
-    patterns: [{ platform: 'greenhouse', pattern }], compressedBytes: 100 * blockCount,
+    patterns: [discoveryPattern], compressedBytes: 100 * blockCount,
     blocks: Array.from({ length: blockCount }, (_, i) => ({ key: `io,greenhouse)/${i}`, endKey: null, shard: 'cdx-00000.gz', offset: i * 100, length: 100, patterns: [0] })) };
   let scan: AtsDiscoveryLocalScan = { runId: 'run', indexId, planHash: localCrawlPlanHash(plan), plan: JSON.parse(JSON.stringify(plan)),
     stats: [{ blocksRead: 0, recordsRead: 0, candidatesQueued: 0 }], nextBlock: 0, status: 'running', createdAt: new Date(0), updatedAt: new Date(0), completedAt: null };
   let candidates = new Map<string, Record<string, unknown>>();
-  let receipts = new Map<string, unknown>(); let total = 0;
+  let receipts = new Map<string, unknown>(); let total = 0; let firstCollectionWrites = 0;
   let checkpoint = { page: 7, indexId: 'CC-MAIN-2026-34-index', athenaExecutionId: 'paid-existing', athenaNextToken: 'saved-page', completedThrough: null as string | null };
   const controls = { failRunWrite: false, failReceipt: false, failDelete: false };
   const removed: string[] = []; const read: number[] = [];
@@ -36,7 +36,7 @@ function harness(blockCount = 1) {
       for (const row of data) if (!candidates.has(String(row.slug))) { candidates.set(String(row.slug), row); count++; }
       return { count };
     } },
-    atsFirstCollectionCandidate: { createMany: async () => ({ count: 0 }) },
+    atsFirstCollectionCandidate: { createMany: async () => { firstCollectionWrites++; return { count: 0 }; } },
     atsDiscoveryAuditRun: { update: async ({ data }: { data: { candidatesQueued?: { increment: number } } }) => {
       if (controls.failRunWrite) throw new Error('database write failed');
       total += data.candidatesQueued?.increment || 0;
@@ -64,10 +64,23 @@ function harness(blockCount = 1) {
     space: async () => {}, wait: async () => {},
   };
   return { client, dependencies, controls, removed, read, scan: () => structuredClone(scan), candidates: () => [...candidates.values()],
-    receipts: () => [...receipts.values()], total: () => total, checkpoint: () => checkpoint,
+    receipts: () => [...receipts.values()], total: () => total, checkpoint: () => checkpoint, firstCollectionWrites: () => firstCollectionWrites,
     consume: () => consumeLocalCrawlScan(client, structuredClone(scan), config, async () => {}, dependencies),
     addReceipt: (value: unknown) => receipts.set(pattern, value) };
 }
+
+test('future-source blocks atomically retain candidates without requesting collection admission', async () => {
+  const h = harness(1, { platform: 'cornerstone', pattern: '*.csod.com/*' });
+  const sourceUrl = 'https://interfor.csod.com/ux/ats/careersite/7/home/requisition/123';
+  await saveLocalCrawlBlock(h.client, h.scan(), [{ url: sourceUrl }, { url: sourceUrl }]);
+  assert.equal(h.scan().nextBlock, 1);
+  assert.equal(h.total(), 1);
+  assert.equal(h.firstCollectionWrites(), 0);
+  assert.deepEqual(h.candidates(), [{ runId: 'run', platform: 'cornerstone',
+    slug: 'https://interfor.csod.com/ux/ats/careersite/7/home',
+    normalizedSlug: 'https://interfor.csod.com/ux/ats/careersite/7/home',
+    sourceUrl, sourceIndexId: indexId, status: 'awaiting_adapter' }]);
+});
 
 test('a failed database save rolls back candidates and cursor and cannot delete its block', async () => {
   const h = harness(); h.controls.failRunWrite = true;

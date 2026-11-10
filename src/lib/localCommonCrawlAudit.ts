@@ -1,5 +1,5 @@
 import type { AtsDiscoveryLocalScan, Prisma, PrismaClient } from './prismaClient';
-import { PLATFORMS } from '../scripts/discoverATS';
+import { ATS_DISCOVERY_PLATFORMS as PLATFORMS, discoveryCandidateStatus } from './atsDiscoveryPlatforms';
 import { isFirstCollectionPlatform } from './atsFirstCollectionAdmission';
 import {
   downloadLocalCrawlDirectory, localCrawlBlockFile, localCrawlDirectoryFile, localCrawlPatternMatches,
@@ -63,7 +63,7 @@ export async function saveLocalCrawlBlock(client: PrismaClient, scan: AtsDiscove
       for (let offset = 0; offset < candidates.length; offset += 1000) {
         const chunk = candidates.slice(offset, offset + 1000);
         const result = await tx.atsDiscoveryAuditCandidate.createMany({
-          data: chunk.map(candidate => ({ runId: scan.runId, platform, ...candidate })), skipDuplicates: true,
+          data: chunk.map(candidate => ({ runId: scan.runId, platform, ...candidate, status: discoveryCandidateStatus(platform) })), skipDuplicates: true,
         });
         inserted += result.count;
         if (isFirstCollectionPlatform(platform)) await tx.atsFirstCollectionCandidate.createMany({

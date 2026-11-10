@@ -1,11 +1,11 @@
 import { isBrowserAtsPlatform } from '../src/lib/browserAtsBoards';
 import { isFirstCollectionPlatform } from '../src/lib/atsFirstCollectionAdmission';
+import { ATS_DISCOVERY_PLATFORMS as PLATFORMS, discoveryCandidateStatus, isDiscoveryOnlyAtsPlatform } from '../src/lib/atsDiscoveryPlatforms';
 import { randomUUID } from 'node:crypto';
 import { isPublicAtsPlatform } from '../src/lib/publicAtsBoards';
 import { PrismaClient, type AtsDiscoveryAuditRun, type Prisma } from '../src/lib/prismaClient';
 
 import {
-  PLATFORMS,
   fetchCommonCrawl,
   getIndices,
   patternsFor,
@@ -38,7 +38,7 @@ const athenaConfig = athenaDiscoveryConfig();
 const athenaReader = athenaConfig ? new AthenaCommonCrawlReader(athenaConfig) : null;
 
 type PlatformKey = keyof typeof PLATFORMS;
-type CandidateStatus = 'active' | 'existing' | 'parked' | 'retired' | 'retry' | 'unresolved' | 'discovered_waiting';
+type CandidateStatus = 'active' | 'existing' | 'parked' | 'retired' | 'retry' | 'unresolved' | 'discovered_waiting' | 'awaiting_adapter';
 
 type AthenaRead =
   | { kind: 'submitted'; retryAt: Date }
@@ -193,7 +193,7 @@ async function insertCandidates(
   for (let offset = 0; offset < candidates.length; offset += CANDIDATE_INSERT_CHUNK) {
     const chunk = candidates.slice(offset, offset + CANDIDATE_INSERT_CHUNK);
     const result = await client.atsDiscoveryAuditCandidate.createMany({
-      data: chunk.map((candidate) => ({ runId, platform, ...candidate })),
+      data: chunk.map((candidate) => ({ runId, platform, ...candidate, status: discoveryCandidateStatus(platform) })),
       skipDuplicates: true,
     });
     if (isFirstCollectionPlatform(platform)) await client.atsFirstCollectionCandidate.createMany({
@@ -211,7 +211,7 @@ async function updateCandidateOutcome(
   status: Exclude<CandidateStatus, 'retry'>,
   lastError: string | null,
 ): Promise<void> {
-  const runCounter = status === 'discovered_waiting' ? null : status === 'active'
+  const runCounter = status === 'discovered_waiting' || status === 'awaiting_adapter' ? null : status === 'active'
     ? 'boardsCreated'
     : status === 'existing'
       ? 'existingBoards'
@@ -294,6 +294,10 @@ async function processCandidate(candidate: {
   attempts: number;
 }): Promise<void> {
   const platform = candidate.platform as PlatformKey;
+  if (isDiscoveryOnlyAtsPlatform(platform)) {
+    await updateCandidateOutcome(candidate.runId, platform, candidate.slug, 'awaiting_adapter', null);
+    return;
+  }
   const existing = await existingCandidateOutcome(platform, candidate.slug);
   if (existing) {
     await updateCandidateOutcome(candidate.runId, platform, candidate.slug, existing, null);
@@ -304,7 +308,7 @@ async function processCandidate(candidate: {
     await updateCandidateOutcome(candidate.runId, platform, candidate.slug, 'discovered_waiting', null);
     return;
   }
-  const result = await validateSlug(platform, candidate.slug);
+  const result = await validateSlug(platform as Parameters<typeof validateSlug>[0], candidate.slug);
   if (result.transient) {
     const attempts = candidate.attempts + 1;
     console.log(`[Audit] ${platform}/${candidate.slug} is temporarily unavailable (${result.reason}); attempt ${attempts}/${MAX_TRANSIENT_ATTEMPTS}.`);
