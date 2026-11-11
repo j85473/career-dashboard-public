@@ -9,7 +9,7 @@ import { admittedClearCompanySlug } from './clearcompanyBoard';
 import { FIRST_COLLECTION_POLICY_ID, FIRST_COLLECTION_HEALTH_WINDOW_MS, FIRST_COLLECTION_PLATFORMS,
   firstCollectionHealth, firstCollectionAllowance, firstCollectionCounts, reconcileFirstCollectionCompletion } from './atsFirstCollectionAdmission';
 import { catalogueMissingFirstCollectionCandidates } from './atsFirstCollectionAdmission';
-import { REVIEWED_FIRST_COLLECTION_POLICY_ID, reviewedProviderBacklogPlatforms, reviewedFirstCollectionWhere } from './atsReviewedFirstCollection';
+import { PROVIDER_BACKLOG_POLICY_ID, reviewedProviderBacklogPlatforms, reviewedFirstCollectionWhere } from './atsReviewedFirstCollection';
 
 export type FirstCollectionValidation = { success: boolean; jobsFound?: number; reason?: string; sizeReview?: boolean; canonicalSlug?: string };
 export function nextFirstCollectionHealthySince(input: {
@@ -49,7 +49,7 @@ export async function tickFirstCollections(validate: (platform: string, slug: st
     } });
     // Capacity mode keeps multiple validated feeds available to the shared workers.
     const ordinaryRoom = ordinaryAllowed && (capacity ? ready + counts.unfinished < policy.maxUnfinished : ready === 0);
-    const reviewed = capacity ? await tx.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } }) : null;
+    const reviewed = capacity ? await tx.atsFirstCollectionPolicy.findUnique({ where: { id: PROVIDER_BACKLOG_POLICY_ID } }) : null;
     const backlogPlatforms = reviewedProviderBacklogPlatforms(reviewed);
     const reviewedRoom = capacity && reviewed?.mode === 'capacity' && backlogPlatforms.length > 0
       && await tx.atsCompany.count({ where: { firstCollectionState: { in: ['ready', 'admitted'] }, OR: reviewedFirstCollectionWhere(reviewed) } }) === 0
@@ -89,7 +89,7 @@ export async function tickFirstCollections(validate: (platform: string, slug: st
     await tx.atsFirstCollectionPolicy.update({ where: { id: policy.id }, data: { validationLeaseToken: null, validationLeaseExpiresAt: null } });
     if (policy.mode === 'held' || policy.mode === 'pilot' && (!Array.isArray(policy.pilotBoards) || !policy.pilotBoards.includes(`${candidate.platform}::${candidate.slug}`))) return { outcome: 'policy_changed_during_validation' };
     if (candidate.reviewedBacklog) {
-      const reviewed = await tx.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
+      const reviewed = await tx.atsFirstCollectionPolicy.findUnique({ where: { id: PROVIDER_BACKLOG_POLICY_ID } });
       if (policy.mode !== 'capacity' || reviewed?.mode !== 'capacity'
         || !reviewedProviderBacklogPlatforms(reviewed).includes(candidate.platform)) return { outcome: 'policy_changed_during_validation' };
     }

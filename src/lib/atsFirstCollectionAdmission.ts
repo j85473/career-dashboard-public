@@ -4,7 +4,7 @@ import { EXPANDED_PUBLIC_ATS } from './expandedPublicAts';
 import { storageAllows } from './storagePressure';
 import { TENANT_ATS_PLATFORMS, AtsFirstCollectionSizeError } from './tenantAtsBoards';
 import { atsRunnableLegacyBatchSql, atsRunnableSegmentSql, atsSegmentPersistenceCapacitySql } from './atsAdmissionCapacity';
-import { REVIEWED_FIRST_COLLECTION_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionWhere,
+import { REVIEWED_FIRST_COLLECTION_POLICY_ID, PROVIDER_BACKLOG_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionWhere,
   reviewedFirstCollectionReserveJobs, reviewedFirstCollectionMaximumJobs } from './atsReviewedFirstCollection';
 
 export const FIRST_COLLECTION_PLATFORMS = [...ADDITIONAL_PUBLIC_ATS, ...EXPANDED_PUBLIC_ATS, 'symphony', 'zohorecruit', ...TENANT_ATS_PLATFORMS] as const;
@@ -14,6 +14,12 @@ export const FIRST_COLLECTION_POLICY_ID = 'new-providers';
 export const FIRST_COLLECTION_HEALTH_WINDOW_MS = 15 * 60_000;
 export const FIRST_COLLECTION_CAPACITY_QUEUE_LIMIT = 32;
 type Client = Pick<Prisma.TransactionClient, '$queryRaw' | '$executeRaw' | 'atsCompany' | 'atsFirstCollectionPolicy' | 'atsFirstCollectionCandidate'>;
+
+async function reviewedCollectionPolicies(client: Pick<Client, 'atsFirstCollectionPolicy'>) {
+  const policies = await Promise.all([PROVIDER_BACKLOG_POLICY_ID, REVIEWED_FIRST_COLLECTION_POLICY_ID]
+    .map(id => client.atsFirstCollectionPolicy.findUnique({ where: { id } })));
+  return policies.filter((policy): policy is NonNullable<typeof policy> => policy !== null && reviewedFirstCollectionWhere(policy).length > 0);
+}
 
 export async function catalogueFirstCollectionCandidate(client: Pick<Client, 'atsFirstCollectionCandidate'>,
   board: { slug: string; platform: string }, sourceUrl?: string, discoveryRunId?: string): Promise<void> {
@@ -125,16 +131,18 @@ export async function nextReviewedFirstCollectionBoard(client: Client, now = new
   extraWhere: Prisma.AtsCompanyWhereInput = {}) {
   const ordinary = await client.atsFirstCollectionPolicy.findUnique({ where: { id: FIRST_COLLECTION_POLICY_ID } });
   if (!ordinary || !['pilot', 'ramp', 'capacity'].includes(ordinary.mode)) return null;
-  const reviewed = await client.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
-  const boards = reviewedFirstCollectionWhere(reviewed);
-  if (reviewed?.mode !== 'capacity' || !boards.length) return null;
-  const next = await client.atsCompany.findFirst({ where: {
-    status: 'active', acquisitionEngine: 'v2', firstCollectionState: 'ready', nextCheckDate: { lte: now },
-    AND: [{ OR: boards }, extraWhere],
-  }, orderBy: [{ jobsFound: 'asc' }, { platform: 'asc' }, { slug: 'asc' }] });
-  if (!next || await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: boards } })
-    || !(await firstCollectionHealth(client, reviewedFirstCollectionReserveJobs(reviewed), reviewed.maxResponseBytes, now, 'high')).healthy) return null;
-  return next;
+  for (const reviewed of await reviewedCollectionPolicies(client)) {
+    const boards = reviewedFirstCollectionWhere(reviewed);
+    if (reviewed.mode !== 'capacity') continue;
+    const next = await client.atsCompany.findFirst({ where: {
+      status: 'active', acquisitionEngine: 'v2', firstCollectionState: 'ready', nextCheckDate: { lte: now },
+      AND: [{ OR: boards }, extraWhere],
+    }, orderBy: [{ jobsFound: 'asc' }, { platform: 'asc' }, { slug: 'asc' }] });
+    if (!next || await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: boards } })
+      || !(await firstCollectionHealth(client, reviewedFirstCollectionReserveJobs(reviewed), reviewed.maxResponseBytes, now, 'high')).healthy) continue;
+    return next;
+  }
+  return null;
 }
 
 /** Filter before the candidate limit so held boards cannot hide established work. */
@@ -145,8 +153,7 @@ export async function firstCollectionSelectionWhere(client: Client, now = new Da
   await reconcileFirstCollectionCompletion(client);
   const policy = await client.atsFirstCollectionPolicy.findUnique({ where: { id: FIRST_COLLECTION_POLICY_ID } });
   if (!policy || policy.mode === 'held') return established;
-  const reviewed = await client.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
-  const reviewedBoards = reviewedFirstCollectionWhere(reviewed);
+  const reviewedBoards = (await reviewedCollectionPolicies(client)).flatMap(policy => reviewedFirstCollectionWhere(policy));
   const choices = [...(established.OR || [])];
   const nextReviewed = await nextReviewedFirstCollectionBoard(client, now);
   if (nextReviewed) choices.push({ platform: nextReviewed.platform, slug: nextReviewed.slug, firstCollectionState: 'ready' });
@@ -206,12 +213,12 @@ export async function reserveFirstCollection(client: Client, board: { slug: stri
   if (current.firstCollectionState !== 'ready') return false;
   const policy = await client.atsFirstCollectionPolicy.findUnique({ where: { id: FIRST_COLLECTION_POLICY_ID } });
   if (!policy) return false;
-  const reviewed = await client.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
-  if (isReviewedFirstCollection(reviewed, board)) {
+  const reviewed = (await reviewedCollectionPolicies(client)).find(policy => isReviewedFirstCollection(policy, board));
+  if (reviewed) {
     // All admission callers already hold the ordinary policy row. Keep this
     // lock order, and retain the slot through retries and persistence errors.
-    await client.$queryRaw`SELECT id FROM "AtsFirstCollectionPolicy" WHERE id=${REVIEWED_FIRST_COLLECTION_POLICY_ID} FOR UPDATE`;
-    const exact = await client.atsFirstCollectionPolicy.findUniqueOrThrow({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
+    await client.$queryRaw`SELECT id FROM "AtsFirstCollectionPolicy" WHERE id=${reviewed.id} FOR UPDATE`;
+    const exact = await client.atsFirstCollectionPolicy.findUniqueOrThrow({ where: { id: reviewed.id } });
     if (!['pilot', 'ramp', 'capacity'].includes(policy.mode) || exact.mode !== 'capacity' || !isReviewedFirstCollection(exact, board)
       || current.jobsFound > reviewedFirstCollectionMaximumJobs(exact, board)
       || await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: reviewedFirstCollectionWhere(exact) } })) return false;
@@ -256,9 +263,9 @@ export async function firstCollectionBodyLimits(client: Pick<Client, 'atsCompany
   const current = await client.atsCompany.findUnique({ where: { slug_platform: { slug: board.slug, platform: board.platform } }, select: { firstCollectionState: true, firstCollectionHoldReason: true } });
   if (current?.firstCollectionHoldReason) throw new AtsFirstCollectionSizeError(`ATS catalogue deferred by first-collection review: ${current.firstCollectionHoldReason}`);
   if (current?.firstCollectionState === 'established') return { maximumBytes: 15 * 1024 * 1024, maximumJobs: null };
-  const reviewed = await client.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
-  if (isReviewedFirstCollection(reviewed, board)) return { maximumBytes: reviewed!.maxResponseBytes,
-    maximumJobs: reviewedFirstCollectionMaximumJobs(reviewed!, board) };
+  const reviewed = (await reviewedCollectionPolicies(client)).find(policy => isReviewedFirstCollection(policy, board));
+  if (reviewed) return { maximumBytes: reviewed.maxResponseBytes,
+    maximumJobs: reviewedFirstCollectionMaximumJobs(reviewed, board) };
   const policy = await client.atsFirstCollectionPolicy.findUnique({ where: { id: FIRST_COLLECTION_POLICY_ID } });
   return { maximumBytes: current?.firstCollectionState === 'established' ? 15 * 1024 * 1024 : policy?.maxResponseBytes || 5242880,
     maximumJobs: current?.firstCollectionState !== 'established' ? policy?.maxCatalogueJobs || 250 : null };

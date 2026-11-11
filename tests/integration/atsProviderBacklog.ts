@@ -18,8 +18,8 @@ async function main() {
       CREATE TRIGGER ats_first_collection_batch_guard BEFORE INSERT ON "AtsIngestionBatch" FOR EACH ROW EXECUTE FUNCTION ats_first_collection_batch_guard();`);
   } finally { await sql.end(); }
   await db.atsFirstCollectionPolicy.create({ data: { id: 'new-providers', mode: 'capacity', dailyBoardLimit: 0, maxUnfinished: 32 } });
-  await db.atsFirstCollectionPolicy.create({ data: { id: 'reviewed-oversized', mode: 'capacity', dailyBoardLimit: 0,
-    maxUnfinished: 1, maxCatalogueJobs: 5000, pilotBoards: ['symphony::hgv', 'homerun::*', 'softgarden::*', 'dvinci::*', 'flatchr::*'] } });
+  await db.atsFirstCollectionPolicy.create({ data: { id: 'reviewed-provider-backlog', mode: 'capacity', dailyBoardLimit: 0,
+    maxUnfinished: 1, maxCatalogueJobs: 250, pilotBoards: [ 'homerun::*', 'softgarden::*', 'dvinci::*', 'flatchr::*'] } });
   await db.atsAcquisitionRuntimeGate.create({ data: { id: 'global', admissionState: 'open' } });
   for (let n = 0; n < 32; n++) {
     const identity = { platform: 'gem', slug: `ordinary-${n}` };
@@ -27,6 +27,16 @@ async function main() {
     await db.atsCompany.update({ where: { slug_platform: identity }, data: { firstCollectionState: 'admitted' } });
   }
   assert.equal((await firstCollectionCounts(db, new Date(), true)).unfinished, 32);
+  const legacy = { platform: 'clearcompany', slug: '11111111-1111-1111-1111-111111111111' };
+  await db.atsFirstCollectionPolicy.create({ data: { id: 'reviewed-oversized', mode: 'capacity', dailyBoardLimit: 0,
+    maxUnfinished: 1, maxCatalogueJobs: 5000, pilotBoards: [`${legacy.platform}::${legacy.slug}`] } });
+  await db.atsCompany.create({ data: { ...legacy, jobsFound: 300, checkDay: 1 } });
+  await db.atsCompany.update({ where: { slug_platform: legacy }, data: { firstCollectionState: 'ready' } });
+  await db.$transaction(async tx => {
+    assert.equal(await reserveFirstCollection(tx, legacy, 'legacy-held'), true);
+    await tx.atsIngestionBatch.create({ data: { ...legacy, id: 'legacy-held', writerMode: 'v2', status: 'partial',
+      nextAcquireAt: new Date(Date.now() + 3600_000), lastError: 'Existing large-board retry' } });
+  });
   const scored = await db.job.create({ data: { title: 'Saved role', company: 'Saved employer', postedAt: new Date(),
     status: 'interviewing', aimFitScore: 91, reqFitScore: 88 } });
   const boards = ['homerun', 'softgarden', 'dvinci', 'flatchr'].flatMap(platform => [1, 2].map(n => ({
@@ -62,6 +72,8 @@ async function main() {
     await db.atsIngestionBatch.update({ where: { id }, data: { processingErrorCount: 0 } });
   }
   assert.equal(calls, 4);
+  assert.equal((await db.atsIngestionBatch.findUniqueOrThrow({ where: { id: 'legacy-held' } })).lastError, 'Existing large-board retry');
+  assert.equal((await firstCollectionBodyLimits(db, legacy)).maximumJobs, 5000);
   assert.deepEqual([...started].sort(), ['dvinci', 'flatchr', 'homerun', 'softgarden']);
   assert.equal((await db.atsFirstCollectionPolicy.findUniqueOrThrow({ where: { id: 'new-providers' } })).maxUnfinished, 32);
   const saved = await db.job.findUniqueOrThrow({ where: { id: scored.id } });
@@ -73,9 +85,9 @@ async function main() {
   await db.atsIngestionBatch.create({ data: { ...backlog, id: 'volume', status: 'queued', writerMode: 'legacy', jobCount: 1750 } });
   assert.equal((await tick()).outcome, 'waiting_for_admission_conditions', 'hard persistence ceiling stops new validation');
   await db.atsIngestionBatch.update({ where: { id: 'volume' }, data: { jobCount: 1300 } });
-  await db.atsFirstCollectionPolicy.update({ where: { id: 'reviewed-oversized' }, data: { mode: 'held' } });
+  await db.atsFirstCollectionPolicy.update({ where: { id: 'reviewed-provider-backlog' }, data: { mode: 'held' } });
   assert.equal((await tick()).outcome, 'waiting_for_admission_conditions', 'reviewed operator pause is honored');
-  await db.atsFirstCollectionPolicy.update({ where: { id: 'reviewed-oversized' }, data: { mode: 'capacity' } });
+  await db.atsFirstCollectionPolicy.update({ where: { id: 'reviewed-provider-backlog' }, data: { mode: 'capacity' } });
   const before = calls;
   const unavailable = await tickFirstCollections(async () => ({ success: false, reason: 'Feed HTTP 404' }), new Date(), db);
   assert.equal(unavailable.outcome, 'validation_deferred');
@@ -84,13 +96,13 @@ async function main() {
   const oversized = await tickFirstCollections(async () => ({ success: true, jobsFound: 251 }), new Date(), db);
   assert.equal(oversized.outcome, 'size_review', 'enrolled boards cannot borrow the 5,000-job oversized allowance');
   const changed = await tickFirstCollections(async () => {
-    await db.atsFirstCollectionPolicy.update({ where: { id: 'reviewed-oversized' }, data: { mode: 'held' } });
+    await db.atsFirstCollectionPolicy.update({ where: { id: 'reviewed-provider-backlog' }, data: { mode: 'held' } });
     return { success: true, jobsFound: 2 };
   }, new Date(), db);
   assert.equal(changed.outcome, 'policy_changed_during_validation');
   assert.equal(await db.atsCompany.count({ where: { firstCollectionState: 'ready' } }), 0);
   assert.equal(calls, before);
-  await db.atsFirstCollectionPolicy.update({ where: { id: 'reviewed-oversized' }, data: { mode: 'capacity' } });
+  await db.atsFirstCollectionPolicy.update({ where: { id: 'reviewed-provider-backlog' }, data: { mode: 'capacity' } });
   await db.atsAcquisitionRuntimeGate.update({ where: { id: 'global' }, data: { admissionState: 'draining' } });
   assert.equal((await tick()).outcome, 'waiting_for_admission_conditions', 'runtime admission gate remains authoritative');
   console.log('Real PostgreSQL provider backlog refill, concurrent validation, serial reservation, retries, persistence errors, volume gates, operator pauses, size review and saved-score preservation passed.');

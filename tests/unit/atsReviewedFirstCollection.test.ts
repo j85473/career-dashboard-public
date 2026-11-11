@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { AtsFirstCollectionPolicy } from '../../src/lib/prismaClient';
 import { REVIEWED_FIRST_COLLECTION_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionBoards,
   reviewedFirstCollectionReserveJobs, REVIEWED_PROVIDER_LAUNCH_BOARDS, reviewedProviderBacklogPlatforms,
-  reviewedFirstCollectionWhere } from '../../src/lib/atsReviewedFirstCollection';
+  reviewedFirstCollectionWhere, PROVIDER_BACKLOG_POLICY_ID } from '../../src/lib/atsReviewedFirstCollection';
 import { firstCollectionBodyLimits, reserveFirstCollection } from '../../src/lib/atsFirstCollectionAdmission';
 import { selectNextAtsV2CoverageBoard } from '../../src/lib/atsAcquisitionDispatcherV2';
 import { prisma } from '../../src/lib/prisma';
@@ -55,7 +55,8 @@ test('a reviewed board retains its allowance while held, without changing ordina
 });
 
 test('provider enrollment is explicit, confined to the four approved providers, and keeps the small catalogue limit', async () => {
-  const enabled = { ...reviewed, pilotBoards: [...reviewed.pilotBoards as string[], 'homerun::*', 'softgarden::*', 'dvinci::*', 'flatchr::*'] };
+  const enabled = { ...reviewed, id: PROVIDER_BACKLOG_POLICY_ID, maxCatalogueJobs: 250,
+    pilotBoards: ['homerun::*', 'softgarden::*', 'dvinci::*', 'flatchr::*'] };
   assert.deepEqual(reviewedProviderBacklogPlatforms(enabled), ['homerun', 'softgarden', 'dvinci', 'flatchr']);
   assert.deepEqual(reviewedFirstCollectionWhere(enabled).slice(-4), [
     { platform: 'homerun' }, { platform: 'softgarden' }, { platform: 'dvinci' }, { platform: 'flatchr' },
