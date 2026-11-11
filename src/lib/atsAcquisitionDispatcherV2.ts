@@ -1365,6 +1365,11 @@ export async function atsV2RuntimeLanePlan(
       coverageSlots,
       continuationSlots: slots - coverageSlots,
       reason: 'draining',
+      // A steady stream of new coverage otherwise suppresses the global
+      // "listing served recently" starvation escape, leaving an admitted
+      // catalogue unfinished indefinitely. One atomic continuation producer
+      // keeps it moving while competing workers fall through to drain work.
+      listingConcurrencyLimit: 1,
     };
   }
   if (shadow.coverageEligible <= 0 || shadow.continuationEligible <= 0) {

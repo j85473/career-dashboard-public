@@ -151,6 +151,7 @@ test('bad Cornerstone posting evidence retries locally while another employer st
     }), (error: unknown) => {
       assert.equal((error as Error).name, 'AtsPlatformDeferredError');
       assert.deepEqual((error as { retryReason: unknown }).retryReason, { code: 'posting_mismatch', scope: 'posting' });
+      assert.match((error as Error).message, /posting awaits verified evidence/);
       return true;
     });
   }

@@ -5,7 +5,7 @@ import { Client } from 'pg';
 import { PrismaClient } from '../../src/lib/prismaClient';
 import { firstCollectionSelectionWhere, firstCollectionHealth, reconcileFirstCollectionCompletion, reserveFirstCollection,
   firstCollectionBodyLimits } from '../../src/lib/atsFirstCollectionAdmission';
-import { REVIEWED_FIRST_COLLECTION_POLICY_ID } from '../../src/lib/atsReviewedFirstCollection';
+import { REVIEWED_FIRST_COLLECTION_POLICY_ID, REVIEWED_PROVIDER_LAUNCH_BOARDS } from '../../src/lib/atsReviewedFirstCollection';
 
 const databaseUrl = process.env.ATS_FIRST_COLLECTION_TEST_DATABASE_URL || '';
 if (!/^\/ats_first_collection_test_[a-z0-9_]+$/.test(new URL(databaseUrl).pathname)) throw new Error('A dedicated disposable database is required');
@@ -21,12 +21,13 @@ async function main() {
   await sql.connect();
   try {
     await sql.query(readFileSync('prisma/migrations/20261019170000_symphony_talent_acquisition/migration.sql', 'utf8'));
+    await sql.query(readFileSync('prisma/migrations/20261110193000_additional_public_ats_admission/migration.sql', 'utf8'));
     await sql.query(`CREATE TRIGGER ats_first_collection_board_guard BEFORE INSERT ON "AtsCompany" FOR EACH ROW EXECUTE FUNCTION ats_first_collection_board_guard();
       CREATE TRIGGER ats_first_collection_batch_guard BEFORE INSERT ON "AtsIngestionBatch" FOR EACH ROW EXECUTE FUNCTION ats_first_collection_batch_guard();`);
   } finally { await sql.end(); }
   await db.atsFirstCollectionPolicy.create({ data: { id: 'new-providers', mode: 'capacity', dailyBoardLimit: 0, maxUnfinished: 32, healthObservedAt: new Date() } });
   await db.atsFirstCollectionPolicy.create({ data: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID, mode: 'capacity', dailyBoardLimit: 0,
-    maxUnfinished: 1, maxCatalogueJobs: 5000, pilotBoards: boards.map(b => `${b.platform}::${b.slug}`) } });
+    maxUnfinished: 1, maxCatalogueJobs: 5000, pilotBoards: [...boards, ...REVIEWED_PROVIDER_LAUNCH_BOARDS].map(b => `${b.platform}::${b.slug}`) } });
   await db.atsAcquisitionRuntimeGate.create({ data: { id: 'global', admissionState: 'open' } });
   for (const board of boards) {
     await db.atsCompany.create({ data: { ...board, checkDay: 1, acquisitionEngine: 'v2' } });
@@ -78,7 +79,24 @@ async function main() {
   assert.equal(await start(remaining[1], 'reviewed-hold'), null);
   assert.equal((await firstCollectionBodyLimits(db, remaining[1])).maximumJobs, 5000, 'holding admission retains the saved allowance');
   await db.atsFirstCollectionPolicy.update({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID }, data: { mode: 'capacity' } });
-  assert.ok(await start(remaining[1], 'third-after-completion'));
+  const third = await start(remaining[1], 'third-after-completion');
+  assert.ok(third);
+  await db.atsIngestionBatch.update({ where: { id: third.id }, data: { status: 'processed', processedAt: new Date() } });
+  for (const launch of REVIEWED_PROVIDER_LAUNCH_BOARDS) {
+    await db.atsCompany.create({ data: { ...launch, jobsFound: 251, checkDay: 1, acquisitionEngine: 'v2' } });
+    await db.atsCompany.update({ where: { slug_platform: launch }, data: { firstCollectionState: 'ready' } });
+    assert.equal((await firstCollectionBodyLimits(db, launch)).maximumJobs, 250);
+    assert.equal(await start(launch, launch.platform + '-too-large'), null, 'a launch cannot borrow the oversized allowance');
+    await db.atsCompany.update({ where: { slug_platform: launch }, data: { jobsFound: 10 } });
+  }
+  const launches = await Promise.all(REVIEWED_PROVIDER_LAUNCH_BOARDS.map(launch => start(launch, launch.platform + '-launch')));
+  assert.equal(launches.filter(Boolean).length, 1, 'all four new providers still share the existing single reviewed slot');
+  const launched = launches.find(Boolean)!;
+  const waiting = REVIEWED_PROVIDER_LAUNCH_BOARDS.find(launch => launch.platform !== launched.platform)!;
+  assert.equal(await start(waiting, 'waiting-launch'), null);
+  await assert.rejects(db.atsIngestionBatch.create({ data: { ...waiting, id: 'unreserved-launch' } }), 'launches retain the real raw-writer fence');
+  await db.atsFirstCollectionPolicy.update({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID }, data: { mode: 'held' } });
+  assert.equal(await start(waiting, 'held-launch'), null);
   assert.equal((await db.atsFirstCollectionPolicy.findUniqueOrThrow({ where: { id: 'new-providers' } })).maxCatalogueJobs, 250);
   console.log('Real PostgreSQL concurrent admission, exact-board scope, raw-writer fence, retained retries, persistence completion and operator gates passed.');
 }

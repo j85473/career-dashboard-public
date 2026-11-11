@@ -1077,8 +1077,10 @@ export async function enrichAtsListingJob(
     }
     const message = error instanceof Error ? error.message : String(error);
     if (platform === 'cornerstone') {
-      throw await deferredError(dependencies, platform, new Date(dependencies.now().getTime() + 3600_000),
+      const pending = await deferredError(dependencies, platform, new Date(dependencies.now().getTime() + 3600_000),
         readAtsRetryReason(error) || { code: 'employer_unverified', scope: 'posting' });
+      pending.message = `Cornerstone posting awaits verified evidence: ${message.slice(0, 300)}`;
+      throw pending;
     }
     if (platform === 'successfactors') {
       throw await successFactorsDetailDeferredError(dependencies, message, input.detailAttemptCount,

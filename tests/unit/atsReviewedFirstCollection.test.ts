@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AtsFirstCollectionPolicy } from '../../src/lib/prismaClient';
 import { REVIEWED_FIRST_COLLECTION_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionBoards,
-  reviewedFirstCollectionReserveJobs } from '../../src/lib/atsReviewedFirstCollection';
+  reviewedFirstCollectionReserveJobs, REVIEWED_PROVIDER_LAUNCH_BOARDS } from '../../src/lib/atsReviewedFirstCollection';
 import { firstCollectionBodyLimits, reserveFirstCollection } from '../../src/lib/atsFirstCollectionAdmission';
 import { selectNextAtsV2CoverageBoard } from '../../src/lib/atsAcquisitionDispatcherV2';
 import { prisma } from '../../src/lib/prisma';
@@ -12,7 +12,7 @@ const ordinary = { id: 'new-providers', mode: 'capacity', maxCatalogueJobs: 250,
 const reviewed = { ...ordinary, id: REVIEWED_FIRST_COLLECTION_POLICY_ID, maxUnfinished: 1, maxCatalogueJobs: 5000,
   pilotBoards: [`${board.platform}::${board.slug}`, 'symphony::hgv'] } as AtsFirstCollectionPolicy;
 
-test('reviewed allowance is confined to exact canonical ClearCompany and verified Symphony boards', () => {
+test('reviewed allowance is confined to exact reviewed boards and four explicit provider launches', () => {
   assert.deepEqual(reviewedFirstCollectionBoards(reviewed), [board, { platform: 'symphony', slug: 'hgv' }]);
   assert.equal(isReviewedFirstCollection(reviewed, { platform: 'symphony', slug: 'victoriassecret' }), false);
   assert.equal(isReviewedFirstCollection(reviewed, { ...board, slug: 'hrmdirect::unreviewed' }), false);
@@ -21,6 +21,20 @@ test('reviewed allowance is confined to exact canonical ClearCompany and verifie
     assert.deepEqual(reviewedFirstCollectionBoards({ ...reviewed, ...broken } as AtsFirstCollectionPolicy), []);
   }
   assert.equal(reviewedFirstCollectionReserveJobs(reviewed), 250);
+});
+
+test('each explicit provider launch retains the 250-job limit and cannot authorize a neighboring tenant', async () => {
+  for (const launch of REVIEWED_PROVIDER_LAUNCH_BOARDS) {
+    const exact = { ...reviewed, pilotBoards: [`${launch.platform}::${launch.slug}`] };
+    assert.deepEqual(reviewedFirstCollectionBoards(exact), [launch]);
+    assert.equal(isReviewedFirstCollection(exact, { ...launch, slug: 'unreviewed-neighbor' }), false);
+    assert.deepEqual(reviewedFirstCollectionBoards({ ...exact, pilotBoards: [`${launch.platform}::unreviewed-neighbor`] }), []);
+    const client = {
+      atsCompany: { findUnique: async () => ({ firstCollectionState: 'ready', firstCollectionHoldReason: null }) },
+      atsFirstCollectionPolicy: { findUnique: async () => exact },
+    } as unknown as Parameters<typeof firstCollectionBodyLimits>[0];
+    assert.equal((await firstCollectionBodyLimits(client, launch)).maximumJobs, 250);
+  }
 });
 
 test('a reviewed board retains its allowance while held, without changing ordinary or established limits', async () => {

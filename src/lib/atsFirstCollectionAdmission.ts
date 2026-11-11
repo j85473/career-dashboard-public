@@ -5,7 +5,7 @@ import { storageAllows } from './storagePressure';
 import { TENANT_ATS_PLATFORMS, AtsFirstCollectionSizeError } from './tenantAtsBoards';
 import { atsRunnableLegacyBatchSql, atsRunnableSegmentSql, atsSegmentPersistenceCapacitySql } from './atsAdmissionCapacity';
 import { REVIEWED_FIRST_COLLECTION_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionBoards,
-  reviewedFirstCollectionReserveJobs } from './atsReviewedFirstCollection';
+  reviewedFirstCollectionReserveJobs, reviewedFirstCollectionMaximumJobs } from './atsReviewedFirstCollection';
 
 export const FIRST_COLLECTION_PLATFORMS = [...ADDITIONAL_PUBLIC_ATS, ...EXPANDED_PUBLIC_ATS, 'symphony', 'zohorecruit', ...TENANT_ATS_PLATFORMS] as const;
 export const isFirstCollectionPlatform = (platform: string): boolean =>
@@ -213,7 +213,7 @@ export async function reserveFirstCollection(client: Client, board: { slug: stri
     await client.$queryRaw`SELECT id FROM "AtsFirstCollectionPolicy" WHERE id=${REVIEWED_FIRST_COLLECTION_POLICY_ID} FOR UPDATE`;
     const exact = await client.atsFirstCollectionPolicy.findUniqueOrThrow({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
     if (!['pilot', 'ramp', 'capacity'].includes(policy.mode) || exact.mode !== 'capacity' || !isReviewedFirstCollection(exact, board)
-      || current.jobsFound > exact.maxCatalogueJobs
+      || current.jobsFound > reviewedFirstCollectionMaximumJobs(exact, board)
       || await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: reviewedFirstCollectionBoards(exact) } })) return false;
     const health = await firstCollectionHealth(client, reviewedFirstCollectionReserveJobs(exact), exact.maxResponseBytes, now, 'high');
     if (!health.healthy) return false;
@@ -257,7 +257,8 @@ export async function firstCollectionBodyLimits(client: Pick<Client, 'atsCompany
   if (current?.firstCollectionHoldReason) throw new AtsFirstCollectionSizeError(`ATS catalogue deferred by first-collection review: ${current.firstCollectionHoldReason}`);
   if (current?.firstCollectionState === 'established') return { maximumBytes: 15 * 1024 * 1024, maximumJobs: null };
   const reviewed = await client.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
-  if (isReviewedFirstCollection(reviewed, board)) return { maximumBytes: reviewed!.maxResponseBytes, maximumJobs: reviewed!.maxCatalogueJobs };
+  if (isReviewedFirstCollection(reviewed, board)) return { maximumBytes: reviewed!.maxResponseBytes,
+    maximumJobs: reviewedFirstCollectionMaximumJobs(reviewed!, board) };
   const policy = await client.atsFirstCollectionPolicy.findUnique({ where: { id: FIRST_COLLECTION_POLICY_ID } });
   return { maximumBytes: current?.firstCollectionState === 'established' ? 15 * 1024 * 1024 : policy?.maxResponseBytes || 5242880,
     maximumJobs: current?.firstCollectionState !== 'established' ? policy?.maxCatalogueJobs || 250 : null };

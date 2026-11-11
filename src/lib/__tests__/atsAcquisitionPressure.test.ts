@@ -86,6 +86,7 @@ test('existing listings consume continuation capacity before more boards open', 
     const busy = await atsV2RuntimeLanePlan(8);
     assert.equal(busy.coverageSlots, 1);
     assert.equal(busy.continuationSlots, busy.totalSlots - 1);
+    assert.equal(busy.listingConcurrencyLimit, 1, 'busy drain work must leave admitted listing continuations a bounded productive turn');
   } finally { prisma.$queryRaw = original; }
 });
 
