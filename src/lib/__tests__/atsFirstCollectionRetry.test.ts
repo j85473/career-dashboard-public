@@ -47,7 +47,7 @@ test('controller retains unavailable candidates, extends repeated failures and n
       $queryRaw: async (query: { text?: string }) => query.text?.includes('WITH platform_turns') ? [candidate]
         : [{ items: BigInt(0), bytes: BigInt(0), persistence: BigInt(0), totalPersistence: BigInt(0), unfinished: BigInt(0), gate: 'open' }],
       $executeRaw: async () => 0,
-      atsFirstCollectionPolicy: { findUniqueOrThrow: async () => policy,
+      atsFirstCollectionPolicy: { findUnique: async () => null, findUniqueOrThrow: async () => policy,
         update: async ({ data }: { data: Record<string, unknown> }) => Object.assign(policy, data) },
       atsFirstCollectionCandidate: { findFirst: async () => candidate,
         update: async ({ data }: { data: Record<string, unknown> }) => { writes.push(data); } },

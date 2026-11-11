@@ -24,7 +24,7 @@ test('the missing-validation repair only catalogues untouched overdue boards wit
 test('the handoff repair runs only after the controller proves policy and capacity permit validation', () => {
   const source = readFileSync('src/lib/atsFirstCollectionController.ts', 'utf8');
   const call = source.indexOf('await catalogueMissingFirstCollectionCandidates(tx)');
-  assert(call > source.indexOf('if (!health.healthy || !firstCollectionAllowance('));
+  assert(call > source.indexOf('if (!ordinaryRoom && !reviewedRoom) return null'));
   assert(call > source.indexOf('if (policy.validationLeaseExpiresAt'));
   assert(call < source.indexOf('const next = capacity'));
 });

@@ -1,4 +1,4 @@
-import type { AtsFirstCollectionPolicy } from './prismaClient';
+import type { AtsFirstCollectionPolicy, Prisma } from './prismaClient';
 
 /** A separate, explicit allowlist; the ordinary 250-job policy stays unchanged. */
 export const REVIEWED_FIRST_COLLECTION_POLICY_ID = 'reviewed-oversized';
@@ -10,10 +10,11 @@ export const REVIEWED_PROVIDER_LAUNCH_BOARDS = [
   { platform: 'dvinci', slug: 'adstec-karriere.dvinci-hr.com' },
   { platform: 'flatchr', slug: 'flatchr' },
 ] as const;
+export const REVIEWED_PROVIDER_BACKLOG_PLATFORMS = ['homerun', 'softgarden', 'dvinci', 'flatchr'] as const;
 
 export function reviewedFirstCollectionMaximumJobs(policy: AtsFirstCollectionPolicy,
   board: { platform: string; slug: string }): number {
-  return REVIEWED_PROVIDER_LAUNCH_BOARDS.some(value => value.platform === board.platform && value.slug === board.slug)
+  return (REVIEWED_PROVIDER_BACKLOG_PLATFORMS as readonly string[]).includes(board.platform)
     ? Math.min(250, policy.maxCatalogueJobs) : policy.maxCatalogueJobs;
 }
 
@@ -29,14 +30,25 @@ export function reviewedFirstCollectionBoards(policy: AtsFirstCollectionPolicy |
     const platform = key.slice(0, split), slug = key.slice(split + 2);
     if (split < 1 || !(platform === 'clearcompany' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(slug)
       || platform === 'symphony' && ['hgv', 'victoriassecret'].includes(slug)
-      || REVIEWED_PROVIDER_LAUNCH_BOARDS.some(board => board.platform === platform && board.slug === slug))) return [];
+      || REVIEWED_PROVIDER_LAUNCH_BOARDS.some(board => board.platform === platform && board.slug === slug)
+      || slug === '*' && (REVIEWED_PROVIDER_BACKLOG_PLATFORMS as readonly string[]).includes(platform))) return [];
     if (!boards.some(board => board.platform === platform && board.slug === slug)) boards.push({ platform, slug });
   }
   return boards;
 }
 
 export function isReviewedFirstCollection(policy: AtsFirstCollectionPolicy | null, board: { platform: string; slug: string }): boolean {
-  return reviewedFirstCollectionBoards(policy).some(value => value.platform === board.platform && value.slug === board.slug);
+  return reviewedFirstCollectionBoards(policy).some(value => value.platform === board.platform && (value.slug === board.slug || value.slug === '*'));
+}
+
+/** Wildcards are explicit operator enrollment, confined to these four providers.
+ * They do not create boards or bypass canonical feed validation. */
+export function reviewedProviderBacklogPlatforms(policy: AtsFirstCollectionPolicy | null): string[] {
+  return reviewedFirstCollectionBoards(policy).filter(board => board.slug === '*').map(board => board.platform);
+}
+
+export function reviewedFirstCollectionWhere(policy: AtsFirstCollectionPolicy | null): Prisma.AtsCompanyWhereInput[] {
+  return reviewedFirstCollectionBoards(policy).map(board => board.slug === '*' ? { platform: board.platform } : board);
 }
 
 /** Large catalogues stream through existing page/segment backpressure. Reserving

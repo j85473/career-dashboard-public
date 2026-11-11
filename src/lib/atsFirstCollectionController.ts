@@ -9,6 +9,7 @@ import { admittedClearCompanySlug } from './clearcompanyBoard';
 import { FIRST_COLLECTION_POLICY_ID, FIRST_COLLECTION_HEALTH_WINDOW_MS, FIRST_COLLECTION_PLATFORMS,
   firstCollectionHealth, firstCollectionAllowance, firstCollectionCounts, reconcileFirstCollectionCompletion } from './atsFirstCollectionAdmission';
 import { catalogueMissingFirstCollectionCandidates } from './atsFirstCollectionAdmission';
+import { REVIEWED_FIRST_COLLECTION_POLICY_ID, reviewedProviderBacklogPlatforms, reviewedFirstCollectionWhere } from './atsReviewedFirstCollection';
 
 export type FirstCollectionValidation = { success: boolean; jobsFound?: number; reason?: string; sizeReview?: boolean; canonicalSlug?: string };
 export function nextFirstCollectionHealthySince(input: {
@@ -41,20 +42,27 @@ export async function tickFirstCollections(validate: (platform: string, slug: st
     if (policy.validationLeaseExpiresAt && policy.validationLeaseExpiresAt > now) return null;
     const windowStart = new Date(now.getTime() - 86_400_000);
     const counts = await firstCollectionCounts(tx, now, capacity);
-    if (!health.healthy || !firstCollectionAllowance({ ...policy, healthySince, healthObservedAt: now, ...counts, now })) return null;
+    const ordinaryAllowed = health.healthy && firstCollectionAllowance({ ...policy, healthySince, healthObservedAt: now, ...counts, now });
     const ready = await tx.atsCompany.count({ where: {
       platform: { in: [...FIRST_COLLECTION_PLATFORMS] }, firstCollectionState: 'ready',
       ...(capacity ? { nextCheckDate: { lte: now } } : {}),
     } });
     // Capacity mode keeps multiple validated feeds available to the shared workers.
-    if (capacity ? ready + counts.unfinished >= policy.maxUnfinished : ready > 0) return null;
+    const ordinaryRoom = ordinaryAllowed && (capacity ? ready + counts.unfinished < policy.maxUnfinished : ready === 0);
+    const reviewed = capacity ? await tx.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } }) : null;
+    const backlogPlatforms = reviewedProviderBacklogPlatforms(reviewed);
+    const reviewedRoom = capacity && reviewed?.mode === 'capacity' && backlogPlatforms.length > 0
+      && await tx.atsCompany.count({ where: { firstCollectionState: { in: ['ready', 'admitted'] }, OR: reviewedFirstCollectionWhere(reviewed) } }) === 0
+      && (await firstCollectionHealth(tx, Math.min(250, policy.maxCatalogueJobs), policy.maxResponseBytes, now, 'high')).healthy;
+    if (!ordinaryRoom && !reviewedRoom) return null;
     if (!capacity && await tx.atsFirstCollectionCandidate.count({ where: { lastValidationStartedAt: { gt: windowStart } } }) >= policy.dailyBoardLimit) return null;
     await catalogueMissingFirstCollectionCandidates(tx);
     const pilots = Array.isArray(policy.pilotBoards) ? policy.pilotBoards.filter((value): value is string => typeof value === 'string').map(value => {
       const split = value.indexOf('::'); return { platform: value.slice(0, split), slug: value.slice(split + 2) };
     }) : [];
     const next = capacity
-      ? (await tx.$queryRaw<AtsFirstCollectionCandidate[]>(firstCollectionCandidateQuery(now)))[0]
+      ? (await tx.$queryRaw<AtsFirstCollectionCandidate[]>(firstCollectionCandidateQuery(now,
+        FIRST_COLLECTION_PLATFORMS.filter(platform => backlogPlatforms.includes(platform) ? reviewedRoom : ordinaryRoom))))[0]
       : await tx.atsFirstCollectionCandidate.findFirst({ where: {
       state: 'discovered', nextValidationAt: { lte: now },
       ...(policy.mode === 'pilot' ? { OR: pilots.length ? pilots : [{ slug: '__no_pilot__' }] } : {}),
@@ -64,7 +72,8 @@ export async function tickFirstCollections(validate: (platform: string, slug: st
       validationLeaseToken: token, validationLeaseExpiresAt: new Date(now.getTime() + 3 * 60_000),
     } });
     await tx.atsFirstCollectionCandidate.update({ where: { slug_platform: { slug: next.slug, platform: next.platform } }, data: { lastValidationStartedAt: now } });
-    return { ...next, maximumBytes: policy.maxResponseBytes, maximumJobs: policy.maxCatalogueJobs };
+    return { ...next, reviewedBacklog: backlogPlatforms.includes(next.platform), maximumBytes: policy.maxResponseBytes,
+      maximumJobs: backlogPlatforms.includes(next.platform) ? Math.min(250, policy.maxCatalogueJobs) : policy.maxCatalogueJobs };
   }, { timeout: 30_000 });
   if (!candidate) return { outcome: 'waiting_for_admission_conditions', healthWindowMinutes: FIRST_COLLECTION_HEALTH_WINDOW_MS / 60_000 };
   let validation: FirstCollectionValidation;
@@ -79,6 +88,11 @@ export async function tickFirstCollections(validate: (platform: string, slug: st
     if (policy.validationLeaseToken !== token || !policy.validationLeaseExpiresAt || policy.validationLeaseExpiresAt <= finishedAt) return { outcome: 'expired_validation_lease' };
     await tx.atsFirstCollectionPolicy.update({ where: { id: policy.id }, data: { validationLeaseToken: null, validationLeaseExpiresAt: null } });
     if (policy.mode === 'held' || policy.mode === 'pilot' && (!Array.isArray(policy.pilotBoards) || !policy.pilotBoards.includes(`${candidate.platform}::${candidate.slug}`))) return { outcome: 'policy_changed_during_validation' };
+    if (candidate.reviewedBacklog) {
+      const reviewed = await tx.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
+      if (policy.mode !== 'capacity' || reviewed?.mode !== 'capacity'
+        || !reviewedProviderBacklogPlatforms(reviewed).includes(candidate.platform)) return { outcome: 'policy_changed_during_validation' };
+    }
     const sizeReview = validation.sizeReview || (validation.jobsFound || 0) > Math.min(candidate.maximumJobs, policy.maxCatalogueJobs);
     if (!validation.success || sizeReview || !Number.isSafeInteger(validation.jobsFound) || (validation.jobsFound || 0) < 0) {
       await tx.atsFirstCollectionCandidate.update({ where: { slug_platform: { slug: candidate.slug, platform: candidate.platform } }, data: {

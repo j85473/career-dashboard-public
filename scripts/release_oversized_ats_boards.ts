@@ -6,7 +6,7 @@ import { recordDiscoveredAtsBoard } from '../src/lib/atsBoardDiscovery';
 import { admittedClearCompanySlug } from '../src/lib/clearcompanyBoard';
 import { FIRST_COLLECTION_POLICY_ID } from '../src/lib/atsFirstCollectionAdmission';
 import { REVIEWED_FIRST_COLLECTION_POLICY_ID, REVIEWED_FIRST_COLLECTION_MAXIMUM_JOBS,
-  reviewedFirstCollectionBoards } from '../src/lib/atsReviewedFirstCollection';
+  reviewedFirstCollectionWhere } from '../src/lib/atsReviewedFirstCollection';
 import { validateSlug, type PLATFORMS } from '../src/scripts/discoverATS';
 
 async function main() {
@@ -14,7 +14,7 @@ async function main() {
   const apply = args.includes('--apply');
   const existing = await prisma.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
   if (existing) {
-    const identities = reviewedFirstCollectionBoards(existing);
+    const identities = reviewedFirstCollectionWhere(existing);
     const boards = identities.length ? await prisma.atsCompany.findMany({
       where: { OR: identities }, orderBy: [{ firstCollectionAdmittedAt: 'asc' }, { jobsFound: 'asc' }],
       select: { platform: true, slug: true, status: true, jobsFound: true, firstCollectionState: true,

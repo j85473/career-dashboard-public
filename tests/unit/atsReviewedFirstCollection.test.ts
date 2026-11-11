@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AtsFirstCollectionPolicy } from '../../src/lib/prismaClient';
 import { REVIEWED_FIRST_COLLECTION_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionBoards,
-  reviewedFirstCollectionReserveJobs, REVIEWED_PROVIDER_LAUNCH_BOARDS } from '../../src/lib/atsReviewedFirstCollection';
+  reviewedFirstCollectionReserveJobs, REVIEWED_PROVIDER_LAUNCH_BOARDS, reviewedProviderBacklogPlatforms,
+  reviewedFirstCollectionWhere } from '../../src/lib/atsReviewedFirstCollection';
 import { firstCollectionBodyLimits, reserveFirstCollection } from '../../src/lib/atsFirstCollectionAdmission';
 import { selectNextAtsV2CoverageBoard } from '../../src/lib/atsAcquisitionDispatcherV2';
 import { prisma } from '../../src/lib/prisma';
@@ -51,6 +52,24 @@ test('a reviewed board retains its allowance while held, without changing ordina
   assert.deepEqual(await firstCollectionBodyLimits(client, board), { maximumJobs: null, maximumBytes: 15 * 1024 * 1024 });
   state = 'admitted'; hold = 'Explicit saved review hold';
   await assert.rejects(firstCollectionBodyLimits(client, board), /Explicit saved review hold/);
+});
+
+test('provider enrollment is explicit, confined to the four approved providers, and keeps the small catalogue limit', async () => {
+  const enabled = { ...reviewed, pilotBoards: [...reviewed.pilotBoards as string[], 'homerun::*', 'softgarden::*', 'dvinci::*', 'flatchr::*'] };
+  assert.deepEqual(reviewedProviderBacklogPlatforms(enabled), ['homerun', 'softgarden', 'dvinci', 'flatchr']);
+  assert.deepEqual(reviewedFirstCollectionWhere(enabled).slice(-4), [
+    { platform: 'homerun' }, { platform: 'softgarden' }, { platform: 'dvinci' }, { platform: 'flatchr' },
+  ]);
+  assert.equal(isReviewedFirstCollection(enabled, { platform: 'homerun', slug: 'new-verified-tenant' }), true);
+  assert.equal(isReviewedFirstCollection(reviewed, { platform: 'homerun', slug: 'new-verified-tenant' }), false);
+  for (const forbidden of ['cornerstone::*', 'symphony::*', 'clearcompany::*', '*::*']) {
+    assert.deepEqual(reviewedFirstCollectionBoards({ ...enabled, pilotBoards: [...enabled.pilotBoards, forbidden] }), []);
+  }
+  const client = {
+    atsCompany: { findUnique: async () => ({ firstCollectionState: 'ready', firstCollectionHoldReason: null }) },
+    atsFirstCollectionPolicy: { findUnique: async () => enabled },
+  } as unknown as Parameters<typeof firstCollectionBodyLimits>[0];
+  assert.equal((await firstCollectionBodyLimits(client, { platform: 'dvinci', slug: 'new-verified.dvinci-hr.com' })).maximumJobs, 250);
 });
 
 test('reviewed reservation stops for every unfinished reviewed board, pressure, and either operator hold', async () => {

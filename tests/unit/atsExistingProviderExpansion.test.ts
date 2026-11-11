@@ -83,7 +83,7 @@ test('resolved ClearCompany aliases honor the retired UUID without creating a se
       ? [{ platform: 'clearcompany', slug: 'hosted::franklincovey' }]
       : [{ unfinished: BigInt(0), items: BigInt(0), bytes: BigInt(0), persistence: BigInt(0), totalPersistence: BigInt(0), gate: 'open' }],
     $executeRaw: async () => 0,
-    atsFirstCollectionPolicy: { findUniqueOrThrow: async () => policy, update: async ({ data }: { data: Record<string, unknown> }) => Object.assign(policy, data) },
+    atsFirstCollectionPolicy: { findUnique: async () => null, findUniqueOrThrow: async () => policy, update: async ({ data }: { data: Record<string, unknown> }) => Object.assign(policy, data) },
     atsCompany: { count: async () => 0, findMany: async ({ where }: { where: { OR: { slug: { equals: string } }[] } }) => {
       assert.equal(where.OR[0].slug.equals, site);
       return [{ slug: site, platform: 'clearcompany', status: 'excluded', excludedReason: 'Retired by Joe' }];

@@ -4,7 +4,7 @@ import { EXPANDED_PUBLIC_ATS } from './expandedPublicAts';
 import { storageAllows } from './storagePressure';
 import { TENANT_ATS_PLATFORMS, AtsFirstCollectionSizeError } from './tenantAtsBoards';
 import { atsRunnableLegacyBatchSql, atsRunnableSegmentSql, atsSegmentPersistenceCapacitySql } from './atsAdmissionCapacity';
-import { REVIEWED_FIRST_COLLECTION_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionBoards,
+import { REVIEWED_FIRST_COLLECTION_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionWhere,
   reviewedFirstCollectionReserveJobs, reviewedFirstCollectionMaximumJobs } from './atsReviewedFirstCollection';
 
 export const FIRST_COLLECTION_PLATFORMS = [...ADDITIONAL_PUBLIC_ATS, ...EXPANDED_PUBLIC_ATS, 'symphony', 'zohorecruit', ...TENANT_ATS_PLATFORMS] as const;
@@ -126,7 +126,7 @@ export async function nextReviewedFirstCollectionBoard(client: Client, now = new
   const ordinary = await client.atsFirstCollectionPolicy.findUnique({ where: { id: FIRST_COLLECTION_POLICY_ID } });
   if (!ordinary || !['pilot', 'ramp', 'capacity'].includes(ordinary.mode)) return null;
   const reviewed = await client.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
-  const boards = reviewedFirstCollectionBoards(reviewed);
+  const boards = reviewedFirstCollectionWhere(reviewed);
   if (reviewed?.mode !== 'capacity' || !boards.length) return null;
   const next = await client.atsCompany.findFirst({ where: {
     status: 'active', acquisitionEngine: 'v2', firstCollectionState: 'ready', nextCheckDate: { lte: now },
@@ -146,7 +146,7 @@ export async function firstCollectionSelectionWhere(client: Client, now = new Da
   const policy = await client.atsFirstCollectionPolicy.findUnique({ where: { id: FIRST_COLLECTION_POLICY_ID } });
   if (!policy || policy.mode === 'held') return established;
   const reviewed = await client.atsFirstCollectionPolicy.findUnique({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
-  const reviewedBoards = reviewedFirstCollectionBoards(reviewed);
+  const reviewedBoards = reviewedFirstCollectionWhere(reviewed);
   const choices = [...(established.OR || [])];
   const nextReviewed = await nextReviewedFirstCollectionBoard(client, now);
   if (nextReviewed) choices.push({ platform: nextReviewed.platform, slug: nextReviewed.slug, firstCollectionState: 'ready' });
@@ -214,7 +214,7 @@ export async function reserveFirstCollection(client: Client, board: { slug: stri
     const exact = await client.atsFirstCollectionPolicy.findUniqueOrThrow({ where: { id: REVIEWED_FIRST_COLLECTION_POLICY_ID } });
     if (!['pilot', 'ramp', 'capacity'].includes(policy.mode) || exact.mode !== 'capacity' || !isReviewedFirstCollection(exact, board)
       || current.jobsFound > reviewedFirstCollectionMaximumJobs(exact, board)
-      || await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: reviewedFirstCollectionBoards(exact) } })) return false;
+      || await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: reviewedFirstCollectionWhere(exact) } })) return false;
     const health = await firstCollectionHealth(client, reviewedFirstCollectionReserveJobs(exact), exact.maxResponseBytes, now, 'high');
     if (!health.healthy) return false;
     const reserved = await client.atsCompany.updateMany({
