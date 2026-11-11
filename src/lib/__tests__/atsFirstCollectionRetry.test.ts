@@ -44,7 +44,8 @@ test('controller retains unavailable candidates, extends repeated failures and n
       validationLeaseToken: null, validationLeaseExpiresAt: null, pilotBoards: [] };
     const candidate = { platform: service ? 'hirehive' : 'jazzhr', slug: service ? 'accounts' : 'old-board', lastError: 'Feed HTTP 404' };
     const tx = {
-      $queryRaw: async () => [{ items: BigInt(0), bytes: BigInt(0), persistence: BigInt(0), totalPersistence: BigInt(0), unfinished: BigInt(0), gate: 'open' }],
+      $queryRaw: async (query: { text?: string }) => query.text?.includes('WITH platform_turns') ? [candidate]
+        : [{ items: BigInt(0), bytes: BigInt(0), persistence: BigInt(0), totalPersistence: BigInt(0), unfinished: BigInt(0), gate: 'open' }],
       $executeRaw: async () => 0,
       atsFirstCollectionPolicy: { findUniqueOrThrow: async () => policy,
         update: async ({ data }: { data: Record<string, unknown> }) => Object.assign(policy, data) },

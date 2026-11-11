@@ -127,6 +127,66 @@ test('Cornerstone binds each retained posting to its own employer and retries un
   assert.equal(readAtsJobEnrichmentMarker(rejected)?.attempted, false);
 });
 
+test('bad Cornerstone posting evidence retries locally while another employer still enriches', async () => {
+  const raw = parseExpandedListing('cornerstone', slug, fixtures.cornerstone).jobs[0];
+  const original = structuredClone(raw);
+  const failures: unknown[] = [];
+  let blocked = false;
+  const deps = {
+    fetchPlatformResponse: async (_p: string, _s: unknown, request: () => Promise<Response>, options?: { onResponse?: (response: Response) => Promise<void> }) => {
+      const response = await request(); await options?.onResponse?.(response); return response;
+    },
+    reserveProviderBudgetForSource: async () => ({ allowed: !blocked }),
+    recordProviderSuccess: async () => {},
+    recordProviderFailure: async (failure: unknown) => { failures.push(failure); blocked = true; return null; },
+    passesPreFilter: () => ({ passes: true, reason: '' }),
+    createDeferredError: () => Object.assign(new Error('Retain for retry'), { name: 'AtsPlatformDeferredError' }),
+  };
+  const malformed = [page(), posting().replace('Example Inc', ''),
+    posting().replace('"reqid":"123"', '"reqid":"999"'),
+    posting().replace('Channel Manager', 'Other role'), '<html>Unavailable</html>'];
+  for (const body of malformed) {
+    await assert.rejects(enrichAtsListingJob({ platform: 'cornerstone', slug, job: raw, requestTimeoutMs: 1000 }, {
+      ...deps, safeExternalFetch: async () => new Response(body),
+    }), (error: unknown) => {
+      assert.equal((error as Error).name, 'AtsPlatformDeferredError');
+      assert.deepEqual((error as { retryReason: unknown }).retryReason, { code: 'posting_mismatch', scope: 'posting' });
+      return true;
+    });
+  }
+  for (const status of [403, 404, 410]) {
+    await assert.rejects(enrichAtsListingJob({ platform: 'cornerstone', slug, job: raw, requestTimeoutMs: 1000 }, {
+      ...deps, safeExternalFetch: async () => new Response('Unavailable', { status }),
+    }), { name: 'AtsPlatformDeferredError' });
+  }
+  assert.deepEqual(failures, [], 'posting-local failures must leave both circuits available');
+  const otherSlug = 'another.csod.com::1::default';
+  const otherJob = { ...raw, url: String(raw.url).replace('example.csod.com', 'another.csod.com') };
+  const otherBody = posting().replace(token(), token('another')).replaceAll('example', 'another').replace('Example Inc', 'Another Employer');
+  const healthy = await enrichAtsListingJob({ platform: 'cornerstone', slug: otherSlug, job: otherJob, requestTimeoutMs: 1000 }, {
+    ...deps, safeExternalFetch: async () => new Response(otherBody),
+  });
+  assert.equal(readAtsJobEnrichmentMarker(healthy)?.company, 'Another Employer');
+  assert.deepEqual(raw, original);
+  assert.equal(readAtsJobEnrichmentMarker(raw), null, 'unverified evidence stays pending');
+});
+
+test('Cornerstone transport failures retain shared protection', async () => {
+  const raw = parseExpandedListing('cornerstone', slug, fixtures.cornerstone).jobs[0];
+  const failures: unknown[] = [];
+  await assert.rejects(enrichAtsListingJob({ platform: 'cornerstone', slug, job: raw, requestTimeoutMs: 1000 }, {
+    safeExternalFetch: async () => new Response(new ReadableStream({ start(controller) { controller.error(new TypeError('connection terminated')); } })),
+    fetchPlatformResponse: async (_p, _s, request, options) => {
+      const response = await request(); await options?.onResponse?.(response); return response;
+    },
+    reserveProviderBudgetForSource: async () => ({ allowed: true }),
+    recordProviderFailure: async failure => { failures.push(failure); return null; },
+    passesPreFilter: () => ({ passes: true, reason: '' }),
+    createDeferredError: () => Object.assign(new Error('Retain for retry'), { name: 'AtsPlatformDeferredError' }),
+  }), { name: 'AtsPlatformDeferredError' });
+  assert.equal(failures.length, 1);
+});
+
 test('Polymer follows provider page numbers without guessing a page size or losing repeated-page failures', async () => {
   const first = parseExpandedListing('polymer', 'example', polymerPage([polymerJob()], { count: 2, total: 2, is_last: false, next_page: 2 }));
   const next = polymerPage([polymerJob(124)], { count: 2, total: 2, page: 2, is_first: false });

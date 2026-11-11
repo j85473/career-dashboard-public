@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { prisma } from './prisma';
+import type { AtsFirstCollectionCandidate } from './prismaClient';
+import { firstCollectionCandidateQuery } from './atsFirstCollectionFairness';
 import { recordDiscoveredAtsBoard } from './atsBoardDiscovery';
 import { firstCollectionRetryAt } from './atsFirstCollectionRetry';
 import { isTenantAtsServiceAddress } from './tenantAtsBoards';
@@ -51,7 +53,9 @@ export async function tickFirstCollections(validate: (platform: string, slug: st
     const pilots = Array.isArray(policy.pilotBoards) ? policy.pilotBoards.filter((value): value is string => typeof value === 'string').map(value => {
       const split = value.indexOf('::'); return { platform: value.slice(0, split), slug: value.slice(split + 2) };
     }) : [];
-    const next = await tx.atsFirstCollectionCandidate.findFirst({ where: {
+    const next = capacity
+      ? (await tx.$queryRaw<AtsFirstCollectionCandidate[]>(firstCollectionCandidateQuery(now)))[0]
+      : await tx.atsFirstCollectionCandidate.findFirst({ where: {
       state: 'discovered', nextValidationAt: { lte: now },
       ...(policy.mode === 'pilot' ? { OR: pilots.length ? pilots : [{ slug: '__no_pilot__' }] } : {}),
     }, orderBy: [{ createdAt: 'asc' }, { platform: 'asc' }, { slug: 'asc' }] });

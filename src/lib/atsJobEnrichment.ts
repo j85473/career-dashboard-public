@@ -159,7 +159,7 @@ async function readDetailJson(response: Response): Promise<unknown> {
 function isJobScopedDetailAvailability(error: unknown): boolean {
   return error instanceof AtsDetailResponseError
     || (error instanceof AtsDetailHttpError
-      && (error.status === 403 || error.status === 404));
+      && (error.status === 403 || error.status === 404 || error.status === 410));
 }
 
 const EMPTY_FIELDS: EnrichmentFields = Object.freeze({
@@ -471,7 +471,14 @@ function preparedDetailPlan(input: {
     return { plan: { url, transport: 'safe_fetch', fields, parse: async response => {
       const landed = expandedPostingIdentity(response.url || url);
       if (landed?.platform !== platform || landed.slug !== slug || landed.id !== identity.id) throw new AtsDetailResponseError('Cornerstone detail changed posting identity');
-      const detail = parseCornerstonePosting(await response.text(), url, stringValue(job.title));
+      // Read transport failures outside the parser boundary: they still belong
+      // to provider protection. Invalid evidence belongs only to this posting.
+      const body = await response.text();
+      let detail: Record<string, unknown>;
+      try { detail = parseCornerstonePosting(body, url, stringValue(job.title)); }
+      catch (error) {
+        throw new AtsDetailResponseError(error instanceof Error ? error.message : String(error), error);
+      }
       return { ...fields, company: stringValue(detail.company), location: stringValue(detail.location) || fields.location,
         description: stringValue(detail.description) };
     } }, reason: '', fields };
@@ -1071,7 +1078,7 @@ export async function enrichAtsListingJob(
     const message = error instanceof Error ? error.message : String(error);
     if (platform === 'cornerstone') {
       throw await deferredError(dependencies, platform, new Date(dependencies.now().getTime() + 3600_000),
-        { code: 'employer_unverified', scope: 'posting' });
+        readAtsRetryReason(error) || { code: 'employer_unverified', scope: 'posting' });
     }
     if (platform === 'successfactors') {
       throw await successFactorsDetailDeferredError(dependencies, message, input.detailAttemptCount,

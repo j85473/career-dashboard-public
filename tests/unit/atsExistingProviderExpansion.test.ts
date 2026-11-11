@@ -79,7 +79,9 @@ test('resolved ClearCompany aliases honor the retired UUID without creating a se
   const updates: Record<string, unknown>[] = [], now = new Date();
   const policy = { id: 'new-providers', mode: 'capacity', maxUnfinished: 32, maxCatalogueJobs: 250, maxResponseBytes: 5242880, pilotBoards: [], dailyBoardLimit: 5, healthySince: now, healthObservedAt: now };
   const tx = {
-    $queryRaw: async () => [{ unfinished: BigInt(0), items: BigInt(0), bytes: BigInt(0), persistence: BigInt(0), totalPersistence: BigInt(0), gate: 'open' }],
+    $queryRaw: async (query: { text?: string }) => query.text?.includes('WITH platform_turns')
+      ? [{ platform: 'clearcompany', slug: 'hosted::franklincovey' }]
+      : [{ unfinished: BigInt(0), items: BigInt(0), bytes: BigInt(0), persistence: BigInt(0), totalPersistence: BigInt(0), gate: 'open' }],
     $executeRaw: async () => 0,
     atsFirstCollectionPolicy: { findUniqueOrThrow: async () => policy, update: async ({ data }: { data: Record<string, unknown> }) => Object.assign(policy, data) },
     atsCompany: { count: async () => 0, findMany: async ({ where }: { where: { OR: { slug: { equals: string } }[] } }) => {

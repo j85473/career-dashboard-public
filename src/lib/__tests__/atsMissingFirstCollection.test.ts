@@ -26,5 +26,5 @@ test('the handoff repair runs only after the controller proves policy and capaci
   const call = source.indexOf('await catalogueMissingFirstCollectionCandidates(tx)');
   assert(call > source.indexOf('if (!health.healthy || !firstCollectionAllowance('));
   assert(call > source.indexOf('if (policy.validationLeaseExpiresAt'));
-  assert(call < source.indexOf('const next = await tx.atsFirstCollectionCandidate.findFirst'));
+  assert(call < source.indexOf('const next = capacity'));
 });

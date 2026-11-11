@@ -105,3 +105,36 @@ test('database admission fences cover Symphony without changing existing data or
   assert.match(sql, /FOR SHARE/);
   assert.doesNotMatch(sql, /\b(?:UPDATE|DELETE|TRUNCATE|ALTER|INSERT)\b/i);
 });
+
+const hgvJob = () => ({ ...fixture().searchResults[0].job, id: 21856506, scout_orgid: 2012,
+  company_name: 'Hilton Grand Vacations', ats_portalid: 'orc_mule_en', ref: '4246',
+  url: 'https://careers.hgv.com/job-en/21856506/role/' });
+const hgvListing = (job: Record<string, unknown>) => ({ totalHits: 1, nextPageToken: null, searchResults: [{ job }] });
+
+test('HGV missing employer uses only its verified organization and portal; conflicts still fail', () => {
+  const job = { ...hgvJob(), company_name: null };
+  const original = structuredClone(job);
+  assert.equal(parseSymphonyListing('hgv', hgvListing(job)).jobs[0].company, 'Hilton Grand Vacations');
+  assert.deepEqual(job, original);
+  for (const change of [{ scout_orgid: 2391 }, { ats_portalid: 'Taleo' }, { company_name: 'Other Employer' }, { company_name: '' }]) {
+    assert.throws(() => parseSymphonyListing('hgv', hgvListing({ ...job, ...change })));
+  }
+  const deltek = fixture(); deltek.searchResults[0].job.company_name = null;
+  assert.throws(() => parseSymphonyListing('deltek', deltek));
+});
+
+test('HGV upstream links retain the Symphony identity and original URL only for the exact reviewed Oracle site and requisition', () => {
+  const oracle = 'https://efuq.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/HiltonGrandVacations/job/4246';
+  const raw = hgvListing({ ...hgvJob(), url: oracle });
+  const job = parseSymphonyListing('hgv', raw).jobs[0];
+  assert.equal(job.id, 'hgv::21856506');
+  assert.equal(job.publicAtsPostingId, '21856506');
+  assert.equal(job.url, 'https://careers.hgv.com/job-en/21856506/');
+  assert.equal(job.symphonySourceUrl, oracle);
+  assert.equal(raw.searchResults[0].job.url, oracle);
+  for (const url of [oracle.replace('4246', '999'), oracle.replace('efuq.', 'other.'),
+    oracle.replace('HiltonGrandVacations', 'OtherEmployer'), oracle.replace('https:', 'http:'),
+    oracle + '?other=1', oracle.replace('oraclecloud.com', 'oraclecloud.com.evil.test')]) {
+    assert.throws(() => parseSymphonyListing('hgv', hgvListing({ ...hgvJob(), url })));
+  }
+});

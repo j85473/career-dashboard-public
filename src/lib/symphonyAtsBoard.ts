@@ -2,9 +2,11 @@ import { load } from 'cheerio';
 
 // Explicitly verified employer-host / public API organization pairs. A vanity
 // hostname alone must never be converted into an invented vendor tenant.
-const boards: Record<string, { host: string; organization: string; company: string; branding?: string; scoutOrgId: number; portals: string[]; home: string; postingPath: string; levelIsLocation?: boolean }> = {
+const boards: Record<string, { host: string; organization: string; company: string; branding?: string; scoutOrgId: number; portals: string[]; home: string; postingPath: string; levelIsLocation?: boolean;
+  organizationSuppliesEmployer?: boolean; upstreamOracleSite?: string }> = {
   deltek: { host: 'careers.deltek.com', organization: 'd78c5717-c840-461e-8f42-7e005f1a8068', company: 'Deltek', scoutOrgId: 2458, portals: ['Kenexa'], home: '/', postingPath: '/job', levelIsLocation: true },
-  hgv: { host: 'careers.hgv.com', organization: '66818394-0397-4ae2-9aff-2893667aba0b', company: 'Hilton Grand Vacations', scoutOrgId: 2012, portals: ['orc_mule_en'], home: '/', postingPath: '/job-en' },
+  hgv: { host: 'careers.hgv.com', organization: '66818394-0397-4ae2-9aff-2893667aba0b', company: 'Hilton Grand Vacations', scoutOrgId: 2012, portals: ['orc_mule_en'], home: '/', postingPath: '/job-en',
+    organizationSuppliesEmployer: true, upstreamOracleSite: 'https://efuq.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/HiltonGrandVacations/job/' },
   victoriassecret: { host: 'careers.victoriassecret.com', organization: '382ab4db-03e8-40cc-b413-51539aca9954', company: 'Victorias Secret & Co', branding: "Victoria's Secret", scoutOrgId: 2391, portals: ['SuccesFactors', 'Taleo'], home: '/en/', postingPath: '/en/job' },
 };
 export const SYMPHONY_DISCOVERY_PATTERNS = Object.values(boards).map(value => value.host + '/*');
@@ -94,6 +96,19 @@ function row(value: unknown): Row {
 }
 const text = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
 
+/** HGV publishes some records using its own Oracle requisition URL. The
+ * verified public site's configured detail route still serves the Symphony ID. */
+function symphonyListingUrl(slug: string, job: Row, id: string): string {
+  const b = board(slug), published = text(job.url);
+  const identity = symphonyPostingIdentity(published);
+  if (identity?.slug === slug && identity.id === id && new URL(published).protocol === 'https:') return published;
+  if (b.upstreamOracleSite && /^[1-9]\d*$/.test(text(job.ref))) {
+    const expected = b.upstreamOracleSite + text(job.ref);
+    if (published === expected || published === expected + '/') return `https://${b.host}${b.postingPath}/${id}/`;
+  }
+  throw new Error('Symphony listing posting identity mismatch');
+}
+
 export function parseSymphonyListing(slug: string, payload: unknown, offset = 0): { jobs: Row[]; metadata: Row; total: number } {
   symphonyBoardRequest(slug, offset);
   const b = board(slug), data = row(payload);
@@ -107,16 +122,22 @@ export function parseSymphonyListing(slug: string, payload: unknown, offset = 0)
     const j = row(row(value).job), id = typeof j.id === 'number' && Number.isSafeInteger(j.id) && j.id > 0 ? String(j.id) : '';
     if (!id || ids.has(id)) throw new Error('Symphony listing has missing or repeated posting identity');
     ids.add(id);
-    const url = text(j.url), title = text(j.title), description = text(j.description);
-    if (j.scout_orgid !== b.scoutOrgId || j.company_name !== b.company || !b.portals.includes(String(j.ats_portalid))
-      || symphonyBoardSlugFromUrl(url) !== slug || new URL(url).protocol !== 'https:'
-      || symphonyPostingIdentity(url)?.id !== id) throw new Error('Symphony listing posting identity mismatch');
+    const title = text(j.title), description = text(j.description);
+    // This exception is bound to HGV's reviewed organization and portal, never
+    // inferred from a tenant slug. A conflicting employer remains an error.
+    const employerMatches = j.company_name === b.company
+      || b.organizationSuppliesEmployer && j.company_name == null;
+    if (j.scout_orgid !== b.scoutOrgId || !employerMatches || !b.portals.includes(String(j.ats_portalid))) {
+      throw new Error('Symphony listing posting identity mismatch');
+    }
+    const url = symphonyListingUrl(slug, j, id);
     if (!title || !description || !text(j.ref)) throw new Error('Symphony listing has no title, description or requisition');
     // Deltek's display location carries remote scope. The primary API office
     // can be headquarters even for a US-wide remote role; never substitute it.
     const location = (b.levelIsLocation ? text(j.level) : '') || [text(j.primary_city), text(j.primary_state), text(j.primary_country)].filter(Boolean).join(', ') || 'Unknown Location';
     return { id: `${slug}::${id}`, publicAtsPostingId: id, title, description, company: b.company, url, location,
-      symphonyRequisition: text(j.ref), symphonyApplyUrl: text(j.seo_url), postedTravel: text(j.travel) || null };
+      symphonyRequisition: text(j.ref), symphonyApplyUrl: text(j.seo_url),
+      ...(url !== text(j.url) ? { symphonySourceUrl: text(j.url) } : {}), postedTravel: text(j.travel) || null };
   });
   return { jobs, total, metadata: { name: b.company, listingHasMore: hasMore, symphonyListingOffset: offset } };
 }
