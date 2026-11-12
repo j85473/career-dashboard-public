@@ -26,6 +26,7 @@ import type { Prisma } from './prismaClient';
 import * as crypto from "crypto";
 import { ukgReadyPage } from './ukgReadyUrl';
 import { passesPreFilter } from "./jobFiltering";
+import { descriptionWorkLocation } from './descriptionWorkLocation';
 import { parseJsonWithControlCharacterRecovery } from './lenientJson';
 import { evaluateAuthoritativeMetadata, hasAuthoritativeMetadata } from './authoritativeMetadataGate';
 import { ATS_BOARD_CONCURRENCY } from "./ingestionTaskCatalog";
@@ -2311,6 +2312,7 @@ export async function ingestExternalJob(
   if (fullerDescription) description = fullerDescription;
   const locationRecovery = await recoverMissingSourceLocation({ title, company, location, url, source: input.source });
   if (locationRecovery) location = locationRecovery.location;
+  location = descriptionWorkLocation(location, description) || location;
   const postingIdentity = generatePostingIdentity({ source: input.source, sourceId, canonicalUrl, url });
   const identityFingerprint = generateV4Fingerprint(title, company, location);
 
@@ -3815,6 +3817,7 @@ export async function ingestJobs(
       title, company, location, url: finalUrl, source,
     }, { signal }) : null;
     if (locationRecovery) location = locationRecovery.location;
+    location = descriptionWorkLocation(location, finalDescription) || location;
     finalCanonicalUrl = normalizeUrl(finalCanonicalUrl);
     company = await standardizeIncomingCompany({
       company,

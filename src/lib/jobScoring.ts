@@ -3,6 +3,7 @@ import { getAllResumes } from './resume';
 import type { ResumeData } from './resume';
 import { identifyAts } from './atsUtils';
 import { passesPreFilter } from './jobFiltering';
+import { descriptionWorkLocation } from './descriptionWorkLocation';
 import { hasAdditionalTerritoryRetailTitle, hasDealerDistributorAccountEvidence, hasMidLevelCommercialTitle, hasTerritoryAccountSalesEvidence } from './commercialRoleDiscovery';
 import { derivePostingFacts } from './postingFacts';
 import { buildSafeJinaReaderUrl, safeExternalFetch } from './safeExternalFetch';
@@ -1107,7 +1108,13 @@ export async function scoreJobs(
       });
       const newTitle = resolvedManualMetadata.title;
       const newCompany = resolvedManualMetadata.company;
-      const newLocation = resolvedManualMetadata.location;
+      // Apply new geography interpretation only before any score exists.
+      // Saved scores and human lifecycle decisions are never revisited here.
+      const canResolveWorkLocation = !lifecycleProtected && currentJob.fitScore === null
+        && currentJob.aimFitScore === null && currentJob.reqFitScore === null
+        && !await prisma.jobScoreEvent.findFirst({ where: { jobId: currentJob.id }, select: { id: true } });
+      const newLocation = (canResolveWorkLocation && descriptionWorkLocation(resolvedManualMetadata.location, fullDesc))
+        || resolvedManualMetadata.location;
       // Some providers only reveal the occupation in the recovered title.
       // Match that title while retaining the stored title in the atomic guard.
       if (newTitle !== currentJob.title && await filterNewCustomerSuccessRole(

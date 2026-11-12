@@ -89,6 +89,20 @@ function looksLikePortalShell(text: string): boolean {
   return shellSignal && !hasUsableDuties(text) && !hasUsableQualifications(text);
 }
 
+/** Long applicant privacy policies contain employment vocabulary but no role. */
+function looksLikeApplicantPrivacyPage(value: string): boolean {
+  const privacySections = [
+    /categories of (?:personal information|sources|third parties)/i,
+    /how we use (?:and disclose )?your personal information/i,
+    /how long we retain (?:your )?personal information/i,
+    /verification process and (?:information required|required information)/i,
+  ].filter(pattern => pattern.test(value)).length;
+  if (privacySections < 2) return false;
+  const roleSection = /(?:^|\n)\s*(?:#{1,6}\s*|\*\*)?(?:key responsibilities|responsibilities|job description|description|job duties|what you(?:'|’)ll do|what you will do)\s*(?:[:*]|$)/im.test(value);
+  const roleProse = /\b(?:in this role|the successful candidate|your responsibilities|you(?: will|'ll|’ll) (?:manage|lead|own|develop|support|work|build|grow|coordinate)|we are (?:hiring|seeking|looking for))\b/i.test(value);
+  return !roleSection && !roleProse;
+}
+
 function hasTerminalClosureSignal(text: string): boolean {
   // First-party closure notices observed on SuccessFactors and JazzHR. Keep
   // these exact: a temporary outage or a blocked request is not a closed job.
@@ -206,7 +220,7 @@ export function looksLikeSiteConfiguration(value: string): boolean {
 
 export function looksLikeInvalidJobDescription(value: string): boolean {
   value = cleanJobDescriptionPage(value);
-  if (looksLikeTrabajoPageChrome(value)) return true;
+  if (looksLikeTrabajoPageChrome(value) || looksLikeApplicantPrivacyPage(readerPostingBody(value))) return true;
   const text = normalizedDescription(readerPostingBody(value)).toLowerCase();
   if (!text || looksLikeSiteConfiguration(text)) return true;
   // Anti-bot explanations can be long and mention browser "requirements".

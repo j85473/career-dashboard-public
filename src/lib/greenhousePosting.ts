@@ -5,6 +5,7 @@ import { postingMetadataValue, postingUrlsMatch } from './postingMetadata';
 import { publishedEmployerName } from './publicAtsEmployer';
 import { safeExternalFetch } from './safeExternalFetch';
 import { greenhousePostingUrl } from './coreAtsPostingUrl';
+import { descriptionWorkLocation } from './descriptionWorkLocation';
 
 type Identity = { board: string; id: string };
 const hosted = (host: string) => /^(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io$/.test(host);
@@ -50,9 +51,11 @@ export function parseGreenhousePosting(body: unknown, identity: Identity, board?
   const title = postingMetadataValue(job.title);
   if (String(job.id) !== identity.id || !title || typeof job.content !== 'string') return null;
   const company = publishedEmployerName(job.company_name) || publishedEmployerName((board as { name?: unknown } | null)?.name);
+  const text = cleanHtmlText(job.content);
+  const location = postingMetadataValue(job.location?.name);
   return { ats: 'Greenhouse', atsSlug: identity.board, platform: 'greenhouse',
     title: title.replace(/^Job Application for /i, '').trim(), company: company || undefined,
-    location: postingMetadataValue(job.location?.name), text: cleanHtmlText(job.content) };
+    location: descriptionWorkLocation(location, text) || location, text };
 }
 
 export async function fetchGreenhousePosting(value: string, read: typeof safeExternalFetch = safeExternalFetch): Promise<AtsScrapeResult | null> {

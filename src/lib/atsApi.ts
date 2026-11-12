@@ -1,6 +1,7 @@
 import { additionalPostingPlatform, fetchAdditionalAtsPosting } from './additionalAtsPosting';
 import { INCOMPLETE_LOCATION } from './postingLocation';
 import { adpPostingIdentity, fetchAdpPosting } from './adpPosting';
+import { adpMyJobsIdentity, fetchAdpMyJobsPosting } from './adpMyJobsPosting';
 import { gunzipSync } from 'node:zlib';
 import * as cheerio from 'cheerio';
 
@@ -566,6 +567,7 @@ export async function scrapeAtsApi(url: string): Promise<AtsScrapeResult | null>
     }
 
     if (ukgReadyPage(url)) return fetchUkgReadyPosting(url);
+    if (adpMyJobsIdentity(url)) return fetchAdpMyJobsPosting(url);
     if (adpPostingIdentity(url)) return fetchAdpPosting(url);
     if (umantisPostingIdentity(url)) return fetchUmantisPosting(url);
     if (symphonyPostingIdentity(url)) return fetchSymphonyPosting(url);

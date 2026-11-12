@@ -7,6 +7,7 @@ import { resolveRedirectUrl } from '@/lib/atsRedirect';
 import { adzunaDetailsUrl, extractAdzunaPostingText } from '@/lib/adzunaDetails';
 import { scrapeAtsApi, scrapeJobPostingMetadata } from '@/lib/atsApi';
 import { coreAtsHostedProvider } from '@/lib/coreAtsPostingUrl';
+import { descriptionWorkLocation } from '@/lib/descriptionWorkLocation';
 import { isGenericManualImportTitle } from '@/lib/manualImportPolicy';
 import { completePostingMetadata, parsePostingReaderMetadata, postingMetadataValue, postingRefreshDescription } from '@/lib/postingMetadata';
 import { scoreJobs } from '@/lib/jobScoring';
@@ -311,6 +312,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       metadata: { title: newTitle, company: newCompany, location: newLocation },
     });
     descriptionText = descriptionResult.description;
+    // Only the newly verified posting can narrow a remote label. A retained
+    // description from the old URL cannot supply metadata for the pasted link.
+    if (descriptionResult.verified) newLocation = descriptionWorkLocation(newLocation || claimedJob.location, descriptionText) || newLocation;
 
     // The import's follow-up refresh must not replace a verified name (or
     // the explicit unresolved label) with an ATS hostname from another reader.
