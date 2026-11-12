@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import JobCard from './JobCard';
+import { dashboardRefreshGuard } from '@/lib/dashboardAutoRefresh';
+import { useDashboardRefresh, useQuietRefreshCommit } from '@/lib/useDashboardRefresh';
+import { fetchClientJobPages } from '@/lib/clientJobPages';
 import type { JobListItem } from '@/types/job';
 import type { UkgReadySelection } from '@/lib/ukgReadyPosting';
 import {
@@ -121,6 +124,8 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
   const [jobSearchError, setJobSearchError] = useState('');
   const [lastJobSearch, setLastJobSearch] = useState<JobSearchRequest | null>(null);
   const jobSearchAbortRef = useRef<AbortController | null>(null);
+  const loadedPageRef = useRef(1);
+  const quietCommit = useQuietRefreshCommit();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [platformSummaries, setPlatformSummaries] = useState<PlatformSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -141,8 +146,12 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
   const [pasteOutcome, setPasteOutcome] = useState<PasteOutcome | null>(null);
   const [pasteActionBusy, setPasteActionBusy] = useState(false);
   const [pasteError, setPasteError] = useState('');
+  const [pasteNeedsDetails, setPasteNeedsDetails] = useState(false);
+  const [pasteDetails, setPasteDetails] = useState({ title: '', company: '', location: '', description: '' });
 
-  const runJobSearch = useCallback(async (request: JobSearchRequest, page = 1, append = false) => {
+  const runJobSearch = useCallback(async (request: JobSearchRequest, page = 1, append = false, quiet = false) => {
+    if (quiet && jobSearchAbortRef.current) return;
+    const canApply = dashboardRefreshGuard();
     jobSearchAbortRef.current?.abort();
     const controller = new AbortController();
     jobSearchAbortRef.current = controller;
@@ -151,9 +160,8 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
       timedOut = true;
       controller.abort();
     }, 20_000);
-    setJobSearchLoading(true);
-    setJobSearchError('');
-    if (!append) {
+    if (!quiet) { setJobSearchLoading(true); setJobSearchError(''); }
+    if (!append && !quiet) {
       setJobSearchResults(null);
       setJobLocationLabel('');
     }
@@ -171,30 +179,36 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
         params.set('location', request.location);
         params.set('radius', request.radius);
       }
-      const response = await fetch(`/api/jobs/search?${params}`, { signal: controller.signal });
-      const data = await response.json();
-      if (controller.signal.aborted) return;
-      if (!response.ok) throw new Error(data.error || 'Search failed.');
-      setJobLocationLabel(data.location?.label || '');
-      const nextJobs: JobListItem[] = data.jobs || [];
-      setJobSearchResults((previous) => {
-        if (!append) return nextJobs;
-        const existingIds = new Set((previous || []).map((job) => job.id));
-        return [...(previous || []), ...nextJobs.filter((job) => !existingIds.has(job.id))];
-      });
-      setJobSearchPagination(data.pagination || { page, total: 0, hasMore: false });
+      const pages = quiet ? Array.from({ length: loadedPageRef.current }, (_, index) => index + 1) : [page];
+      const data = await fetchClientJobPages<typeof jobSearchPagination>('/api/jobs/search', params, pages, controller.signal);
+      if (controller.signal.aborted || jobSearchAbortRef.current !== controller || (quiet && !canApply())) return;
+      const apply = () => {
+        setJobLocationLabel(data.location?.label || '');
+        const nextJobs: JobListItem[] = data.jobs || [];
+        setJobSearchResults((previous) => {
+          if (!append) return nextJobs;
+          const existingIds = new Set((previous || []).map((job) => job.id));
+          return [...(previous || []), ...nextJobs.filter((job) => !existingIds.has(job.id))];
+        });
+        setJobSearchPagination(data.pagination || { page, total: 0, hasMore: false });
+        loadedPageRef.current = data.pagination?.page || page;
+        setJobSearchError('');
+      };
+      if (quiet) quietCommit(apply); else apply();
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        if (timedOut) setJobSearchError('This search took too long. Try a more specific phrase or filter.');
+        if (timedOut && !quiet) setJobSearchError('This search took too long. Try a more specific phrase or filter.');
         return;
       }
       console.error(error);
-      setJobSearchError(error instanceof Error ? error.message : 'Search failed.');
+      if (!quiet) setJobSearchError(error instanceof Error ? error.message : 'Search failed.');
     } finally {
       window.clearTimeout(timeout);
-      if (jobSearchAbortRef.current === controller) setJobSearchLoading(false);
+      if (jobSearchAbortRef.current === controller) { jobSearchAbortRef.current = null; setJobSearchLoading(false); }
     }
-  }, []);
+  }, [quietCommit]);
+
+  useDashboardRefresh(() => { if (lastJobSearch) void runJobSearch(lastJobSearch, 1, false, true); });
 
   useEffect(() => () => jobSearchAbortRef.current?.abort(), []);
 
@@ -425,7 +439,7 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
     }
   };
 
-  const handleManualImport = async (selectedUrl?: string, listingPage = 1) => {
+  const handleManualImport = async (selectedUrl?: string, listingPage = 1, usePastedDetails = false) => {
     const importUrl = selectedUrl || manualUrl.trim();
     if (!importUrl) return;
     setManualImporting(true);
@@ -435,12 +449,13 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
       const res = await fetch('/api/jobs/manual-import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: importUrl, listingPage })
+        body: JSON.stringify({ url: importUrl, listingPage, ...(usePastedDetails ? pasteDetails : {}) })
       });
       const data = await res.json();
       if (res.ok && data.refreshWarning) setPasteError(data.refreshWarning);
       if (!res.ok) {
         setPasteError(`The link could not be imported: ${data.error || 'unknown error'}`);
+        setPasteNeedsDetails(data.needManual === true);
       } else if (data.selection?.kind === 'choose_opening') {
         setPasteSelection(data.selection);
       } else if (data.match?.kind === 'same_link' && data.match.job) {
@@ -460,6 +475,10 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
         setPasteSelection(null);
         setPasteOutcome({ kind: 'imported', pasted: { id: data.job.id, title: data.job.title, company: data.job.company } });
         setManualUrl('');
+      }
+      if (res.ok && data.job) {
+        setPasteNeedsDetails(false);
+        setPasteDetails({ title: '', company: '', location: '', description: '' });
       }
     } catch(e: unknown) {
       setPasteError(`The link could not be imported: ${e instanceof Error ? e.message : String(e)}`);
@@ -541,7 +560,7 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
   const platformTotals = Object.fromEntries(platformSummaries.map((platform) => [platform.name, platform.count]));
 
   return (
-    <div className="advanced-search">
+    <div className="advanced-search" data-refresh-blocked={searchLoading || manualImporting || pasteActionBusy || pasteNeedsDetails}>
       <section className="panel advanced-job-search-panel">
         <div className="advanced-job-search-heading">
           <div>
@@ -571,7 +590,7 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
           )}
         </div>
 
-        <form onSubmit={handleJobSearchSubmit}>
+        <form onSubmit={handleJobSearchSubmit} data-refresh-transient>
           <div className="advanced-query-row">
             <div>
               <label htmlFor="advanced-job-query">
@@ -749,7 +768,7 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
       <section className="panel">
         <h2>Manual Job Import</h2>
         <p>
-          Paste a direct link to a job posting here. It will automatically parse the company & title, skip Aim Fit scoring, and process straight into your Inbox.
+          Paste a job posting link, including Indeed Easy Apply jobs. The Dashboard reads the posting details and adds it to your Inbox. If Indeed blocks access, you can paste the details from the posting.
         </p>
         <div className="manual-import-row">
           <input 
@@ -757,7 +776,8 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
             className="feedback-input manual-import-input"
             placeholder="https://company.com/careers/job..." 
             value={manualUrl}
-            onChange={(e) => { setManualUrl(e.target.value); setPasteSelection(null); }}
+            onChange={(e) => { setManualUrl(e.target.value); setPasteSelection(null); setPasteNeedsDetails(false); setPasteError(''); setPasteDetails({ title: '', company: '', location: '', description: '' }); }}
+            disabled={manualImporting}
           />
           <button 
             className="btn btn-primary manual-import-button"
@@ -768,6 +788,17 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
           </button>
         </div>
         {pasteError && <div className="paste-outcome paste-outcome-error" role="alert">{pasteError}</div>}
+        {pasteNeedsDetails && (
+          <form className="paste-outcome manual-import-details" onSubmit={(event) => { event.preventDefault(); void handleManualImport(undefined, 1, true); }} aria-busy={manualImporting}>
+            <div className="paste-outcome-heading">Import details from Indeed</div>
+            <p>Copy these fields from the same Indeed posting. Your Indeed link stays on the card so you can return there to apply.</p>
+            <label>Job title<input className="feedback-input" required value={pasteDetails.title} disabled={manualImporting} onChange={event => setPasteDetails({ ...pasteDetails, title: event.target.value })} /></label>
+            <label>Employer<input className="feedback-input" required value={pasteDetails.company} disabled={manualImporting} onChange={event => setPasteDetails({ ...pasteDetails, company: event.target.value })} /></label>
+            <label>Location (optional)<input className="feedback-input" value={pasteDetails.location} disabled={manualImporting} onChange={event => setPasteDetails({ ...pasteDetails, location: event.target.value })} /></label>
+            <label>Full job description<textarea className="feedback-input" required rows={10} value={pasteDetails.description} disabled={manualImporting} onChange={event => setPasteDetails({ ...pasteDetails, description: event.target.value })} /></label>
+            <button className="btn btn-primary" type="submit" disabled={manualImporting}>{manualImporting ? 'Processing...' : 'Import pasted details'}</button>
+          </form>
+        )}
         {pasteSelection && (
           <div className="paste-outcome" aria-busy={manualImporting}>
             <div className="paste-outcome-heading">Choose the job to import</div>
@@ -850,6 +881,7 @@ export function AdvancedSearchTab({ onSelectJob, onJobUpdate }: AdvancedSearchTa
           <div style={{ marginTop: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <input
               type="search"
+              data-refresh-transient
               className="feedback-input"
               placeholder="Find an ATS endpoint…"
               aria-label="Find an ATS endpoint"

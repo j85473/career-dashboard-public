@@ -5,6 +5,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { LiveAtsQueuePanel } from './AtsQueuePanel';
 import type { JobListItem } from '@/types/job';
 import { showAlert, showConfirm } from '@/lib/modal';
+import { dashboardRefreshGuard } from '@/lib/dashboardAutoRefresh';
+import { useDashboardRefresh, useQuietRefreshCommit } from '@/lib/useDashboardRefresh';
+import { fetchClientJobPages } from '@/lib/clientJobPages';
 import {
   scoringImportCompletionMessage,
   scoringImportConfirmationMessage,
@@ -240,6 +243,10 @@ export function ScoringLogTab({ onSelectJob, activeLogTab, pipelineState }: Scor
 
   const [error, setError] = useState('');
   const abortRef = useRef<AbortController | null>(null);
+  const loadedPageRef = useRef(1);
+  const quietCommit = useQuietRefreshCommit();
+  const currentTabRef = useRef(currentTab);
+  useEffect(() => { currentTabRef.current = currentTab; }, [currentTab]);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const importDragDepthRef = useRef(0);
 
@@ -248,33 +255,37 @@ export function ScoringLogTab({ onSelectJob, activeLogTab, pipelineState }: Scor
   const activeBatch = batches.find((batch) => batch.stage === stage && batch.runId === null
     && (batch.status === 'exported' || batch.status === 'superseded')) || null;
 
-  const fetchBatches = useCallback(async () => {
+  const fetchBatches = useCallback(async (quiet = false) => {
     if (currentTab !== 'aim_fit' && currentTab !== 'experience_fit') return;
-    setBatchesLoading(true);
+    const canApply = dashboardRefreshGuard();
+    if (!quiet) setBatchesLoading(true);
     try {
       const response = await fetch(`/api/scoring/batches?stage=${stage}`, { cache: 'no-store' });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'Could not load scoring batches.');
+      if (currentTabRef.current !== currentTab || (quiet && !canApply())) return;
       setBatches(body.batches || []);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not load scoring batches.');
+      if (!quiet) setError(reason instanceof Error ? reason.message : 'Could not load scoring batches.');
     } finally {
-      setBatchesLoading(false);
+      if (!quiet) setBatchesLoading(false);
     }
   }, [currentTab, stage]);
 
-  const fetchRuns = useCallback(async () => {
+  const fetchRuns = useCallback(async (quiet = false) => {
     if (currentTab !== 'aim_fit' && currentTab !== 'experience_fit') return;
-    setBatchesLoading(true);
+    const canApply = dashboardRefreshGuard();
+    if (!quiet) setBatchesLoading(true);
     try {
       const response = await fetch(`/api/scoring/runs?stage=${stage}`, { cache: 'no-store' });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || 'Could not load scoring runs.');
+      if (currentTabRef.current !== currentTab || (quiet && !canApply())) return;
       setRuns(body.runs || []);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not load scoring runs.');
+      if (!quiet) setError(reason instanceof Error ? reason.message : 'Could not load scoring runs.');
     } finally {
-      setBatchesLoading(false);
+      if (!quiet) setBatchesLoading(false);
     }
   }, [currentTab, stage]);
 
@@ -519,11 +530,13 @@ export function ScoringLogTab({ onSelectJob, activeLogTab, pipelineState }: Scor
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    const canApply = dashboardRefreshGuard();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
     if (!quiet) {
       if (append) setLoadingMore(true);
       else setLoading(true);
     }
-    setError('');
+    if (!quiet) setError('');
     try {
       const params = new URLSearchParams({
         status: 'log',
@@ -532,15 +545,21 @@ export function ScoringLogTab({ onSelectJob, activeLogTab, pipelineState }: Scor
         page: String(page),
         limit: '50',
       });
-      const res = await fetch(`/api/jobs?${params}`, { signal: controller.signal });
-      if (!res.ok) throw new Error('Could not load the scoring log.');
-      const data = await res.json();
-      setJobs((previous) => append ? [...previous, ...(data.jobs || [])] : (data.jobs || []));
-      setPagination(data.pagination || { page, total: data.jobs?.length || 0, hasMore: false });
+      const pages = quiet ? Array.from({ length: loadedPageRef.current }, (_, index) => index + 1) : [page];
+      const data = await fetchClientJobPages<typeof pagination>('/api/jobs', params, pages, controller.signal);
+      if (controller.signal.aborted || abortRef.current !== controller || (quiet && !canApply())) return;
+      const apply = () => {
+        setJobs((previous) => append ? [...previous, ...(data.jobs || [])] : (data.jobs || []));
+        setPagination(data.pagination || { page, total: data.jobs?.length || 0, hasMore: false });
+        loadedPageRef.current = data.pagination?.page || page;
+        setError('');
+      };
+      if (quiet) quietCommit(apply); else apply();
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === 'AbortError') return;
-      setError(reason instanceof Error ? reason.message : 'Could not load the scoring log.');
+      if (!quiet) setError(reason instanceof Error ? reason.message : 'Could not load the scoring log.');
     } finally {
+      clearTimeout(timeout);
       if (abortRef.current === controller) {
         abortRef.current = null;
         if (!quiet) {
@@ -549,7 +568,14 @@ export function ScoringLogTab({ onSelectJob, activeLogTab, pipelineState }: Scor
         }
       }
     }
-  }, [currentTab]);
+  }, [currentTab, quietCommit]);
+
+  useDashboardRefresh(() => {
+    if (loading || loadingMore || manualBusy) return;
+    void fetchJobs(1, false, true);
+    void fetchRuns(true);
+    void fetchBatches(true);
+  });
 
   useEffect(() => {
     const timer = setTimeout(() => fetchJobs(), 0);
@@ -625,7 +651,7 @@ export function ScoringLogTab({ onSelectJob, activeLogTab, pipelineState }: Scor
   );
 
   const row = (job: JobListItem, detail?: React.ReactNode) => (
-    <button key={job.id} type="button" className="log-job-row" onClick={() => onSelectJob?.(job)}>
+    <button key={job.id} data-job-id={job.id} type="button" className="log-job-row" onClick={() => onSelectJob?.(job)}>
       <span>
         <strong>{job.company}</strong>
         <span>{job.title}</span>

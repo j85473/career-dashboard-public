@@ -136,6 +136,7 @@ function JobCard({ job, onSelect, primaryScore = 'aim', onJobUpdate, showStatusB
   return (
     <article
       className={`job-card ${getFitClass()}${isPromptHealthPriority ? ' prompt-health-priority-job' : ''}${isAcostaPriority ? ' acosta-channel-sales-priority-job' : ''}`}
+      data-job-id={job.id}
       onClick={() => onSelect(job)}
     >
       {isAcostaPriority && (

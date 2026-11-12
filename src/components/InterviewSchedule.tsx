@@ -94,7 +94,7 @@ export function InterviewSchedule({ job, onJobUpdate }: {
       {editing === null ? (
         <button type="button" className="interview-add" disabled={busy} onClick={() => edit()}>+ Add interview date</button>
       ) : (
-        <form className="interview-schedule-form" onSubmit={event => {
+        <form className="interview-schedule-form" data-refresh-blocked="true" onSubmit={event => {
           event.preventDefault();
           void save(editing === 'new' ? 'POST' : 'PATCH', editing === 'new' ? undefined : editing);
         }}>

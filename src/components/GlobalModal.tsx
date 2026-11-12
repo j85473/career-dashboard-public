@@ -29,6 +29,8 @@ export function GlobalModal() {
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
       style={{
         position: 'fixed',
         top: 0,

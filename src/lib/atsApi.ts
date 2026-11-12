@@ -39,6 +39,8 @@ import { fetchExpandedAtsPosting } from './expandedAtsPosting';
 import { isSuccessFactorsCareerSite, parseSuccessFactorsCareerSitePosting } from './successFactorsCareerSite';
 import { ashbyEmbed } from './ashbyEmbed';
 import { jobvitePostingIdentity } from './jobviteLocation';
+import { isIndeedHost } from './indeedPostingUrl';
+import { fetchIndeedPosting } from './indeedPosting';
 
 function isDomain(hostname: string, domain: string) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
@@ -521,6 +523,8 @@ export async function scrapeAtsApi(url: string): Promise<AtsScrapeResult | null>
   try {
     const parsed = await assertSafeExternalUrl(url);
     const host = parsed.hostname.toLowerCase();
+
+    if (isIndeedHost(host)) return fetchIndeedPosting(url);
 
     if (jobvitePostingIdentity(url)) {
       // nl=1 keeps this exact posting on Jobvite instead of redirecting to

@@ -26,6 +26,8 @@ import { assessJobDescriptionQuality } from '@/lib/jobDescriptionQuality';
 import { scoreJobs } from '@/lib/jobScoring';
 import { userCanonicalJobUrlFields } from '@/lib/userCanonicalJobUrl';
 import { recordDiscoveredAtsBoard } from '@/lib/atsBoardDiscovery';
+import { indeedPostingKey, indeedPostingUrl, isIndeedHost } from '@/lib/indeedPostingUrl';
+import { INDEED_IMPORT_HELP, suppliedIndeedPosting } from '@/lib/indeedPosting';
 import {
   MANUAL_IMPORT_INITIAL_LIFECYCLE,
   MANUAL_IMPORT_SOURCE,
@@ -67,6 +69,18 @@ async function findSurvivingCardForLink(url: string, normalizedUrl: string): Pro
   if (verifiedRows[0]) {
     const survivor = await followConsolidation(verifiedRows[0]);
     if (!adp || matchesAdpPosting(survivor, url)) return survivor;
+  }
+  // Old pasted/search Indeed cards predate postingIdentity and may retain any
+  // tracking URL. Retrieve by key, then verify the selected opening exactly.
+  const indeedKey = indeedPostingKey(url);
+  if (indeedKey) {
+    const candidates = await prisma.job.findMany({ where: { OR: [
+      { source: 'Indeed', sourceId: indeedKey },
+      { url: { contains: indeedKey, mode: 'insensitive' } },
+      { canonicalUrl: { contains: indeedKey, mode: 'insensitive' } },
+    ] }, orderBy: { updatedAt: 'desc' } });
+    const same = candidates.find(job => [job.url, job.canonicalUrl].some(value => indeedPostingKey(value) === indeedKey));
+    if (same) return followConsolidation(same);
   }
   // ADP appends jobId on navigation. The selected (last) ID, tenant and
   // career center identify the same opening even if the pasted URL differs.
@@ -132,7 +146,7 @@ async function refreshSavedMetadata(job: Job, suppliedUrl: string): Promise<Job>
 
 export async function POST(req: Request) {
   try {
-    const { url: submittedUrl, title: reqTitle, company: reqCompany, rescoreDuplicate, listingPage = 1 } = await req.json();
+    const { url: submittedUrl, title: reqTitle, company: reqCompany, location: reqLocation, description: reqDescription, rescoreDuplicate, listingPage = 1 } = await req.json();
     let url = submittedUrl;
     if (typeof url !== 'string' || !url.trim()) {
       return NextResponse.json({ error: 'URL is required' }, { status: 400 });
@@ -145,6 +159,14 @@ export async function POST(req: Request) {
       validatedUrl = new URL(url);
     } catch (error) {
       return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid URL' }, { status: 400 });
+    }
+
+    const indeed = isIndeedHost(validatedUrl.hostname);
+    if (indeed) {
+      const postingUrl = indeedPostingUrl(url);
+      if (!postingUrl) return NextResponse.json({ error: 'Use an individual Indeed job link containing jk or vjk. No job was imported.' }, { status: 422 });
+      url = postingUrl;
+      validatedUrl = new URL(url);
     }
 
     const umantisPage = umantisPostingIdentity(validatedUrl.toString());
@@ -186,7 +208,15 @@ export async function POST(req: Request) {
     let fallbackDesc = '';
 
     const readyPosting = readyPage?.jobId ? await fetchUkgReadyPosting(url) : null;
-    const directPosting = readyPosting || await scrapeAtsApi(url).catch(() => null);
+    const pastedIndeed = indeed && reqDescription !== undefined
+      ? suppliedIndeedPosting({ title: reqTitle, company: reqCompany, location: reqLocation, description: reqDescription }, url) : null;
+    if (indeed && reqDescription !== undefined && !pastedIndeed) {
+      return NextResponse.json({ error: 'Provide the actual job title, employer, and complete job description from Indeed. No job was imported.', needManual: true }, { status: 422 });
+    }
+    const directPosting = pastedIndeed || readyPosting || await scrapeAtsApi(url).catch(() => null);
+    if (indeed && (!directPosting || directPosting.postingVerificationError)) {
+      return NextResponse.json({ error: INDEED_IMPORT_HELP, needManual: true }, { status: 422 });
+    }
     if (directPosting?.postingVerificationError) {
       return NextResponse.json({ error: `${directPosting.postingVerificationError} No job was imported.` }, { status: 422 });
     }
@@ -220,7 +250,7 @@ export async function POST(req: Request) {
 
     // Read the posting's authored metadata before creating the card. A later
     // best-effort refresh must not be required to replace an ATS hostname.
-    if (!readyPosting && !umantisPage && (!directPosting?.title || !directCompany || !directPosting?.location)) {
+    if (!indeed && !readyPosting && !umantisPage && (!directPosting?.title || !directCompany || !directPosting?.location)) {
       try {
         const metadataUrl = directPosting?.postingUrl || validatedUrl.toString();
         const htmlRes = await safeExternalFetch(metadataUrl, {
@@ -267,7 +297,7 @@ export async function POST(req: Request) {
     // 2. Resolve Canonical URL & Generate Fingerprint
     const canonicalUrl = normalizeUrl(url);
     const fingerprint = generateV4Fingerprint(title, company, location || 'unknown');
-    const scopedPosting = Boolean(readyPosting || adpPostingIdentity(url));
+    const scopedPosting = Boolean(indeed || readyPosting || adpPostingIdentity(url));
     
     // 3. Find existing or Create the Job
     let newJob = await prisma.job.findFirst({ 
@@ -282,7 +312,7 @@ export async function POST(req: Request) {
     });
     
     let isDuplicate = false;
-    const verifiedDirectDescription = Boolean(directPosting?.title && directCompany && directPosting?.location
+    const verifiedDirectDescription = Boolean(directPosting?.title && directCompany && (indeed || directPosting?.location)
       && assessJobDescriptionQuality(directPosting.text, { structuredSource: true }).scorable);
 
     if (newJob) {

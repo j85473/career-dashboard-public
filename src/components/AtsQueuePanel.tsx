@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { startClientPolling } from '@/lib/clientPolling';
+import { useDashboardRefresh } from '@/lib/useDashboardRefresh';
 import { atsRetryLabel, type AtsQueueSnapshot } from '@/lib/atsQueueSnapshot';
 
 const count = (value: number) => value.toLocaleString('en-US');
@@ -73,6 +74,8 @@ export function AtsQueuePanel({ snapshot, unavailable = false }: {
 export function LiveAtsQueuePanel() {
   const [snapshot, setSnapshot] = useState<AtsQueueSnapshot | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const refreshRef = useRef<(() => void) | null>(null);
+  useDashboardRefresh(() => refreshRef.current?.());
   useEffect(() => {
     const polling = startClientPolling({
       request: async signal => {
@@ -84,7 +87,8 @@ export function LiveAtsQueuePanel() {
       onError: () => setUnavailable(true),
       intervalMs: () => document.hidden ? 60000 : 15000,
     });
-    return () => polling.stop();
+    refreshRef.current = polling.refresh;
+    return () => { polling.stop(); refreshRef.current = null; };
   }, []);
   return <AtsQueuePanel snapshot={snapshot} unavailable={unavailable} />;
 }

@@ -6,6 +6,7 @@ import { Loader, Play } from 'lucide-react';
 import { showAlert } from '@/lib/modal';
 import { normalizeStatsTaskContract } from '@/lib/statsClientContract';
 import { startClientPolling, type ClientPolling } from '@/lib/clientPolling';
+import { useDashboardRefresh } from '@/lib/useDashboardRefresh';
 import { readClientMutationResponse } from '@/lib/clientMutationResponse';
 import { BoardReviewPanel } from './BoardReviewPanel';
 import { IndexerBoardsCard } from './IndexerBoardsCard';
@@ -621,6 +622,7 @@ export function StatsTab({ onOpenFailedQueue }: StatsTabProps) {
   const statsPollingRef = useRef<ClientPolling | null>(null);
   const discoveryPollingRef = useRef<ClientPolling | null>(null);
   const discoveryActionRef = useRef<AbortController | null>(null);
+  useDashboardRefresh(() => { statsPollingRef.current?.refresh(); discoveryPollingRef.current?.refresh(); });
 
   useEffect(() => {
     const polling = startClientPolling({

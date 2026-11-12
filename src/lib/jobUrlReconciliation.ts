@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isPaylocityPostingHost, paylocityPostingId, paylocityPostingsConflict } from './paylocityPostingIdentity';
 import { adpPostingIdentity, isAdpPostingHost } from './adpPostingIdentity';
 import { ukgReadyPage } from './ukgReadyUrl';
+import { indeedPostingKey, isIndeedHost } from './indeedPostingUrl';
 import { Prisma, type Job } from './prismaClient';
 import { locationsCompatibleForDirectMatch, isAggregatorSource } from './atsDirectMatch';
 import { canonicalJsonSha256 } from './scoringCanonicalJson';
@@ -45,6 +46,10 @@ export function urlPostingIdentity(value: string): string | null {
   try {
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol)) return null;
+    if (isIndeedHost(url.hostname)) {
+      const key = indeedPostingKey(value);
+      return key ? generatePostingIdentity({ source: 'Indeed', sourceId: key }) : null;
+    }
     if (isPaylocityPostingHost(value)) return paylocityPostingId(value)
       ? generatePostingIdentity({ url: value }) : null;
     if (isAdpPostingHost(value)) return adpPostingIdentity(value)

@@ -815,6 +815,9 @@ body {
 .manual-import-row { display: grid; grid-template-columns: minmax(0, 1fr) 160px; gap: 12px; align-items: stretch; }
 .manual-import-input { min-width: 0; margin: 0; box-sizing: border-box; padding: 10px 14px; font-size: 15px; }
 .manual-import-button { width: 160px; min-height: 42px; padding: 10px 16px; white-space: nowrap; }
+.manual-import-details label { display: block; margin: 12px 0; }
+.manual-import-details .feedback-input { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; }
+.manual-import-details textarea { resize: vertical; }
 .advanced-show-more {
   width: 100%; margin-top: 6px; padding: 8px; border: 0; border-top: 1px solid var(--border);
   background: transparent; color: var(--accent); cursor: pointer; font: inherit; font-size: 12px;

@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import 'pdfjs-dist/web/pdf_viewer.css';
 import './globals.css';
 import { GlobalModal } from '@/components/GlobalModal';
+import { DashboardAutoRefresh } from '@/components/DashboardAutoRefresh';
 
 export const metadata: Metadata = {
   title: 'Career Dashboard',
@@ -17,6 +18,7 @@ export default function RootLayout({
     <html lang="en">
       <body>
         {children}
+        <DashboardAutoRefresh />
         <GlobalModal />
       </body>
     </html>

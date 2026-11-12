@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import { useDashboardRefresh } from '@/lib/useDashboardRefresh';
+import { dashboardRefreshGuard } from '@/lib/dashboardAutoRefresh';
 import { InterviewSchedule } from '@/components/InterviewSchedule';
 import { JobDocuments } from '@/components/JobDocuments';
 import { JobLocations } from '@/components/JobLocations';
@@ -143,6 +145,26 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
   const [mergeCompleted, setMergeCompleted] = useState('');
   const [linkUpdateError, setLinkUpdateError] = useState('');
   const [openingCombinedCard, setOpeningCombinedCard] = useState(false);
+  const refreshAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => refreshAbortRef.current?.abort(), []);
+  useDashboardRefresh(() => {
+    if (refreshAbortRef.current || isLoadingJD || scoreAuthorityLoading) return;
+    const canApply = dashboardRefreshGuard();
+    const controller = new AbortController();
+    refreshAbortRef.current = controller;
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    void fetch(`/api/jobs/${initialJob.id}`, { cache: 'no-store', signal: controller.signal })
+      .then(async response => response.ok ? response.json() : null)
+      .then(data => {
+        if (!controller.signal.aborted && canApply() && data?.job) {
+          setJob(data.job);
+          setManualJD(data.job.description || '');
+          setLoadError(null);
+        }
+      })
+      .catch(() => { /* Keep the open card on a temporary network failure. */ })
+      .finally(() => { clearTimeout(timeout); if (refreshAbortRef.current === controller) refreshAbortRef.current = null; });
+  });
   const isApplicationCard = job?.status === 'applied' || job?.status === 'interviewing';
 
   // An applied card lists the copies that were hidden because they repeat it,
@@ -895,7 +917,7 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
   }
 
   return (
-    <div className="expand-overlay open" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="expand-overlay open" data-refresh-blocked={isEditingJD || isEditingMeta || showPassInput || isScraping || mergeBusy || splittingEmployer || restoringRepeat || Boolean(separatingId)} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div className="expand-modal" role="dialog" aria-modal="true" aria-labelledby="job-dialog-title" tabIndex={-1} ref={dialogRef}>
         <div className="expand-header">
         <div className="expand-header-left">
