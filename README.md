@@ -1,6 +1,6 @@
 # Career Dashboard
 
-Public source copy. Private candidate evidence is excluded from this repository and its published history. See [private evidence setup](docs/PRIVATE_EVIDENCE.md). Production deployment remains in the private operational repository.
+Public source copy. Private candidate evidence and private Git history are excluded. See [private evidence setup](docs/PRIVATE_EVIDENCE.md). Production remains in the private operational repository.
 
 Career Dashboard collects job postings, checks that they are usable, and helps Joe decide which opportunities deserve attention. Automated discovery and local checks prepare jobs for review. **Aim Fit** and **Experience Fit** are separate, manual scoring exchanges: the Dashboard exports exact inputs, Codex runs outside the application, and Joe approves the import after a preview.
 
@@ -72,7 +72,7 @@ New postings are normalized and matched to prior observations before a new Job i
 
 Each run contains child batches of 40 jobs, with a **200-job and 64 MiB limit** for new exports. The controller can resume an interrupted exact export. Accepted children stay accepted if a later child needs repair. A failed score is routed to Action Needed instead of silently cycling back into a scoring queue. The Dashboard checks batch membership, current inputs, score authority, approval token, and protected lifecycle state again when applying a result.
 
-The [canonical resume record](docs/CANONICAL_RESUME.md) identifies the approved Channel Business Manager resume used for future Experience exports. The [privately supplied Core Evidence inventory](docs/PRIVATE_EVIDENCE.md) defines factual candidate claims. Replacing either input affects future exports; it does not rewrite past scores.
+The [canonical resume record](docs/CANONICAL_RESUME.md) identifies the approved Channel Business Manager resume used for future Experience exports. The [Core Evidence inventory](docs/PRIVATE_EVIDENCE.md) defines factual candidate claims. Replacing either input affects future exports; it does not rewrite past scores.
 
 ## Local development
 
@@ -99,7 +99,7 @@ Edit `.env` with local credentials before starting. The `cp -n` command leaves a
 | Operate or release production | [M70 operations](docs/M70_PRODUCTION_OPERATIONS.md) |
 | Check the supported Node runtime | [Node runtime alignment](docs/NODE_RUNTIME_ALIGNMENT.md) |
 | Change a pipeline or scoring rule safely | [Pipeline change guardrails](docs/CAREER_DASHBOARD_PIPELINE_CHANGE_GUARDRAILS.md) |
-| Check resume and evidence authority | [Canonical resume](docs/CANONICAL_RESUME.md) and [Private evidence setup](docs/PRIVATE_EVIDENCE.md) |
+| Check resume and evidence authority | [Canonical resume](docs/CANONICAL_RESUME.md) and [Core Evidence](docs/PRIVATE_EVIDENCE.md) |
 | Understand saved job documents | [Job documents](docs/JOB_DOCUMENTS.md) |
 
 Historical investigations and implementation plans remain in `docs/` for context; the links above are the starting points for current behavior.

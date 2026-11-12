@@ -1,0 +1,30 @@
+name: Validate public evidence boundary
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check excluded evidence paths
+        run: |
+          test ! -e docs/Candidate_Evidence_Inventory_-_Core_v1.md
+          test ! -e .agents/minified_evidence.json
+          test ! -e .agents/agents/standard-job-evaluator-v6/agent.md
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Test publication safeguards
+        run: node --test tests/unit/publicCopyMirror.test.mjs
+      - run: npm ci --no-audit --no-fund
+      - name: Test evidence parsing with fictional records
+        run: node --import tsx --test src/lib/__tests__/scoringFoundation.test.ts

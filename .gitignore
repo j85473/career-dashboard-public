@@ -106,7 +106,7 @@ deepseek_jobs.json
 # Local session marker
 /:memory:.ses
 
-# Private candidate evidence stays outside the public source repository.
+# Private evidence is excluded from the public source and history.
 /docs/Candidate_Evidence_Inventory_-_Core_v1.md
 /.agents/minified_evidence.json
 /.agents/agents/standard-job-evaluator-v6/agent.md

@@ -1,0 +1,17 @@
+test('Core Evidence parsing preserves source binding and excludes retired fictional records', () => {
+  const headers = '| claim_willingness | evidence_id | baseline | employer | role_title | date_range | baseline_section | evidence_text | neutral_capability_tags | scope_notes | verification_status | retired | notes |';
+  const separator = `| ${Array(13).fill('---').join(' | ')} |`;
+  const row = (id: string, retired = false) => `| High | ${id} | Fictional baseline | Example Company | Example Role | 2025 | Experience | Trained example partners. | training; operations | Fictional parser fixture only. | fixture | ${retired ? 'True' : 'False'} | Example note. |`;
+  const markdown = ['# Fictional evidence fixture', '## Sheet: Core Evidence', headers, separator, row('EX-001'), row('EX-002', true)].join('\n');
+  const snapshot = parseCoreEvidenceMarkdown(markdown);
+  assert.equal(snapshot.sourceHash, normalizedTextSha256(markdown));
+  assert.deepEqual(snapshot, parseCoreEvidenceMarkdown(markdown.replace(/\n/g, '\r\n')));
+  assert.equal(snapshot.records.length, 1);
+  assert.equal(snapshot.records[0].evidenceId, 'EX-001');
+  assert.deepEqual(snapshot.records[0].neutralCapabilityTags, ['training', 'operations']);
+  assert.notEqual(snapshot.evidenceHash, parseCoreEvidenceMarkdown(markdown, 'private/alternate.md').evidenceHash);
+  assert.notEqual(snapshot.evidenceHash, parseCoreEvidenceMarkdown(markdown.replace('Trained example partners.', 'Supported example partners.')).evidenceHash);
+  assert.throws(() => parseCoreEvidenceMarkdown(`${markdown}\n${row('EX-001')}`), /duplicate evidence ID/);
+  assert.throws(() => parseCoreEvidenceMarkdown(markdown.replace('claim_willingness', 'unexpected_header')), /table is missing|headers do not match/);
+  assert.throws(() => parseCoreEvidenceMarkdown(markdown.replace(row('EX-001'), row('EX-001', true))), /no active records/);
+});
