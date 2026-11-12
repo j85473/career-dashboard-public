@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import test from 'node:test';
 
 import canonicalFixture from '../../../tests/fixtures/scoring/canonical-golden-v1.json';
@@ -140,32 +139,22 @@ test('criterion IDs bind input, classification, and source code-point span', () 
   assert.notEqual(id, stableCriterionId(HASH, 'required', 4, 9));
 });
 
-test('Core Evidence parses from the authoritative Markdown with stable hashes', () => {
-  const markdown = fs.readFileSync('docs/Candidate_Evidence_Inventory_-_Core_v1.md', 'utf8');
+test('Core Evidence parsing preserves source binding and excludes retired fictional records', () => {
+  const headers = '| claim_willingness | evidence_id | baseline | employer | role_title | date_range | baseline_section | evidence_text | neutral_capability_tags | scope_notes | verification_status | retired | notes |';
+  const separator = `| ${Array(13).fill('---').join(' | ')} |`;
+  const row = (id: string, retired = false) => `| High | ${id} | Fictional baseline | Example Company | Example Role | 2025 | Experience | Trained example partners. | training; operations | Fictional parser fixture only. | fixture | ${retired ? 'True' : 'False'} | Example note. |`;
+  const markdown = ['# Fictional evidence fixture', '## Sheet: Core Evidence', headers, separator, row('EX-001'), row('EX-002', true)].join('\n');
   const snapshot = parseCoreEvidenceMarkdown(markdown);
-  assert.equal(snapshot.sourceHash, 'e3ea5e41b6b49c465c36b5d72dd2992f858eaaefe81d679d6d45cc769ac720b6');
-  assert.equal(snapshot.evidenceHash, '46da16e37a7cca20c423abd5439dbebceeefd094fc3015de97b6a157b4497bb4');
-  assert.equal(snapshot.records.length, 65);
-  assert.equal(new Set(snapshot.records.map((record) => record.evidenceId)).size, snapshot.records.length);
-  assert.equal(snapshot.records.find((record) => record.evidenceId === 'DSI-001')?.roleTitle, 'Field Sales Representative — Channel Sales');
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-003')?.scopeNotes || '', /Do not imply that Joseph.*formally owned the Costco account/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-011')?.scopeNotes || '', /one specific fraud type/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-022')?.evidenceText || '', /active base of 1,000\+ partner users.*at any given time/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-022')?.scopeNotes || '', /not a cumulative six-year total/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-025')?.evidenceText || '', /exceeding a formal 15% annual territory-growth quota for six straight years/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-026')?.evidenceText || '', /approximately \$26M in annualized AT&T subscriber revenue/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-027')?.evidenceText || '', /national retail beginning in 2020, D2D in 2022, and B2B in 2024/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-037')?.evidenceText || '', /regional sales-planning and partner-execution responsibility beyond the 14 independent distributors/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-038')?.scopeNotes || '', /company funding was subject to approval/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-039')?.scopeNotes || '', /not his compensation or distributor commission/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'ROC-009')?.scopeNotes || '', /contributor.*not the sole cause/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-021')?.evidenceText || '', /program itself was later adopted and rolled out nationally/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-028')?.evidenceText || '', /pilot B2B distributor.*rollout expanded before becoming national/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-040')?.scopeNotes || '', /not the duration of all B2B support/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-041')?.evidenceText || '', /conducted discovery.*Quick Quote.*representative visited the customer, placed the order in person/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'DSI-042')?.scopeNotes || '', /not his independent termination or signing authority/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'TGT-001')?.evidenceText || '', /General Manager role at Target Mobile for approximately 1\.5 years/i);
-  assert.match(snapshot.records.find((record) => record.evidenceId === 'TGT-001')?.scopeNotes || '', /exact Target Mobile start and end months.*were not supplied/i);
+  assert.equal(snapshot.sourceHash, normalizedTextSha256(markdown));
+  assert.deepEqual(snapshot, parseCoreEvidenceMarkdown(markdown.replace(/\n/g, '\r\n')));
+  assert.equal(snapshot.records.length, 1);
+  assert.equal(snapshot.records[0].evidenceId, 'EX-001');
+  assert.deepEqual(snapshot.records[0].neutralCapabilityTags, ['training', 'operations']);
+  assert.notEqual(snapshot.evidenceHash, parseCoreEvidenceMarkdown(markdown, 'private/alternate.md').evidenceHash);
+  assert.notEqual(snapshot.evidenceHash, parseCoreEvidenceMarkdown(markdown.replace('Trained example partners.', 'Supported example partners.')).evidenceHash);
+  assert.throws(() => parseCoreEvidenceMarkdown(`${markdown}\n${row('EX-001')}`), /duplicate evidence ID/);
+  assert.throws(() => parseCoreEvidenceMarkdown(markdown.replace('claim_willingness', 'unexpected_header')), /table is missing|headers do not match/);
+  assert.throws(() => parseCoreEvidenceMarkdown(markdown.replace(row('EX-001'), row('EX-001', true))), /no active records/);
 });
 
 test('Aim export parser rejects unknown keys and validates exact ordered manifest membership', () => {
