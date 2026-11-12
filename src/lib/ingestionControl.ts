@@ -1,4 +1,5 @@
 import { readJSearchProgress } from './jsearch';
+import { ProviderAccessChallengeError } from './providerAccessChallenge';
 import { storageAllows } from './storagePressure';
 import { readLinkedInSearchProgress } from './linkedinSearch';
 import crypto from 'node:crypto';
@@ -391,7 +392,7 @@ export function providerAvailabilityLookupSource(
 }
 
 export function classifyIngestionTaskCompletion(input: {
-  sourceStatuses: readonly ('success' | 'partial' | 'failed' | 'idle')[];
+  sourceStatuses: readonly ('success' | 'partial' | 'failed' | 'idle' | 'blocked_budget' | 'blocked_circuit')[];
   lastErrors?: readonly (string | null)[];
   circuitOpen?: boolean;
 }): IngestionTaskCompletionStatus {
@@ -401,6 +402,8 @@ export function classifyIngestionTaskCompletion(input: {
   // failure. The ledger is intact; this hour's remaining release belongs to
   // description calls. Reading it as a failure would open the circuit.
   if ((input.lastErrors || []).some((error) => /blocked by .*budget/i.test(error || ''))) return 'blocked_budget';
+  if (input.sourceStatuses.includes('blocked_budget')) return 'blocked_budget';
+  if (input.sourceStatuses.includes('blocked_circuit')) return 'blocked_circuit';
   if (input.sourceStatuses.some((status) => status === 'failed')) {
     return input.sourceStatuses.some((status) => status === 'success' || status === 'partial') ? 'partial' : 'failed';
   }
@@ -1417,6 +1420,7 @@ export async function reserveProviderRequest(input: {
 
 export function classifyProviderFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof ProviderAccessChallengeError || /access challenge \(HTTP \d+, (?:Cloudflare|Vercel)\)/.test(message)) return 'access_challenge';
   if (isPrismaConnectionFailure(error) || isRetryableIngestionTransactionError(error)
     || /transaction api error|unable to start a transaction|transaction already closed|expired transaction|unique constraint failed.*jobpipelineevent|provider control persistence failed/i.test(message)) {
     return 'internal_persistence';

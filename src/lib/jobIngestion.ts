@@ -56,6 +56,7 @@ import {
 import * as cheerio from "cheerio";
 import { safeExternalFetch } from './safeExternalFetch';
 import { BioSpaceFeedError, fetchBioSpaceFeed } from './biospaceFeed';
+import { requireUnchallengedProviderResponse } from './providerAccessChallenge';
 import { companyIdentityKey } from './companyIdentity';
 import { standardizeIncomingCompany } from './companyNameStandardization';
 import { resolveEmployerForNewJob } from './employerRuleStore';
@@ -314,6 +315,27 @@ type SourceRunCounts = {
 const sourceCircuitOpenUntil = new Map<string, number>();
 const SOURCE_CIRCUIT_DURATION_MS = 6 * 60 * 60 * 1_000;
 
+/** Local admission waits do not count as provider requests that failed. */
+export function recordSourceRunFailure(stats: Pick<SourceRunCounts, 'requestErrors' | 'processingErrors' | 'lastError'>
+  & { stageEvidence?: SourceRunCounts['stageEvidence'] }, error: unknown): string {
+  const classification = classifyProviderFailure(error);
+  const message = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
+  if (classification === 'budget_exhausted' || classification === 'circuit_blocked') {
+    // Key rotation can hit a transport error before the next reservation is
+    // refused. That real failure must remain visible.
+    const previousFailure = stats.stageEvidence?.previousFailure;
+    if (!stats.requestErrors && typeof previousFailure === 'string'
+      && !['budget_exhausted', 'circuit_blocked'].includes(classifyProviderFailure(previousFailure))) {
+      return recordSourceRunFailure(stats, previousFailure);
+    }
+    if (!stats.requestErrors && !stats.processingErrors) stats.lastError = message;
+    return classification;
+  }
+  stats.requestErrors++;
+  stats.lastError = message;
+  return classification;
+}
+
 /** Missing employer evidence retains downloaded work without charging a failure. */
 export class AtsEmployerDeferredError extends AtsPlatformDeferredError {
   constructor(platform: string, code: 'employer_unverified' | 'location_unverified' = 'employer_unverified') {
@@ -347,10 +369,16 @@ export function ingestionSourceRunStatus(counts: Pick<SourceRunCounts, 'seen' | 
   processingErrors?: number;
   requestErrors?: number;
   errors?: number;
-}): 'success' | 'partial' | 'failed' | 'idle' {
+  lastError?: string | null;
+}): 'success' | 'partial' | 'failed' | 'idle' | 'blocked_budget' | 'blocked_circuit' {
   const processingErrors = counts.processingErrors || 0;
   const requestErrors = counts.requestErrors ?? counts.errors ?? 0;
   const completedWork = counts.seen;
+  if (requestErrors === 0 && processingErrors === 0 && counts.lastError) {
+    const classification = classifyProviderFailure(counts.lastError);
+    if (classification === 'budget_exhausted') return 'blocked_budget';
+    if (classification === 'circuit_blocked') return 'blocked_circuit';
+  }
   // Doing nothing quietly is not success. Arbeitnow reported 232 consecutive
   // successes over a week while returning no jobs at all, because this returned
   // early on the error count without ever asking whether work happened.
@@ -2138,7 +2166,7 @@ export async function persistExternalIngestionSourceRun(input: {
   error?: string | null;
   providerIncidentId?: string | null;
   status?: 'success' | 'partial' | 'failed' | 'idle' | 'disabled';
-}): Promise<'success' | 'partial' | 'failed' | 'idle' | 'disabled'> {
+}): Promise<ReturnType<typeof ingestionSourceRunStatus> | 'disabled'> {
   if (!ingestionReconciles(input.counters)) {
     throw new Error(
       `${input.source} ingestion counters do not reconcile: seen=${input.counters.seen}, outcomes=${ingestionOutcomes(input.counters)}`,
@@ -3087,24 +3115,23 @@ export async function ingestJobs(
 
   function markSourceError(source: string, error: unknown, openForMs?: number) {
     const stats = statsFor(source);
-    stats.requestErrors++;
-    stats.lastError = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500);
-    const classification = classifyProviderFailure(error);
-    // Budget state is already durable and carries the exact UTC reset. Turning
-    // quota exhaustion into a generic six-hour circuit would delay a task past
-    // that authoritative reset.
-    if (INGESTION_SCHEDULER_V3_ENABLED && classification === 'budget_exhausted') return;
-    // Likewise a request the circuit refused: it says nothing about the
-    // provider, and treating it as a failure kept the circuit open forever.
-    if (classification === 'circuit_blocked' || classification === 'internal_persistence') return;
+    const classification = recordSourceRunFailure(stats, error);
+    // A locally refused request never reached the provider. Retain the wait
+    // reason for scheduling, without charging an error or replacing a real
+    // failure that happened earlier in this run.
+    if (classification === 'budget_exhausted' || classification === 'circuit_blocked') {
+      return;
+    }
+    if (classification === 'internal_persistence') return;
     if (isPermanentSourceFailure(error)) {
       sourceCircuitOpenUntil.set(source, Date.now() + SOURCE_CIRCUIT_DURATION_MS);
     }
     providerFailures.add(source);
+    const providerError = stats.lastError || error;
     enqueueProviderState(source, async () => {
       stats.providerIncidentId = await recordProviderFailure({
         provider: source,
-        error,
+        error: providerError,
         openForMs,
         taskKey: options.taskKey,
         queryFamily,
@@ -4271,6 +4298,7 @@ export async function ingestJobs(
             const museUrl = `https://www.themuse.com/api/public/jobs?page=${page}`
               + `&category=${encodeURIComponent(category)}`;
             const museRes = await fetch(museUrl);
+            await requireUnchallengedProviderResponse('TheMuse', museRes);
             // Past the undocumented depth cap. End of range, not a failure.
             if (museRes.status === 400) break;
             if (!museRes.ok) throw new Error(`HTTP ${museRes.status}`);

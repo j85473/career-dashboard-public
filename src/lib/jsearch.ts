@@ -10,6 +10,7 @@ export type JSearchProgress = {
   cursor: string | null;
   pages: number;
   complete: boolean;
+  cursorRestarts?: number;
 };
 export type JSearchDiagnostics = Record<string, string | number | boolean | null>;
 
@@ -38,7 +39,8 @@ export function readJSearchProgress(value: unknown): JSearchProgress | null {
     || !['today', '3days', 'week', 'month', 'all'].includes(String(saved.datePosted))
     || !(saved.cursor === null || typeof saved.cursor === 'string')
     || !Number.isSafeInteger(saved.pages) || Number(saved.pages) < 0
-    || typeof saved.complete !== 'boolean') return null;
+    || typeof saved.complete !== 'boolean'
+    || (saved.cursorRestarts !== undefined && (!Number.isSafeInteger(saved.cursorRestarts) || Number(saved.cursorRestarts) < 0))) return null;
   return saved as JSearchProgress;
 }
 
@@ -52,6 +54,13 @@ export class JSearchResponseError extends Error {
     super(message);
     this.name = 'JSearchResponseError';
   }
+}
+
+/** Replay the search, retaining its coverage window and already persisted jobs. */
+export function restartJSearchProgress(progress: JSearchProgress, now = new Date()): JSearchProgress {
+  return { ...progress, cursor: null, pages: 0, complete: false,
+    datePosted: jsearchDateFilter(new Date(progress.windowStart), now),
+    cursorRestarts: (progress.cursorRestarts || 0) + 1 };
 }
 
 export function parseJSearchResponse(payload: unknown, httpStatus: number) {
@@ -69,7 +78,11 @@ export function parseJSearchResponse(payload: unknown, httpStatus: number) {
     acceptedRows: 0,
   };
   if (httpStatus < 200 || httpStatus >= 300) {
-    throw new JSearchResponseError(`JSearch HTTP ${httpStatus}`, { ...diagnostic, outcome: 'http_error' });
+    const message = record(root?.error)?.message;
+    const cursorRejected = httpStatus === 400 && typeof message === 'string'
+      && /(?:invalid|expired).{0,40}cursor|cursor.{0,40}(?:invalid|expired)/i.test(message);
+    throw new JSearchResponseError(`JSearch HTTP ${httpStatus}${cursorRejected ? ': invalid or expired cursor' : ''}`,
+      { ...diagnostic, outcome: 'http_error', cursorRejected });
   }
   if (root?.status !== 'OK' || !data || !Array.isArray(data.jobs)
     || (data.cursor != null && typeof data.cursor !== 'string')) {
@@ -92,6 +105,7 @@ export async function runJSearchPages<T>(input: {
 }): Promise<JSearchProgress> {
   let progress = { ...input.progress };
   const cursors = new Set<string>();
+  let cursorRestarted = false;
   if (progress.cursor) cursors.add(progress.cursor);
   for (let page = 0; page < (input.maxPages ?? 5) && !progress.complete; page++) {
     input.signal?.throwIfAborted();
@@ -134,6 +148,19 @@ export async function runJSearchPages<T>(input: {
       await input.checkpoint(progress);
       if (result.cursor) cursors.add(result.cursor);
     } catch (error) {
+      // Only the provider's explicit cursor rejection authorizes replay. One
+      // restart per bounded turn prevents an endlessly rejected page spending
+      // the entire daily allowance. Checkpoint before another paid request.
+      if (progress.cursor && !cursorRestarted && error instanceof JSearchResponseError
+        && error.diagnostics.cursorRejected === true) {
+        const restarted = restartJSearchProgress(progress);
+        await input.checkpoint(restarted);
+        progress = restarted;
+        cursorRestarted = true;
+        cursors.clear();
+        input.diagnose({ ...error.diagnostics, outcome: 'cursor_restarted', cursorRestarts: progress.cursorRestarts! });
+        continue;
+      }
       input.diagnose(error instanceof JSearchResponseError
         ? { ...diagnostic, ...error.diagnostics }
         : { ...diagnostic, outcome: error instanceof Error && /blocked by .*budget/.test(error.message)

@@ -1,5 +1,6 @@
 import { safeExternalFetch } from './safeExternalFetch';
 import { readBoundedAtsBody } from './tenantAtsBoards';
+import { requireUnchallengedProviderResponse } from './providerAccessChallenge';
 
 export class BioSpaceFeedError extends Error {
   constructor(status: number, readonly retryAfterMs?: number) { super(`BioSpace HTTP ${status}`); }
@@ -21,6 +22,7 @@ export async function fetchBioSpaceFeed(query: string, signal?: AbortSignal,
     headers: { Accept: 'application/rss+xml, application/xml, text/xml' },
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
   });
+  await requireUnchallengedProviderResponse('BioSpace', response);
   if (!response.ok) {
     const retryAfter = response.status === 429 || response.status === 503 ? bioSpaceRetryAfter(response.headers.get('retry-after')) : undefined;
     await response.body?.cancel();

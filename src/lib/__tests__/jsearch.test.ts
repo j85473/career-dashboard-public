@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { jsearchDateFilter, newJSearchProgress, parseJSearchResponse, readJSearchProgress, runJSearchPages, type JSearchDiagnostics, type JSearchProgress } from '../jsearch';
+import { jsearchDateFilter, newJSearchProgress, parseJSearchResponse, readJSearchProgress, restartJSearchProgress, runJSearchPages, type JSearchDiagnostics, type JSearchProgress } from '../jsearch';
 import { parseJSearchJob } from '../jobIngestion';
 import { evaluateProviderAvailability, evaluateProviderBudget, providerTaskAvailability } from '../ingestionControl';
 import { fetchWithKeyRotation, resetKeyCooldowns } from '../apiFallback';
@@ -69,6 +69,67 @@ test('turn limit retains continuation rather than claiming a finished search', a
     processJob: async () => {}, checkpoint: async () => {}, diagnose: () => {} });
   assert.equal(result.complete, false);
   assert.equal(result.cursor, 'later');
+});
+
+const expiredCursor = () => Response.json({ status: 'ERROR', error: { message: 'Invalid or expired cursor.', code: 400 } }, { status: 400 });
+
+test('an explicitly expired cursor replays safely and widens the old search age filter', async () => {
+  const original = { ...initial(), cursor: 'expired', pages: 1 };
+  const restarted = restartJSearchProgress(original, new Date('2026-11-12T22:00:00Z'));
+  assert.equal(restarted.datePosted, 'all');
+  assert.equal(restarted.windowStart, original.windowStart);
+  assert.equal(restarted.windowEnd, original.windowEnd);
+  const requests: Array<string | null> = [];
+  const saved: JSearchProgress[] = [];
+  const jobs: string[] = [];
+  const replies = [expiredCursor(), response(['already-stored'], 'fresh'), response(['new'], null)];
+  const result = await runJSearchPages({ progress: original,
+    fetchPage: async (params) => { requests.push(params.get('cursor')); return replies.shift()!; },
+    parseJob: parseJSearchJob, processJob: async (job) => { jobs.push(String(job.sourceId)); },
+    checkpoint: async (p) => { saved.push(p); }, diagnose: () => {} });
+  assert.deepEqual(requests, ['expired', null, 'fresh']);
+  assert.deepEqual(jobs, ['already-stored', 'new']);
+  assert.equal(saved[0].cursor, null);
+  assert.equal(saved[0].complete, false);
+  assert.equal(result.complete, true);
+  assert.equal(result.cursorRestarts, 1);
+  assert.equal(result.windowStart, original.windowStart);
+  assert.equal(result.windowEnd, original.windowEnd);
+});
+
+test('cursor replay checkpoints before spending again and survives a budget wait', async () => {
+  let durable = { ...initial(), cursor: 'expired', pages: 1 } as JSearchProgress;
+  let calls = 0;
+  await assert.rejects(runJSearchPages({ progress: durable,
+    fetchPage: async (params) => {
+      if (++calls === 1) return expiredCursor();
+      assert.equal(durable.cursor, null);
+      assert.equal(params.get('cursor'), null);
+      throw Error('JSearch request blocked by paced_budget');
+    }, parseJob: parseJSearchJob, processJob: async () => {}, checkpoint: async (p) => { durable = p; }, diagnose: () => {} }), /paced_budget/);
+  assert.equal(durable.cursor, null);
+  assert.equal(durable.cursorRestarts, 1);
+  assert.equal(durable.complete, false);
+  calls = 0;
+  await assert.rejects(runJSearchPages({ progress: { ...initial(), cursor: 'expired' },
+    fetchPage: async () => { calls++; return expiredCursor(); }, parseJob: parseJSearchJob,
+    processJob: async () => {}, checkpoint: async () => { throw Error('lease lost'); }, diagnose: () => {} }), /lease lost/);
+  assert.equal(calls, 1);
+});
+
+test('unrelated 400s, throttles and repeated cursor rejections do not trigger unbounded replay', async () => {
+  for (const status of [400, 429, 503]) {
+    let calls = 0;
+    await assert.rejects(runJSearchPages({ progress: { ...initial(), cursor: 'next' },
+      fetchPage: async () => { calls++; return Response.json({ status: 'ERROR', error: { message: 'Invalid query' } }, { status }); },
+      parseJob: parseJSearchJob, processJob: async () => {}, checkpoint: async () => { assert.fail('must preserve saved progress'); }, diagnose: () => {} }), new RegExp(`HTTP ${status}`));
+    assert.equal(calls, 1);
+  }
+  let calls = 0;
+  await assert.rejects(runJSearchPages({ progress: { ...initial(), cursor: 'expired' },
+    fetchPage: async () => ++calls === 2 ? response(['one'], 'also-expired') : expiredCursor(),
+    parseJob: parseJSearchJob, processJob: async () => {}, checkpoint: async () => {}, diagnose: () => {} }), /expired cursor/);
+  assert.equal(calls, 3);
 });
 
 test('schema drift, invalid JSON, rejected rows and genuine empty results remain distinct', async () => {

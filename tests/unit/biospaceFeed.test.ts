@@ -9,6 +9,9 @@ test('BioSpace retry instructions accept seconds or future HTTP dates', () => {
   for (const value of [null, '', 'invalid', '0', '-1', 'Tue, 20 Oct 2026 16:00:00 GMT']) assert.equal(bioSpaceRetryAfter(value, now), undefined);
 });
 test('BioSpace exposes rate-limit duration to the circuit and never accepts a challenge as an empty feed', async () => {
+  await assert.rejects(fetchBioSpaceFeed('sales', undefined, async () => new Response('verification', {
+    status: 429, headers: { 'x-vercel-mitigated': 'challenge' },
+  })), /BioSpace access challenge.*Vercel/);
   await assert.rejects(fetchBioSpaceFeed('sales', undefined, async () => new Response('slow down', { status: 429, headers: { 'retry-after': '7200' } })), error => error instanceof BioSpaceFeedError && error.retryAfterMs === 7_200_000);
   await assert.rejects(fetchBioSpaceFeed('sales', undefined, async () => new Response('<html>Challenge</html>')), /schema mismatch/);
   const xml = '<rss><channel><item><title>Sales Director</title></item></channel></rss>';
