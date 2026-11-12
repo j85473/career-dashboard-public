@@ -80,8 +80,8 @@ model Job {
   submittedResume       String?
   cooldownUntil         DateTime?
   compensation          String?
-  // Deterministically extracted from the stored JD; never an Aim/Experience
-  // assessment or an inferred total-compensation value.
+  // Literal annual pay with explicit base/total labels, including employer
+  // header facts; never an Aim/Experience assessment or a calculated pay split.
   postedCompensation    String?
   // The travel expectation the posting states outright ("up to 50%", "none
   // stated"). Text, not a score: travelScore below is the retired pre-v2

@@ -74,7 +74,7 @@ test('input edits invalidate every active standard A/E event and emit one stable
 test('link updates refresh posting details while preserving score authority', () => {
   assert.match(scrapeSource, /const preserveScores = linkOnly === true \|\| skipRescore === true/);
   assert.match(scrapeSource, /if \(reconciliation\.consolidatedJobId\)/);
-  assert.match(scrapeSource, /const atsResult = extractionUrl === cleanedUrl\s*\? directPostingResult/);
+  assert.match(scrapeSource, /const atsResult = extractionUrl === cleanedUrl \|\| extractionUrl === directPostingResult\?\.postingUrl\s*\? directPostingResult/);
   assert.match(scrapeSource, /completePostingMetadata\(await scrapeAtsApi\(extractionUrl\)/);
   assert.match(scrapeSource, /parsePostingReaderMetadata\(rawMarkdown, extractionUrl\)/);
   assert.match(scrapeSource, /\.\.\.\(newCompany \? \{ employer: newCompany \} : \{\}\)/);
@@ -84,7 +84,7 @@ test('link updates refresh posting details while preserving score authority', ()
   assert.match(scrapeSource, /\.\.\.\(preserveScores \? \{\} : \{/);
   assert.match(scrapeSource, /if \(!preserveScores\) \{\s*try \{\s*scoreJobs/);
   assert.match(expandOverlaySource, /Update link and details \(keep scores\)/);
-  assert.match(scrapeSource, /discoveredAtsBoardFromJobUrl\(cleanedUrl, detectedAts\)/);
+  assert.match(scrapeSource, /discoveredAtsBoardFromJobUrl\(directPostingResult\?\.postingUrl \|\| cleanedUrl, detectedAts\)/);
   assert.match(scrapeSource, /recordDiscoveredAtsBoard\(tx, discoveredBoardFromUrl\)/);
   assert.match(scrapeSource, /scoreInvalidated: false/);
   assert.match(scrapeSource, /linkOnly: true/);

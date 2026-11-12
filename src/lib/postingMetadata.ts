@@ -28,6 +28,7 @@ export async function completePostingMetadata(
   primary: AtsScrapeResult | null,
   readMetadata: () => Promise<PostingMetadata | null>,
 ): Promise<AtsScrapeResult | null> {
+  if (primary?.postingVerificationError) return primary;
   if (postingMetadataValue(primary?.company) && postingMetadataValue(primary?.location)) return primary;
   const fallback = await readMetadata().catch(() => null);
   if (!fallback) return primary;

@@ -4,6 +4,7 @@ import * as cheerio from 'cheerio';
 import { browserAtsBoardFromUrl, type BrowserAtsPlatform } from './browserAtsBoards';
 import { extractJsonLdJobPosting, jsonLdCompanyName } from './atsApi';
 import { jobviteHeaderLocation, jobvitePublishedLocation } from './jobviteLocation';
+import { withJobviteSalaryHeader } from './jobviteCompensation';
 import { isPlaceholderEmployerName } from './companyIdentity';
 import { talemetryPublishedEmployer } from './talemetryEmployer';
 import { avaturePublishedLocation } from './avatureLocation';
@@ -361,6 +362,7 @@ export function parseBrowserPosting(platform: BrowserAtsPlatform, board: string,
         if (!location && platform === 'dzconnex')
             location = /^\s*Location:\s*(.+)$/m.exec(description)?.[1] || '';
         if (title && description.length >= 200) {
+            if (platform === 'jobvite') description = withJobviteSalaryHeader(doc.html, doc.url, description);
             const postedAt = typeof structured?.datePosted === 'string' ? new Date(structured.datePosted) : undefined;
             const posting = { ...link, title, company: company && validCompany(company) ? company : 'Unknown Company', description, location, ...(postedAt && !Number.isNaN(postedAt.getTime()) ? { postedAt } : {}) };
             if (posting.company !== 'Unknown Company') return posting;

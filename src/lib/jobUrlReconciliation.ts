@@ -233,8 +233,18 @@ export async function reconcileJobUrlEdit(tx: Prisma.TransactionClient, input: {
       { url: { startsWith: pathPrefix, mode: 'insensitive' } },
     ] },
   }) : [];
-  const matches = candidates.filter(candidate => [candidate.url, candidate.canonicalUrl]
-    .some(value => value && urlPostingIdentity(value) === postingIdentity));
+  // Employer-branded links may hide a verified provider identity. Fall back to
+  // the stored key only in that case: a legacy key must never override URLs
+  // that identify a different opening. Recheck the same proof after locking.
+  const matchesPosting = (candidate: Job) => {
+    if (!postingIdentity) return false;
+    const urlIdentities = [candidate.url, candidate.canonicalUrl]
+      .map(value => value ? urlPostingIdentity(value) : null).filter(Boolean);
+    return urlIdentities.length > 0
+      ? urlIdentities.includes(postingIdentity)
+      : candidate.postingIdentity === postingIdentity;
+  };
+  const matches = candidates.filter(matchesPosting);
   const ids = [input.id, ...matches.map(row => row.id)].sort();
   // Stable lock order, then re-read rather than deciding from stale snapshots.
   for (const id of ids) await tx.$queryRaw`SELECT id FROM "Job" WHERE id = ${id} FOR UPDATE`;
@@ -245,7 +255,7 @@ export async function reconcileJobUrlEdit(tx: Prisma.TransactionClient, input: {
   const freshMatches: Job[] = [];
   for (const match of matches) {
     const fresh = await tx.job.findUnique({ where: { id: match.id } });
-    if (!fresh || ![fresh.url, fresh.canonicalUrl].some(value => value && urlPostingIdentity(value) === postingIdentity)) {
+    if (!fresh || !matchesPosting(fresh)) {
       throw new JobUrlConflict('A matching job changed while the link was being checked. Please retry.');
     }
     freshMatches.push(fresh);

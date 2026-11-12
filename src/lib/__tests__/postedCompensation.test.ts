@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { extractPostedBaseCompensation } from '../postedCompensation';
+import { extractPostedBaseCompensation, extractPostedCompensation } from '../postedCompensation';
+import { derivePostingFacts } from '../postingFacts';
 
 test('extracts the explicit base pay range from the eHealth-style JD wording', () => {
   const description = [
@@ -182,4 +183,40 @@ test('keeps comma-separated total pay labels from hiding conflicting regional ba
   const description = 'Primary Location Base Pay Range: Home based-Illinois $94,100 - $174,700. Total Target Cash Range: $144,900 - $268,900.If performed in Chicago, IL, the base pay range is $98,600 - $183,000, the total target cash range is $151,800 - $281,600.';
   assert.equal(extractPostedBaseCompensation(description), null);
   assert.equal(extractPostedBaseCompensation('The national minimum salary is $110,000 base and benefits.'), null);
+});
+
+test('displays a Jobvite USD header according to the distant total-target definition', () => {
+  const description = 'Salary: USD 70500 - 83100 Annually\n\n' + 'Develop dealer accounts. '.repeat(80)
+    + '\nThe posted salary range reflects a total target compensation: base + incentive.';
+  assert.equal(extractPostedBaseCompensation(description), null);
+  assert.equal(extractPostedCompensation(description), '$70,500–$83,100 total target compensation (base + incentive)');
+  assert.equal(derivePostingFacts(description).postedCompensation, '$70,500–$83,100 total target compensation (base + incentive)');
+  assert.equal(extractPostedCompensation('Salary: USD 70500 - 83100 Annually'), '$70,500–$83,100 base');
+});
+
+test('displays explicit base and total compensation independently without calculating a split', () => {
+  for (const [description, expected] of [
+    ['OTE range: $150,000 - $200,000.', '$150,000–$200,000 total target compensation'],
+    ['Total compensation range: USD 125000 - 150000 annually.', '$125,000–$150,000 total compensation'],
+    ['Salary range, including commission, is $125,000 - $150,000.', '$125,000–$150,000 total compensation'],
+    ['Salary: $180,000 OTE', '$180,000 total target compensation'],
+    ['Base: $120,000\nVariable Compensation: $60,000\nOTE: $180,000', '$120,000 base; $180,000 total target compensation'],
+    ['Base salary range: $100,000-$110,000, with OTE for this role: $120,000-$130,000', '$100,000–$110,000 base; $120,000–$130,000 total target compensation'],
+    ['Base salary: $100,000 plus commission', '$100,000 base'],
+    ['Total Target Cash Pay Range: $112,500 - $202,900, inclusive of target incentives\nBase Pay Range: $78,750 - $142,030', '$78,750–$142,030 base; $112,500–$202,900 total target compensation'],
+    ['Base salary: $120,000 TTC + benefits', '$120,000 total target compensation'],
+    ['Base salary: $100,000 &amp;lt;including bonus&amp;gt;', '$100,000 total compensation'],
+  ]) assert.equal(extractPostedCompensation(description), expected, description);
+});
+
+test('total compensation keeps currency, annual-period, conflict and incomplete-band safeguards', () => {
+  for (const description of [
+    'OTE: CAD 125000 - 150000 annually', 'OTE: CAD$125,000-$150,000', 'OTE: $125,000-$150,000 CAD',
+    'OTE: USD 6000 - 12000 per month', 'Total compensation: $30-$35 per hour',
+    'Monthly total compensation: USD 20000 - 30000', 'Monthly base salary: $20,000-$30,000',
+    'OTE is competitive. Bonus $150,000-$200,000',
+    'OTE: up to $150,000', 'OTE: $150,000 - negotiable', 'OTE: $150,000+',
+    'OTE: $150,000 - $125,000', 'OTE: $150,000-$175,000. OTE in California: $160,000-$190,000.',
+    'Commission: $150,000-$200,000', 'Bonus range: $20,000-$40,000',
+  ]) assert.equal(extractPostedCompensation(description), null, description);
 });

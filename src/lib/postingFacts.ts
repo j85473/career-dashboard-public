@@ -1,4 +1,4 @@
-import { extractPostedBaseCompensation } from './postedCompensation';
+import { extractPostedCompensation } from './postedCompensation';
 import { extractPostedTravel } from './postedTravel';
 
 /**
@@ -17,7 +17,7 @@ export interface PostingFacts {
 
 export function derivePostingFacts(description: string | null | undefined): PostingFacts {
   return {
-    postedCompensation: extractPostedBaseCompensation(description),
+    postedCompensation: extractPostedCompensation(description),
     postedTravel: extractPostedTravel(description),
   };
 }

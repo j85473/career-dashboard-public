@@ -99,7 +99,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return null;
   });
   const coreProvider = coreAtsHostedProvider(cleanedUrl);
-  let postingVerificationError: string | null = null;
+  let postingVerificationError: string | null = directAtsResult?.postingVerificationError || null;
   if (coreProvider && (!directAtsResult || directAtsResult.ats !== coreProvider
     || !directAtsResult.title || isGenericManualImportTitle(directAtsResult.title)
     || !assessJobDescriptionQuality(directAtsResult.text, { structuredSource: true }).scorable)) {
@@ -110,7 +110,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (symphonyPostingIdentity(cleanedUrl) && !directAtsResult) {
     postingVerificationError = 'The careers API did not return this opening’s complete duties and qualifications. The saved description and scores were kept.';
   }
-  const directPostingResult = await completePostingMetadata(directAtsResult, () => scrapeJobPostingMetadata(cleanedUrl));
+  const directPostingResult = await completePostingMetadata(directAtsResult, () => scrapeJobPostingMetadata(directAtsResult?.postingUrl || cleanedUrl));
   // Employer-branded domains reveal their provider in the fetched page,
   // rather than the URL. Use that evidence in reconciliation and both refresh choices.
   if (directPostingResult?.ats && directPostingResult.ats !== 'Unknown') detectedAts = directPostingResult.ats;
@@ -119,7 +119,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     || !assessJobDescriptionQuality(directPostingResult.text, { structuredSource: true }).scorable)) {
     postingVerificationError = 'UKG did not return the requested opening’s complete details. The saved details and scores were kept.';
   }
-  const discoveredBoardFromUrl = postingVerificationError ? null : discoveredAtsBoardFromJobUrl(cleanedUrl, detectedAts);
+  const discoveredBoardFromUrl = postingVerificationError ? null : discoveredAtsBoardFromJobUrl(directPostingResult?.postingUrl || cleanedUrl, detectedAts);
 
   const submittedStoredUrl = [existingJob.url, existingJob.canonicalUrl]
     .some((storedUrl) => storedUrl && cleanUrl(storedUrl) === cleanUrl(url));
@@ -130,7 +130,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const reconciliation = await prisma.$transaction(async (tx) => {
       await lockJobUrlEdits(tx);
       const result = await reconcileJobUrlEdit(tx, {
-        id, url: canonicalLink.url, lookupUrl: cleanedUrl, expectedUpdatedAt: snapshot.updatedAt,
+        id, url: canonicalLink.url, lookupUrl: directPostingResult?.postingUrl || cleanedUrl, expectedUpdatedAt: snapshot.updatedAt,
         // A pasted link that belongs to another card always opens the focused
         // two-card review. Detection itself never chooses a survivor.
         allowConsolidation: false,
@@ -177,12 +177,25 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ error: 'The link could not be updated. Please retry.' }, { status: 409 });
   }
 
+  // Provider identification can succeed without a selected opening. Save the
+  // link/ATS above, but do not claim new leases or queue a rescore for it.
+  if (postingVerificationError) {
+    const latestScores = await latestJobScoreEvents([id]);
+    return NextResponse.json({
+      job: projectJobScoreAuthority(existingJob, latestScores.get(id) || null),
+      ...(linkOnly === true
+        ? { refreshWarning: `Link saved, but the posting details could not be refreshed: ${postingVerificationError}` }
+        : { error: postingVerificationError, needManual: true }),
+      rescoreQueued: false, scoreInvalidated: false, linkOnly: linkOnly === true,
+    }, { status: linkOnly === true ? 200 : 422 });
+  }
+
   // Re-fetching a stored Adzuna link reads its `/details/` page: the `/land/ad/`
   // link returns a bot wall that is long enough to be saved as a description.
   const adzunaDetails = submittedStoredUrl
     ? adzunaDetailsUrl({ source: existingJob.source, sourceId: existingJob.sourceId, url: cleanedUrl })
     : null;
-  const extractionUrl = adzunaDetails || (submittedStoredUrl && detectedAts === 'Unknown'
+  const extractionUrl = directPostingResult?.postingUrl || adzunaDetails || (submittedStoredUrl && detectedAts === 'Unknown'
     ? preferredJdSourceUrl({
         source: existingJob.source,
         jobUrl: cleanedUrl,
@@ -223,7 +236,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   try {
-    if (postingVerificationError) throw new Error(postingVerificationError);
     let descriptionText = '';
     let manualAts = detectedAts;
     let foundSlug = discoveredBoardFromUrl?.slug || '';
@@ -234,9 +246,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     let newLocation: string | undefined = undefined;
 
     // 1. Try ATS specific API
-    const atsResult = extractionUrl === cleanedUrl
+    const atsResult = extractionUrl === cleanedUrl || extractionUrl === directPostingResult?.postingUrl
       ? directPostingResult
       : await completePostingMetadata(await scrapeAtsApi(extractionUrl), () => scrapeJobPostingMetadata(extractionUrl));
+    if (atsResult?.postingVerificationError) throw new Error(atsResult.postingVerificationError);
     let structuredDescription = false;
 
     if (atsResult) {

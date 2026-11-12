@@ -36,6 +36,8 @@ import { fetchRipplingPosting, ripplingPostingIdentity } from './ripplingPosting
 import { expandedPostingIdentity } from './expandedPublicAts';
 import { fetchExpandedAtsPosting } from './expandedAtsPosting';
 import { isSuccessFactorsCareerSite, parseSuccessFactorsCareerSitePosting } from './successFactorsCareerSite';
+import { ashbyEmbed } from './ashbyEmbed';
+import { jobvitePostingIdentity } from './jobviteLocation';
 
 function isDomain(hostname: string, domain: string) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
@@ -49,6 +51,10 @@ export type AtsScrapeResult = {
   title?: string,
   company?: string,
   location?: string,
+  /** Provider evidence without a verified opening must never reach a page-body fallback. */
+  postingVerificationError?: string,
+  /** Verified provider URL for retrieval only; never replaces the user's saved link. */
+  postingUrl?: string,
 };
 
 type IcimsJobData = {
@@ -515,6 +521,26 @@ export async function scrapeAtsApi(url: string): Promise<AtsScrapeResult | null>
     const parsed = await assertSafeExternalUrl(url);
     const host = parsed.hostname.toLowerCase();
 
+    if (jobvitePostingIdentity(url)) {
+      // nl=1 keeps this exact posting on Jobvite instead of redirecting to
+      // an employer's iframe wrapper, which can omit the salary metadata.
+      const target = new URL(url);
+      target.searchParams.set('nl', '1');
+      const response = await safeExternalFetch(target.href, {
+        headers: { 'User-Agent': JSON_LD_FETCH_USER_AGENT }, signal: AbortSignal.timeout(15000),
+      });
+      if (!response.ok || jobvitePostingIdentity(response.url) !== jobvitePostingIdentity(url)) return null;
+      const html = await readSafeFetchText(response);
+      const { browserPostingLink, parseBrowserPosting } = await import('./browserAtsPosting');
+      const board = `https://${target.hostname}/${target.pathname.split('/')[1]}/jobs`;
+      const link = browserPostingLink('jobvite', board, url);
+      if (!link) return null;
+      const posting = parseBrowserPosting('jobvite', board, link, [{ url: response.url, html, text: '' }]);
+      return posting && assessJobDescriptionQuality(posting.description, { structuredSource: true }).scorable
+        ? { text: posting.description, title: posting.title, company: posting.company,
+          location: posting.location, ats: 'Jobvite', platform: 'jobvite' } : null;
+    }
+
     const paycorBoard = browserAtsBoardFromUrl('paycor', url);
     if (paycorBoard) {
       const [{ browserPostingLink }, { BrowserAtsHttpReader }] = await Promise.all([
@@ -910,6 +936,18 @@ async function scrapeJsonLdJobPosting(url: string): Promise<AtsScrapeResult | nu
   if (!pageRes || !pageRes.ok) return null;
 
   const html = await readSafeFetchText(pageRes);
+  const embeddedAshby = ashbyEmbed(html, url);
+  if (embeddedAshby) {
+    const evidence: AtsScrapeResult = { text: '', ats: 'Ashby', platform: 'ashby',
+      atsSlug: embeddedAshby.board, postingUrl: embeddedAshby.postingUrl,
+      postingVerificationError: embeddedAshby.verificationError };
+    if (evidence.postingVerificationError) return evidence;
+    const posting = await fetchLeverAshbyPosting(embeddedAshby.postingUrl!).catch(() => null);
+    if (!posting?.title || !assessJobDescriptionQuality(posting.text, { structuredSource: true }).scorable) {
+      return { ...evidence, postingVerificationError: 'Ashby did not return verified details for this opening.' };
+    }
+    return { ...evidence, ...posting };
+  }
   if (talentsConnectPage(html, url)) {
     const detail = await fetchTalentsConnectPosting(html, url).catch(() => null);
     // Missing canonical evidence must not promote the frontend's incorrect

@@ -147,6 +147,51 @@ test('no matching requisition updates the URL and key without altering scores or
   assert.equal(result.job.reqFitScore, source.reqFitScore);
 });
 
+test('a saved Ashby posting identity offers review when the existing card uses an employer link', async () => {
+  const ashbyUrl = 'https://jobs.ashbyhq.com/example/e2d946b2-c0e5-4f58-81a4-fb6ce844a114';
+  const employerUrl = 'https://example.com/careers?ashby_jid=e2d946b2-c0e5-4f58-81a4-fb6ce844a114';
+  const source = row();
+  const target = row({ id: 'existing', url: employerUrl, canonicalUrl: employerUrl,
+    postingIdentity: urlPostingIdentity(ashbyUrl), status: 'applied', submittedResume: 'submitted.docx' });
+  const f = fixture([source, target]);
+  assert.equal(urlPostingIdentity(employerUrl), null);
+  await assert.rejects(reconcileJobUrlEdit(f.tx, {
+    id: source.id, url: ashbyUrl, expectedUpdatedAt: source.updatedAt, allowConsolidation: false,
+  }), (error: unknown) => error instanceof JobUrlConflict && error.mergeTargetJobId === target.id);
+  assert.equal(f.writes.length, 0);
+  assert.equal(f.scoreEvents.length, 0);
+  assert.deepEqual(f.saved.get(source.id), source);
+  assert.deepEqual(f.saved.get(target.id), target);
+});
+
+test('a stored posting identity match is checked again after locking the card', async () => {
+  const source = row();
+  const target = row({ id: 'existing', url: 'https://example.com/careers',
+    postingIdentity: urlPostingIdentity(directUrl) });
+  const f = fixture([source, target]);
+  f.saved.set(target.id, { ...target, postingIdentity: urlPostingIdentity(otherUrl) });
+  await assert.rejects(reconcileJobUrlEdit(f.tx, {
+    id: source.id, url: directUrl, expectedUpdatedAt: source.updatedAt, allowConsolidation: false,
+  }), (error: unknown) => error instanceof JobUrlConflict
+    && /matching job changed/.test(error.message) && error.mergeTargetJobId === null);
+  assert.equal(f.writes.length, 0);
+});
+
+test('a stored key cannot override an Ashby URL identifying a different opening', async () => {
+  const ashbyUrl = 'https://jobs.ashbyhq.com/example/e2d946b2-c0e5-4f58-81a4-fb6ce844a114';
+  const differentUrl = 'https://jobs.ashbyhq.com/example/360a40b7-9c2a-4bf4-bf6f-55aab18a70ff';
+  const source = row();
+  const unrelated = row({ id: 'different', url: differentUrl, canonicalUrl: differentUrl,
+    postingIdentity: urlPostingIdentity(ashbyUrl), status: 'applied' });
+  const f = fixture([source, unrelated]);
+  const result = await reconcileJobUrlEdit(f.tx, {
+    id: source.id, url: ashbyUrl, expectedUpdatedAt: source.updatedAt, allowConsolidation: false,
+  });
+  assert.equal(result.job.id, source.id);
+  assert.equal(result.consolidatedJobId, null);
+  assert.deepEqual(f.saved.get(unrelated.id), unrelated);
+});
+
 test('each user edit replaces the canonical link verbatim while redirects serve duplicate lookup only', async () => {
   const source = row();
   const f = fixture([source]);

@@ -1,10 +1,11 @@
-/** Extract explicitly stated annual base pay for the job card, independently of scoring. */
+/** Extract explicitly stated annual compensation, independently of scoring. */
 const PAY_MARKER = /\b(?:base\s+(?:pay|salary|compensation)(?:\s+range)?|base(?=\s*(?::|=|\bis\b|\$))|(?:annual(?:ized)?\s+)?salary(?:\s+range)?|(?:annual(?:ized)?\s+)?pay\s+range)\b/gi;
 const AMOUNT = String.raw`(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?(?:[ \t]*[kK])?`;
 const AMOUNT_END = String.raw`(?![\dkK]|[,\.]\d)`;
 const ANNUAL_SUFFIX = String.raw`(?:\s*(?:/\s*(?:yr|year)|per\s+(?:year|annum)|annually))?`;
-const PAY_RANGE = new RegExp(String.raw`\$\s*(${AMOUNT})\s*(?:USD)?${ANNUAL_SUFFIX}\s*(?:-|–|—|\bto\b|\band\b)\s*(?:USD\s*)?\$?\s*(${AMOUNT})${AMOUNT_END}`, 'g');
-const PAY_AMOUNT = new RegExp(String.raw`\$\s*(${AMOUNT})${AMOUNT_END}`, 'g');
+const MONEY = String.raw`(?:\$|\bUSD\s*\$?)\s*`;
+const PAY_RANGE = new RegExp(String.raw`${MONEY}(${AMOUNT})\s*(?:USD)?${ANNUAL_SUFFIX}\s*(?:-|–|—|\bto\b|\band\b)\s*(?:USD\s*)?\$?\s*(${AMOUNT})${AMOUNT_END}`, 'g');
+const PAY_AMOUNT = new RegExp(String.raw`${MONEY}(${AMOUNT})${AMOUNT_END}`, 'g');
 const VARIABLE_PAY = /\b(?:ote|ttc|on[-\s]?target(?:[-\s]+earnings)?|total\s+(?:target\s+)?(?:cash|compensation|rewards?|earnings)|commission|bonus|incentive|variable)\b/i;
 const ADDITIONAL_PAY = /\+|\bplus\b|\bin\s+addition\b|\b(?:and\s+)?may\s+(?:also\s+)?include\b/;
 const NEXT_PAY_LABEL = /\b(?:variable\s+(?:compensation|pay)|ote|on[-\s]target\s+earnings|total\s+(?:target\s+)?(?:cash|compensation)(?:\s+range)?)\s*(?::|\bis\b|\bof\b)/i;
@@ -76,16 +77,8 @@ function displayAmount(raw: string, value: number): string | null {
   return formatAmount(/[kK]/.test(raw) || parseAmount(raw) !== value ? String(value) : raw.trim());
 }
 
-/**
- * Associate each amount with its own pay label. The previous window scan could
- * attach an adjacent OTE/bonus range to a base-pay label, and required two
- * dollar signs even when the employer wrote "$70,000-100,000".
- *
- * Fixed salaries and ranges are both literal posting facts. Conflicting bands
- * still fail closed; no OTE split or annualization is calculated here.
- */
-export function extractPostedBaseCompensation(description: string | null | undefined): string | null {
-  const text = description
+function compensationText(description: string | null | undefined): string {
+  return description
     // Match original input once: decoded ampersands must not introduce markup
     // for another entity replacement to decode. Known nested pay separators
     // remain explicit matches so existing posted ranges keep both endpoints.
@@ -96,9 +89,10 @@ export function extractPostedBaseCompensation(description: string | null | undef
       })
     .replace(/<[^>]*>/g, ' ')
     .replace(/\\([-.])/g, '$1')
-    .replace(/[^\S\n]+/g, ' ').trim();
-  if (!text) return null;
+    .replace(/[^\S\n]+/g, ' ').trim() || '';
+}
 
+function payCandidates(text: string): PayCandidate[] {
   const amounts: PayCandidate[] = [];
   for (const range of text.matchAll(PAY_RANGE)) {
     amounts.push({ index: range.index, end: range.index + range[0].length, low: range[1], high: range[2] });
@@ -107,6 +101,28 @@ export function extractPostedBaseCompensation(description: string | null | undef
     if (amounts.some((range) => amount.index >= range.index && amount.index < range.end)) continue;
     amounts.push({ index: amount.index, end: amount.index + amount[0].length, low: amount[1] });
   }
+  return amounts;
+}
+
+const TOTAL_MARKER = /\b(?:OTE|TTC|on[-\s]target\s+earnings|total\s+(?:target\s+)?(?:cash(?:\s+pay)?|compensation|earnings))(?:\s+range)?\b/gi;
+function totalLabel(value: string): string {
+  return /\b(?:target|OTE|TTC)\b|on[-\s]target/i.test(value) ? 'total target compensation' : 'total compensation';
+}
+
+/** A distant description can explicitly define the salary band in the page header. */
+function referencedSalaryTotal(text: string): string | undefined {
+  const reference = /\b(?:posted\s+)?(?:salary|pay)\s+range\s+(?:reflects?|represents?|includes?|is)\s+(?:a\s+|the\s+)?(?:total\s+(?:target\s+)?(?:cash|compensation|earnings)|on[-\s]target\s+earnings|OTE|TTC)\b[^.\n]*/i.exec(text)?.[0];
+  if (!reference) return undefined;
+  return totalLabel(reference) + (/\bbase\s*\+\s*incentive\b/i.test(reference) ? ' (base + incentive)' : '');
+}
+
+/** Associate each amount with its own base-pay label, without borrowing an
+ * adjacent OTE/bonus band. Conflicting bands fail closed; no annualization.
+ */
+export function extractPostedBaseCompensation(description: string | null | undefined): string | null {
+  const text = compensationText(description);
+  if (!text) return null;
+  const amounts = payCandidates(text);
 
   const markers = [...text.matchAll(PAY_MARKER)];
   const candidates = new Map<string, boolean>();
@@ -133,6 +149,7 @@ export function extractPostedBaseCompensation(description: string | null | undef
     if (!suffix && ((amount.high === undefined && /\$/.test(bridge)) || VARIABLE_PAY.test(bridge))) continue;
 
     const directBase = suffix ? /\bbase\b/i.test(suffix[0]) : /^base\b/i.test(marker![0]);
+    if (!directBase && referencedSalaryTotal(text)) continue;
     const lead = marker ? text.slice(Math.max(0, marker.index - 80), marker.index).split(/\n|\.\s/).at(-1)! : '';
     if (!directBase && VARIABLE_PAY.test(lead)) continue;
     // "Plus bonus" describes additional pay; "including bonus" describes a
@@ -141,7 +158,7 @@ export function extractPostedBaseCompensation(description: string | null | undef
     if (VARIABLE_PAY.test(ownTail)) continue;
 
     const periodContext = `${bridge.slice(-90)} ${ownTail.slice(0, 40)}`;
-    if (NON_ANNUAL_CONTEXT.test(periodContext)) continue;
+    if (NON_ANNUAL_CONTEXT.test(`${lead} ${periodContext}`)) continue;
     const annual = ANNUAL_CONTEXT.test(`${lead} ${marker?.[0] || ''} ${periodContext}`);
 
     let low = parseAmount(amount.low);
@@ -168,6 +185,55 @@ export function extractPostedBaseCompensation(description: string | null | undef
     if (!candidates.get(label) && variableValues.has(key)) candidates.delete(label);
   }
   return candidates.size === 1 ? [...candidates.keys()][0] : null;
+}
+
+/** Keep base and total bands separately labeled; never infer a base/variable split. */
+export function extractPostedCompensation(description: string | null | undefined): string | null {
+  const text = compensationText(description);
+  const base = extractPostedBaseCompensation(description);
+  const allMarkers = [...text.matchAll(TOTAL_MARKER), ...text.matchAll(PAY_MARKER)];
+  // "Pay Range" inside "Total Target Cash Pay Range" belongs to that
+  // complete label; the shorter nested match must not change its meaning.
+  const markers = allMarkers.filter(entry => !allMarkers.some(other => other.index < entry.index
+    && other.index + other[0].length >= entry.index + entry[0].length)).sort((a, b) => a.index - b.index);
+  const totals = new Map<string, string>();
+  for (const amount of payCandidates(text)) {
+    const before = text.slice(Math.max(0, amount.index - 180), amount.index);
+    const after = text.slice(amount.end, amount.end + 180);
+    if (FOREIGN_CURRENCY.test(before) || /^\s*(?:CAD|AUD|NZD|SGD|HKD|EUR|GBP)\b/i.test(after)) continue;
+    const marker = markers.findLast(entry => entry.index < amount.index && entry.index >= amount.index - 180);
+    const lead = marker ? text.slice(Math.max(0, marker.index - 80), marker.index).split(/\n|\.\s/).at(-1)! : '';
+    const bridge = marker ? text.slice(marker.index + marker[0].length, amount.index) : '';
+    const suffix = /^[ \t]*(?:USD[ \t]*)?(?:OTE|TTC|on[-\s]target\s+earnings|total\s+(?:target\s+)?(?:cash|compensation|earnings))\b/i.exec(after);
+    const tail = after.split(/\n|\.\s|\$|\bUSD\s*\d/)[0];
+    const combined = /\b(?:including|inclusive\s+of)\s+(?:base\s*(?:\+|and)\s*)?(?:commission|bonus|incentive|variable)/i.test(`${bridge} ${tail}`);
+    const explicitTotal = marker && [...marker[0].matchAll(TOTAL_MARKER)].length > 0;
+    const reference = marker && /^(?:annual\s+)?(?:salary|pay)/i.test(marker[0]) ? referencedSalaryTotal(text) : undefined;
+    const kind = suffix ? totalLabel(suffix[0]) : explicitTotal ? totalLabel(marker[0]) : reference || (combined ? 'total compensation' : undefined);
+    if (!kind || (!suffix && /\b(?:commission|bonus|incentive|variable)\s*(?:pay|compensation|range)?\s*:/i.test(bridge))) continue;
+    if (!suffix && !combined && /\b(?:commission|bonus|incentive|variable)\b/i.test(bridge)) continue;
+    if (!suffix && amount.high === undefined && /\$|\bUSD\s*\d/.test(bridge)) continue;
+    // A later amount cannot inherit a total label across a base/variable component.
+    if (!suffix && /\bbase\s*(?:salary|pay|compensation)?\s*:|\b(?:commission|bonus|variable)\s*:/i.test(bridge)) continue;
+    const period = `${lead} ${bridge} ${tail}`;
+    if (NON_ANNUAL_CONTEXT.test(period)) continue;
+    let low = parseAmount(amount.low);
+    const high = amount.high === undefined ? undefined : parseAmount(amount.high);
+    if (high !== undefined && low < 1_000 && high >= 1_000 && !/[kK,]/.test(amount.low)) low *= 1_000;
+    if (!Number.isFinite(low) || low <= 0 || (low < IMPLAUSIBLE_ANNUAL_FLOOR && !ANNUAL_CONTEXT.test(`${marker?.[0]} ${period}`))) continue;
+    if (high !== undefined && (!Number.isFinite(high) || high < low || high / low > MAX_RANGE_RATIO)) continue;
+    if (high === undefined && (/\b(?:up to|at least|from|minimum|maximum|approximately|around|about|between)\b/i.test(before)
+      || /^\s*(?:[-–—]|to\b|and\s+\$|or\s+\$|\+)/i.test(after))) continue;
+    const lowLabel = displayAmount(amount.low, low);
+    const highLabel = high === undefined ? null : displayAmount(amount.high!, high);
+    if (!lowLabel || (high !== undefined && !highLabel)) continue;
+    const band = high === undefined ? `$${lowLabel}` : `$${lowLabel}–$${highLabel}`;
+    const previous = totals.get(band);
+    if (previous && previous !== kind && !previous.startsWith(kind) && !kind.startsWith(previous)) return base;
+    totals.set(band, previous && previous.length > kind.length ? previous : kind);
+  }
+  const total = totals.size === 1 ? [...totals].map(([band, kind]) => `${band} ${kind}`)[0] : null;
+  return [base, total].filter(Boolean).join('; ') || null;
 }
 
 export interface StructuredPayRange {

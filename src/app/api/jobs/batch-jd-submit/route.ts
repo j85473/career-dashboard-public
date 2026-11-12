@@ -287,6 +287,7 @@ export async function POST(request: Request) {
               attempt.url = extractionUrl;
               attempt.transport = 'ats_api';
               const atsResult = await scrapeAtsApi(extractionUrl);
+              if (atsResult?.postingVerificationError) throw new Error(atsResult.postingVerificationError);
               // Workday's detail response carries the complete primary plus
               // additional-location list and its authoritative hiring entity.
               // Preserve both even if the description itself is too short and

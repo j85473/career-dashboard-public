@@ -103,7 +103,7 @@ async function refreshSavedMetadata(job: Job, suppliedUrl: string): Promise<Job>
   if (!saved.count) return job;
   if (!job.url || job.jdBatchId || job.batchJobId || job.afBatchId) return job;
   const metadata = await scrapeAtsApi(job.url).catch(() => null);
-  if (!metadata) return job;
+  if (!metadata || metadata.postingVerificationError) return job;
   const repair = planPostingMetadataRepair(job, { ...metadata, location: metadata.location || job.location || '',
     source: 'saved-link-provider-metadata', identityVerified: true, completeLocations: true },
     { hasScores: true, hasHumanDecision: true });
@@ -187,7 +187,10 @@ export async function POST(req: Request) {
 
     const readyPosting = readyPage?.jobId ? await fetchUkgReadyPosting(url) : null;
     const directPosting = readyPosting || await scrapeAtsApi(url).catch(() => null);
-    const coreProvider = coreAtsHostedProvider(url);
+    if (directPosting?.postingVerificationError) {
+      return NextResponse.json({ error: `${directPosting.postingVerificationError} No job was imported.` }, { status: 422 });
+    }
+    const coreProvider = coreAtsHostedProvider(directPosting?.postingUrl || url);
     if (coreProvider && (!directPosting || directPosting.ats !== coreProvider
       || !directPosting.title || isGenericManualImportTitle(directPosting.title)
       || !assessJobDescriptionQuality(directPosting.text, { structuredSource: true }).scorable)) {
@@ -219,13 +222,14 @@ export async function POST(req: Request) {
     // best-effort refresh must not be required to replace an ATS hostname.
     if (!readyPosting && !umantisPage && (!directPosting?.title || !directCompany || !directPosting?.location)) {
       try {
-        const htmlRes = await safeExternalFetch(validatedUrl, {
+        const metadataUrl = directPosting?.postingUrl || validatedUrl.toString();
+        const htmlRes = await safeExternalFetch(metadataUrl, {
           headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
           signal: AbortSignal.timeout(10000),
         });
         if (htmlRes.ok) {
           const metadata = await readManualImportPage({
-            html: await htmlRes.text(), url: validatedUrl.toString(), title: reqTitle || directPosting?.title, company: reqCompany || directCompany,
+            html: await htmlRes.text(), url: metadataUrl, title: reqTitle || directPosting?.title, company: reqCompany || directCompany,
           }, async (pageTitle) => {
             const prompt = `Extract the specific Job Title and Company Name from this webpage title tag: "${pageTitle}". Return only a raw JSON object with keys "title" and "company". If you cannot determine the company, return null for company. Do not use a website hostname as a company name. Do not use markdown blocks.`;
             const jsonStr = await callGemini(prompt);

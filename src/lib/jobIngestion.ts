@@ -9,6 +9,7 @@ import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import { adpPostingIdentity, adpPostingsConflict, isAdpPostingHost, matchesAdpPosting } from './adpPostingIdentity';
 import { providerPostingLocation } from './postingLocation';
 import { recoverMissingSourceLocation } from './sourcePostingLocation';
+import { recoverJobviteCompensation } from './jobviteCompensation';
 import { isPaylocityPostingHost, paylocityPostingId, paylocityPostingsConflict, resolvePaylocityObservation } from './paylocityPostingIdentity';
 import { recruiteePostingLocation } from './recruiteeLocation';
 import { publishedEmployerName } from './publicAtsEmployer';
@@ -2364,6 +2365,11 @@ export async function ingestExternalJob(
     });
     if (!metadataFilter.passes) filter = metadataFilter;
   }
+  if (filter.passes && !assessJobInfoLanguage({ title, description }).isAffirmativelyNonEnglish
+    && !isClosedJobPosting(description)) {
+    const payDescription = await recoverJobviteCompensation({ url, description });
+    if (payDescription) description = payDescription;
+  }
   const jdReady = isScorableJobDescription(description, storedDescriptionQualityOptions(input.source));
   const appliedRepeat = filter.passes && jdReady
     ? await findAppliedRepeatForIngestionSafely({ title, company, employer, location, description, source: input.source })
@@ -3772,7 +3778,7 @@ export async function ingestJobs(
             }
          }
       }
-      if (!atsResult?.text) {
+      if (!atsResult?.text && !atsResult?.postingVerificationError) {
          const scraped = await tryFetchFullDescription({
            url: rawUrl,
            resolvedUrl,
@@ -3792,6 +3798,15 @@ export async function ingestJobs(
            finalDescription = scraped;
          }
       }
+    }
+
+    // Salary metadata can be absent even when an aggregator supplied the full
+    // duties/qualifications. Recover it independently of JD-length fallback.
+    if (!networkComplete && glassdoorMetadataFilter?.passes !== false && !availableLanguage.isAffirmativelyNonEnglish) {
+      const payDescription = await recoverJobviteCompensation({
+        url: finalCanonicalUrl || finalUrl, description: finalDescription,
+      });
+      if (payDescription) finalDescription = payDescription;
     }
 
     // Only unseen arrivals reach this point. Recover explicit source geography

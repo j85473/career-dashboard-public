@@ -185,6 +185,10 @@ async function resolveFullDescription(job: Job): Promise<ResolvedDescription> {
       // First try the specialized ATS API scraper
       const { scrapeAtsApi } = await import('./atsApi');
       const atsResult = await scrapeAtsApi(canonicalUrl);
+      if (atsResult?.postingVerificationError) {
+        discoveredAts = atsResult.ats;
+        return result(description, true);
+      }
       if (atsResult && isClosedJobPosting(atsResult.text)) return closedResult(atsResult.text);
       if (atsResult && isScorableJobDescription(atsResult.text, { structuredSource: true })) {
         // If we successfully identified the ATS and scraped it, update the job record
