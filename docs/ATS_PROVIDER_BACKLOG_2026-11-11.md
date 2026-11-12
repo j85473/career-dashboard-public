@@ -17,8 +17,9 @@ large board in that older queue cannot hold up all four providers.
 The existing first-collection timer refills this queue without a separate worker:
 
 1. Respect ordinary and reviewed operator modes and the shared validator lease.
-2. Require a free provider-backlog slot, including absence of ready, retrying or
-   incompletely persisted work in that backlog.
+2. Require a free fresh-collection slot. Ready work, active worker claims,
+   unattempted detail work, publication and ordinary persistence retain the
+   slot. Retry-only work can lend it under the November 12 recovery rules.
 3. Verify staging, response-size and persistence headroom using the existing
    reviewed publication window and hard ceilings.
 4. Select a due discovered candidate from an eligible enrolled provider, rotating
@@ -27,12 +28,15 @@ The existing first-collection timer refills this queue without a separate worker
    dates; catalogues above 250 postings enter size review.
 6. Recheck operator enrollment after the network read, then let the existing
    exact-batch reservation and collector perform collection and persistence.
-7. Refill after successful persistence releases the serial slot.
+7. Refill after successful persistence, or while the retained board has only
+   posting retries or bounded employer-evidence recovery left.
 
-The ordinary 32-board allowance, shared worker pool, request pacing and volume
-ceilings are unchanged. Ordinary providers can still use their own available
-capacity. A full reviewed slot prevents further enrolled-provider validations,
-while ordinary work may proceed independently when eligible.
+The ordinary 32-board fresh-work allowance, shared worker pool, request pacing
+and volume ceilings are unchanged. Ordinary providers can still use their own
+available capacity. A full fresh-work slot prevents further enrolled-provider
+validations. Retained retry work stays admitted and continues in the same worker
+pool; its saved evidence, retry dates and holds are preserved. The separate
+oversized-board queue retains strict occupancy through retries and persistence.
 
 Only these four provider scopes can be enrolled. Their first catalogues retain
 the 250-posting maximum. The older oversized queue retains its own reviewed

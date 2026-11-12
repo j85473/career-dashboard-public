@@ -8,7 +8,7 @@ import {
 } from '../../src/lib/atsEmployerRetry';
 
 test('only explicit retained employer-evidence deferrals use recovery capacity', () => {
-  for (const platform of ['oracle', 'ukg', 'successfactors', 'zohorecruit']) {
+  for (const platform of ['cornerstone', 'oracle', 'ukg', 'successfactors', 'zohorecruit']) {
     assert.equal(isAtsEmployerVerificationHold(`${platform} downloaded work awaits a verified employer`), true);
   }
   assert.equal(isAtsEmployerVerificationHold('successfactors downloaded work awaits a verified posting location'), true);

@@ -490,7 +490,10 @@ function preparedDetailPlan(input: {
     if (!postingId || publicAtsBoardSlugFromUrl(url, platform) !== slug) return { plan: null, reason: 'missing_detail_identity', fields };
     return { plan: { url, transport: 'safe_fetch', fields, parse: async response => {
       if (response.url && new URL(response.url).href !== new URL(url).href) throw new AtsDetailResponseError('Homerun detail changed posting URL');
-      const detail = parseAdditionalDetail(platform, slug, await response.text(), url, stringValue(job.title), postingId);
+      const body = await response.text();
+      let detail: Record<string, unknown>;
+      try { detail = parseAdditionalDetail(platform, slug, body, url, stringValue(job.title), postingId); }
+      catch (error) { throw new AtsDetailResponseError(error instanceof Error ? error.message : String(error), error); }
       if (detail.company !== fields.company) throw new AtsDetailResponseError('Homerun detail changed employer');
       return { ...fields, location: stringValue(detail.location) || fields.location, compensation: stringValue(detail.postedCompensation) || null };
     } }, reason: '', fields };
@@ -504,7 +507,10 @@ function preparedDetailPlan(input: {
     return { plan: { url, transport: 'safe_fetch', fields, parse: async response => {
       const landed = response.url || url;
       if (publicAtsBoardSlugFromUrl(landed, platform) !== slug || !new URL(landed).pathname.startsWith(`/job/${postingId}/`)) throw new AtsDetailResponseError('Softgarden detail changed posting identity');
-      const detail = parseAdditionalDetail(platform, slug, await response.text(), url, stringValue(job.title));
+      const body = await response.text();
+      let detail: Record<string, unknown>;
+      try { detail = parseAdditionalDetail(platform, slug, body, url, stringValue(job.title)); }
+      catch (error) { throw new AtsDetailResponseError(error instanceof Error ? error.message : String(error), error); }
       return { ...fields, description: stringValue(detail.description), company: stringValue(detail.company),
         location: stringValue(detail.location) || fields.location, compensation: stringValue(detail.postedCompensation) || null };
     } }, reason: '', fields };

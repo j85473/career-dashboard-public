@@ -14,6 +14,7 @@ import { atsRequestPacingDelay } from './atsRequestPacing';
 export const JOB_PIPELINE_EVENT_TYPES = [
   'ingested',
   'metadata_repaired',
+  'ats_false_detail_pause_repaired',
   'prefilter_rejected',
   'crawl_listing_rejected',
   'jd_ready',

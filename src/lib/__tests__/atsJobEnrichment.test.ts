@@ -1181,6 +1181,54 @@ test('a failed JSON response body still records a transport failure for shared d
   assert.equal(harness.failures[0].error, bodyError);
 });
 
+for (const platform of ['homerun', 'softgarden'] as const) {
+  test(`${platform} posting evidence failures cannot pause healthy employers on the same provider`, async () => {
+    const slug = platform === 'homerun' ? 'example' : 'example.softgarden.io';
+    const url = platform === 'homerun' ? 'https://example.homerun.co/channel-manager' : 'https://example.softgarden.io/job/123/channel-manager';
+    const job = { title: 'Channel Manager', company: platform === 'homerun' ? 'Example Inc' : '',
+      description: platform === 'homerun' ? 'Published feed description' : '', location: '',
+      url, publicAtsPostingId: platform === 'homerun' ? 'job_123' : '123' };
+    const healthyBody = `<link rel="canonical" href="${url}"><script type="application/ld+json">${JSON.stringify({
+      '@type': 'JobPosting', '@id': url, title: job.title, identifier: { value: job.publicAtsPostingId },
+      hiringOrganization: { name: 'Example Inc' }, description: 'Manage channel performance.',
+      jobLocation: { address: { addressLocality: 'Chicago', addressRegion: 'IL', addressCountry: 'US' } },
+    })}</script>`;
+    const badBodies = ['<script type="application/ld+json">{}</script>',
+      healthyBody.replace('"Channel Manager"', '"Wrong role"'), healthyBody.replace('"name":"Example Inc"', '"name":""')];
+    const failures: unknown[] = [];
+    const shared = {
+      reserveProviderBudgetForSource: async () => ({ allowed: failures.length === 0 }),
+      recordProviderFailure: async (failure: unknown) => { failures.push(failure); },
+    };
+    for (const body of badBodies) for (let attempt = 0; attempt < 3; attempt++) {
+      const bad = createHarness({ body });
+      const result = await enrichAtsListingJob({ platform, slug, job, requestTimeoutMs: 1000 }, { ...bad.dependencies, ...shared });
+      assert.equal(readAtsJobEnrichmentMarker(result)?.status, 'unavailable');
+      assert.equal(readAtsJobEnrichmentMarker(result)?.description, job.description || null, 'Only the verified original feed content survives');
+      assert.deepEqual(failures, [], 'Posting evidence is not a shared provider outage');
+    }
+    const healthy = createHarness({ body: healthyBody });
+    const result = await enrichAtsListingJob({ platform, slug, job, requestTimeoutMs: 1000 }, { ...healthy.dependencies, ...shared });
+    assert.equal(readAtsJobEnrichmentMarker(result)?.status, 'enriched');
+    assert.match(readAtsJobEnrichmentMarker(result)?.location || '', /Chicago/);
+    assert.equal(readAtsJobEnrichmentMarker(job), null, 'The saved listing is immutable');
+  });
+
+  test(`${platform} failed response bodies still use shared transport protection`, async () => {
+    const harness = createHarness();
+    const bodyError = new TypeError('response body connection terminated');
+    harness.dependencies.safeExternalFetch = async () => new Response(new ReadableStream({
+      start(controller) { controller.error(bodyError); },
+    }));
+    await enrichAtsListingJob({ platform, slug: platform === 'homerun' ? 'example' : 'example.softgarden.io',
+      job: { title: 'Channel Manager', company: 'Example Inc',
+        url: platform === 'homerun' ? 'https://example.homerun.co/channel-manager' : 'https://example.softgarden.io/job/123/channel-manager',
+        publicAtsPostingId: platform === 'homerun' ? 'job_123' : '123', description: '' }, requestTimeoutMs: 1000 }, harness.dependencies);
+    assert.equal(harness.failures.length, 1);
+    assert.equal(harness.failures[0].error, bodyError);
+  });
+}
+
 test('SmartRecruiters detail remote metadata replaces a city-only listing without mutating the saved download', async () => {
   const job = { id: '744000159537989', name: 'Account Executive IV', location: { city: 'Columbus', region: 'OH' } };
   const original = structuredClone(job);

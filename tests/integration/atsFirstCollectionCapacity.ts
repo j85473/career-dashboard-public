@@ -49,7 +49,12 @@ async function main() {
   assert.equal((await firstCollectionCounts(db, new Date(), true)).unfinished, 0, 'future-held work does not consume productive refill slots');
   assert.equal(await db.atsCompany.count({ where: { firstCollectionState: 'admitted' } }), 8, 'retry-held work remains admitted and durable');
   await db.atsIngestionBatch.updateMany({ data: { nextAcquireAt: new Date(Date.now() - 1) } });
-  assert.equal((await firstCollectionCounts(db, new Date(), true)).unfinished, 8, 'due retries consume capacity again');
+  assert.equal((await firstCollectionCounts(db, new Date(), true)).unfinished, 0, 'a due failed listing remains retry-only until a worker claims it');
+  await db.atsIngestionBatch.update({ where: { id: 'capacity-batch-0' }, data: {
+    acquisitionClaimToken: 'retry-claim', acquisitionLeaseExpiresAt: new Date(Date.now() + 60000),
+  } });
+  assert.equal((await firstCollectionCounts(db, new Date(), true)).unfinished, 1, 'a live retry claim always consumes capacity');
+  await db.atsIngestionBatch.update({ where: { id: 'capacity-batch-0' }, data: { acquisitionClaimToken: null, acquisitionLeaseExpiresAt: null } });
   const extra = { platform: 'gem', slug: 'blocked-by-pressure' };
   await db.atsCompany.create({ data: { ...extra, checkDay: 1 } });
   await db.atsCompany.update({ where: { slug_platform: extra }, data: { firstCollectionState: 'ready' } });

@@ -3,6 +3,7 @@ import { Prisma } from './prismaClient';
 // Compatibility for older workers only. New work stores a retry code separately
 // from this diagnostic; existing segments and retry dates need no rewrite.
 export const ATS_EMPLOYER_VERIFICATION_HOLD_REASONS = [
+  'cornerstone downloaded work awaits a verified employer',
   'oracle downloaded work awaits a verified employer',
   'ukg downloaded work awaits a verified employer',
   'zohorecruit downloaded work awaits a verified employer',

@@ -7,7 +7,7 @@ import { firstCollectionRetryAt } from './atsFirstCollectionRetry';
 import { isTenantAtsServiceAddress } from './tenantAtsBoards';
 import { admittedClearCompanySlug } from './clearcompanyBoard';
 import { FIRST_COLLECTION_POLICY_ID, FIRST_COLLECTION_HEALTH_WINDOW_MS, FIRST_COLLECTION_PLATFORMS,
-  firstCollectionHealth, firstCollectionAllowance, firstCollectionCounts, reconcileFirstCollectionCompletion } from './atsFirstCollectionAdmission';
+  firstCollectionHealth, firstCollectionAllowance, firstCollectionCounts, reconcileFirstCollectionCompletion, reviewedFirstCollectionOccupancy } from './atsFirstCollectionAdmission';
 import { catalogueMissingFirstCollectionCandidates } from './atsFirstCollectionAdmission';
 import { PROVIDER_BACKLOG_POLICY_ID, reviewedProviderBacklogPlatforms, reviewedFirstCollectionWhere } from './atsReviewedFirstCollection';
 
@@ -52,7 +52,8 @@ export async function tickFirstCollections(validate: (platform: string, slug: st
     const reviewed = capacity ? await tx.atsFirstCollectionPolicy.findUnique({ where: { id: PROVIDER_BACKLOG_POLICY_ID } }) : null;
     const backlogPlatforms = reviewedProviderBacklogPlatforms(reviewed);
     const reviewedRoom = capacity && reviewed?.mode === 'capacity' && backlogPlatforms.length > 0
-      && await tx.atsCompany.count({ where: { firstCollectionState: { in: ['ready', 'admitted'] }, OR: reviewedFirstCollectionWhere(reviewed) } }) === 0
+      && await tx.atsCompany.count({ where: { firstCollectionState: 'ready', OR: reviewedFirstCollectionWhere(reviewed) } }) === 0
+      && await reviewedFirstCollectionOccupancy(tx, reviewed, now) === 0
       && (await firstCollectionHealth(tx, Math.min(250, policy.maxCatalogueJobs), policy.maxResponseBytes, now, 'high')).healthy;
     if (!ordinaryRoom && !reviewedRoom) return null;
     if (!capacity && await tx.atsFirstCollectionCandidate.count({ where: { lastValidationStartedAt: { gt: windowStart } } }) >= policy.dailyBoardLimit) return null;

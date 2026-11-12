@@ -1,9 +1,10 @@
 import { ADDITIONAL_PUBLIC_ATS } from './additionalPublicAts';
-import { Prisma } from './prismaClient';
+import { Prisma, type AtsFirstCollectionPolicy } from './prismaClient';
 import { EXPANDED_PUBLIC_ATS } from './expandedPublicAts';
 import { storageAllows } from './storagePressure';
 import { TENANT_ATS_PLATFORMS, AtsFirstCollectionSizeError } from './tenantAtsBoards';
-import { atsRunnableLegacyBatchSql, atsRunnableSegmentSql, atsSegmentPersistenceCapacitySql } from './atsAdmissionCapacity';
+import { atsRunnableLegacyBatchSql, atsSegmentPersistenceCapacitySql } from './atsAdmissionCapacity';
+import { firstCollectionProductiveWorkSql } from './atsFirstCollectionWork';
 import { REVIEWED_FIRST_COLLECTION_POLICY_ID, PROVIDER_BACKLOG_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionWhere,
   reviewedFirstCollectionReserveJobs, reviewedFirstCollectionMaximumJobs } from './atsReviewedFirstCollection';
 
@@ -100,20 +101,14 @@ export async function reserveJobScoreFeedRequest(client: Pick<Client, '$queryRaw
 
 export async function firstCollectionCounts(client: Pick<Client, 'atsCompany' | '$queryRaw'>, now: Date, capacity = false) {
   if (capacity) {
-    // Future-held/failed work stays durable, but cannot monopolize all refill slots.
+    // Retry-only work stays durable and runnable through the shared worker
+    // pool; it cannot monopolize the slots reserved for fresh collections.
     const [row] = await client.$queryRaw<Array<{ unfinished: bigint }>>(Prisma.sql`
       SELECT COUNT(*)::bigint AS unfinished FROM "AtsCompany" board
       LEFT JOIN "AtsIngestionBatch" batch ON batch.id=board."firstCollectionBatchId"
       WHERE board.platform IN (${Prisma.join([...FIRST_COLLECTION_PLATFORMS])})
         AND board."firstCollectionState"='admitted'
-        AND (batch.id IS NULL
-          OR (batch."acquisitionClaimToken" IS NOT NULL
-            AND batch."acquisitionLeaseExpiresAt" > (${now.toISOString()}::timestamptz AT TIME ZONE 'UTC'))
-          OR (batch.status IN ('fetching','partial') AND board."firstCollectionHoldReason" IS NULL
-            AND (batch."nextAcquireAt" IS NULL OR batch."nextAcquireAt" <= (${now.toISOString()}::timestamptz AT TIME ZONE 'UTC')))
-          OR (batch.status='synchronized' AND batch."publishedItemCount" < batch."terminalItemCount")
-          OR EXISTS (SELECT 1 FROM "AtsIngestionSegment" segment WHERE segment."batchId"=batch.id
-            AND (segment.status='sealed' OR ${atsRunnableSegmentSql(now)})))
+        AND ${firstCollectionProductiveWorkSql(now)}
     `);
     return { unfinished: Number(row?.unfinished || 0), startedInWindow: 0 };
   }
@@ -122,6 +117,24 @@ export async function firstCollectionCounts(client: Pick<Client, 'atsCompany' | 
     client.atsCompany.count({ where: { platform: { in: [...FIRST_COLLECTION_PLATFORMS] }, firstCollectionAdmittedAt: { gt: new Date(now.getTime() - 86_400_000) } } }),
   ]);
   return { unfinished, startedInWindow };
+}
+
+/** Only the enrolled small-provider backlog lends its slot while retry-only
+ * work waits. The separate reviewed oversized queue retains strict occupancy. */
+export async function reviewedFirstCollectionOccupancy(client: Pick<Client, '$queryRaw' | 'atsCompany'>,
+  policy: AtsFirstCollectionPolicy, now: Date): Promise<number> {
+  if (policy.id !== PROVIDER_BACKLOG_POLICY_ID) return client.atsCompany.count({
+    where: { firstCollectionState: 'admitted', OR: reviewedFirstCollectionWhere(policy) },
+  });
+  const platforms = reviewedFirstCollectionWhere(policy).map(board => board.platform as string);
+  if (!platforms.length) return 0;
+  const [row] = await client.$queryRaw<Array<{ unfinished: bigint }>>(Prisma.sql`
+    SELECT COUNT(*)::bigint AS unfinished FROM "AtsCompany" board
+    LEFT JOIN "AtsIngestionBatch" batch ON batch.id=board."firstCollectionBatchId"
+    WHERE board.platform IN (${Prisma.join(platforms)}) AND board."firstCollectionState"='admitted'
+      AND ${firstCollectionProductiveWorkSql(now)}
+  `);
+  return Number(row?.unfinished || 0);
 }
 
 /** The explicitly reviewed queue gets the next coverage turn in the shared pool.
@@ -138,7 +151,7 @@ export async function nextReviewedFirstCollectionBoard(client: Client, now = new
       status: 'active', acquisitionEngine: 'v2', firstCollectionState: 'ready', nextCheckDate: { lte: now },
       AND: [{ OR: boards }, extraWhere],
     }, orderBy: [{ jobsFound: 'asc' }, { platform: 'asc' }, { slug: 'asc' }] });
-    if (!next || await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: boards } })
+    if (!next || await reviewedFirstCollectionOccupancy(client, reviewed, now)
       || !(await firstCollectionHealth(client, reviewedFirstCollectionReserveJobs(reviewed), reviewed.maxResponseBytes, now, 'high')).healthy) continue;
     return next;
   }
@@ -216,12 +229,13 @@ export async function reserveFirstCollection(client: Client, board: { slug: stri
   const reviewed = (await reviewedCollectionPolicies(client)).find(policy => isReviewedFirstCollection(policy, board));
   if (reviewed) {
     // All admission callers already hold the ordinary policy row. Keep this
-    // lock order, and retain the slot through retries and persistence errors.
+    // lock order. Oversized work retains strict occupancy; small-provider
+    // retry-only work can lend the slot without changing its saved state.
     await client.$queryRaw`SELECT id FROM "AtsFirstCollectionPolicy" WHERE id=${reviewed.id} FOR UPDATE`;
     const exact = await client.atsFirstCollectionPolicy.findUniqueOrThrow({ where: { id: reviewed.id } });
     if (!['pilot', 'ramp', 'capacity'].includes(policy.mode) || exact.mode !== 'capacity' || !isReviewedFirstCollection(exact, board)
       || current.jobsFound > reviewedFirstCollectionMaximumJobs(exact, board)
-      || await client.atsCompany.count({ where: { firstCollectionState: 'admitted', OR: reviewedFirstCollectionWhere(exact) } })) return false;
+      || await reviewedFirstCollectionOccupancy(client, exact, now)) return false;
     const health = await firstCollectionHealth(client, reviewedFirstCollectionReserveJobs(exact), exact.maxResponseBytes, now, 'high');
     if (!health.healthy) return false;
     const reserved = await client.atsCompany.updateMany({

@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { Client } from 'pg';
 import { PrismaClient } from '../../src/lib/prismaClient';
 import { tickFirstCollections } from '../../src/lib/atsFirstCollectionController';
-import { firstCollectionCounts, reserveFirstCollection, firstCollectionBodyLimits } from '../../src/lib/atsFirstCollectionAdmission';
+import { firstCollectionCounts, reserveFirstCollection, firstCollectionBodyLimits, reviewedFirstCollectionOccupancy } from '../../src/lib/atsFirstCollectionAdmission';
 
 const url = process.env.ATS_FIRST_COLLECTION_TEST_DATABASE_URL || '';
 if (!/^\/ats_first_collection_test_[a-z0-9_]+$/.test(new URL(url).pathname)) throw Error('A dedicated disposable database is required');
@@ -66,7 +66,9 @@ async function main() {
       assert.equal(await reserveFirstCollection(tx, identity, id), true, 'reviewed starts can advance while the ordinary queue is full');
       await tx.atsIngestionBatch.create({ data: { id, ...identity, writerMode: 'v2', status: 'partial', nextAcquireAt: new Date(Date.now() + 3600_000) } });
     });
-    assert.equal((await tick()).outcome, 'waiting_for_admission_conditions', 'retained retries keep the shared reviewed slot');
+    const policy = await db.atsFirstCollectionPolicy.findUniqueOrThrow({ where: { id: 'reviewed-provider-backlog' } });
+    assert.equal(await reviewedFirstCollectionOccupancy(db, policy, new Date()), 0, 'a future retry lends the slot while remaining saved');
+    assert.equal((await db.atsIngestionBatch.findUniqueOrThrow({ where: { id } })).status, 'partial');
     await db.atsIngestionBatch.update({ where: { id }, data: { status: 'processed', processedAt: new Date(), processingErrorCount: 1 } });
     assert.equal((await tick()).outcome, 'waiting_for_admission_conditions', 'processing errors do not release the slot');
     await db.atsIngestionBatch.update({ where: { id }, data: { processingErrorCount: 0 } });
