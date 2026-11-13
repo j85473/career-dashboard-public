@@ -24,6 +24,7 @@ test('web discovery remains opt-in, bounded, and outside browser/scoring resourc
   assert.match(service, /Nice=19/);
   assert.match(service, /--max-old-space-size=256/);
   assert.match(service, /state\.sqlite/);
+  assert.match(service, /--source-pack startup-vc/);
   assert.doesNotMatch(service, /cloakbrowser|xvfb|scoring/i);
   assert.doesNotMatch(activation, /enable --now career-dashboard-web-discovery/);
 });

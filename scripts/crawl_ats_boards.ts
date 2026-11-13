@@ -7,6 +7,7 @@ import { ATS_WEB_DISCOVERY_DEFAULTS, runAtsWebDiscovery, type WebDiscoveryOption
 import { normalizeDiscoveryUrl } from '../src/lib/atsWebDiscoveryLinks';
 import { AtsWebDiscoveryState } from '../src/lib/atsWebDiscoveryState';
 import { createDashboardPressureCheck, DISCOVERY_PRESSURE_BACKOFF_MS } from '../src/lib/dashboardResponsiveness';
+import { STARTUP_VC_DISCOVERY_SEEDS } from '../src/lib/atsStartupDiscovery';
 
 export async function runDiscoveryWithBackoff(
   state: AtsWebDiscoveryState,
@@ -39,7 +40,7 @@ export function parseWebDiscoveryArguments(argv: string[]) {
     if (name === '--help') { help = true; continue; }
     if (name === '--publish') { publish = true; continue; }
     if (name === '--status') { status = true; continue; }
-    if (!['--state', '--seed', '--seeds-file', '--max-requests', '--max-seconds', '--max-depth', '--max-urls', '--publish-limit'].includes(name)) {
+    if (!['--state', '--seed', '--seeds-file', '--source-pack', '--max-requests', '--max-seconds', '--max-depth', '--max-urls', '--publish-limit'].includes(name)) {
       throw new Error(`Unknown argument: ${name}`);
     }
     const value = argv[++index];
@@ -49,6 +50,10 @@ export function parseWebDiscoveryArguments(argv: string[]) {
       if (values.has(name)) throw new Error(`Duplicate argument: ${name}`);
       values.set(name, value);
     }
+  }
+  if (values.has('--source-pack')) {
+    if (values.get('--source-pack') !== 'startup-vc') throw new Error('Unknown discovery source pack');
+    seeds.push(...STARTUP_VC_DISCOVERY_SEEDS);
   }
   if (values.has('--seeds-file')) {
     seeds.push(...readFileSync(values.get('--seeds-file')!, 'utf8').split(/\r?\n/).map(line => line.trim())
@@ -71,7 +76,7 @@ export function parseWebDiscoveryArguments(argv: string[]) {
     if (!Number.isSafeInteger(publishLimit) || publishLimit < 1 || publishLimit > 20) throw new Error('Publish limit must be between 1 and 20');
   }
   if (status && (publish || seeds.length || Object.keys(options).length)) throw new Error('--status cannot be combined with crawling or publishing');
-  return { seeds, options, statePath: path.resolve(statePath), publish, publishLimit, status, help };
+  return { seeds: [...new Set(seeds)], options, statePath: path.resolve(statePath), publish, publishLimit, status, help };
 }
 
 export function resourcePressure(resources: { load?: number; hostCpuCount?: number; availableMemoryBytes?: number } = {}): string | null {
@@ -95,6 +100,7 @@ async function main() {
     console.log(`Usage: node --import tsx scripts/crawl_ats_boards.ts [options]
   --seed URL                  Add a public starting page (repeatable)
   --seeds-file PATH           Add one starting URL per line; # comments supported
+  --source-pack startup-vc    Add startup and VC portfolio discovery directories
   --state PATH                Dedicated SQLite crawl state
   --max-requests N            Bound crawler requests per pass (default 60)
   --max-seconds N             Bound crawler pass duration (default 300)

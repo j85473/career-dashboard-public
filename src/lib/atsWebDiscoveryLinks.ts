@@ -5,9 +5,11 @@ import { identifyAts } from './atsUtils';
 import { gustoBoardSlugFromUrl } from './gustoBoard';
 import { assertSafeExternalNavigationUrl } from './safeExternalFetch';
 import { clearCompanyEmbeddedSiteIds } from './clearcompanyBoard';
+import { startupDiscoveryDestinations, startupDiscoveryPriority } from './atsStartupDiscovery';
+import { sequoiaDiscoveryDestinations } from './sequoiaDiscovery';
 
 export type WebDiscoveredBoard = { platform: string; slug: string; matchedUrl: string };
-export type WebDiscoveryLink = { url: string; priority: number };
+export type WebDiscoveryLink = { url: string; priority: number; depthDelta?: 0 };
 
 const CAREERS = /(?:career|jobs?|join[-_ /]?(?:us|our[-_ /]?team)|work[-_ /]?with|opportunit|vacanc)/i;
 const DIRECTORY = /(?:director(?:y|ies)|members?|companies|partners?|portfolio|businesses)/i;
@@ -76,7 +78,8 @@ export function extractAtsDiscoveryLinks(html: string, pageUrl: string, maximumL
     if (board) {
       boards.set(`${board.platform}:${board.slug}`, board);
     } else if (!knownOnly && isExplorableDiscoveryUrl(url)) {
-      const priority = discoveryLinkPriority(url, label);
+      const priority = startupDiscoveryPriority(url, pageUrl, label) ?? discoveryLinkPriority(url, label);
+      if (priority < 0) return;
       if (!links.has(url) || links.get(url)!.priority < priority) links.set(url, { url, priority });
     }
   };
@@ -93,8 +96,27 @@ export function extractAtsDiscoveryLinks(html: string, pageUrl: string, maximumL
     const script = $(node).text().replaceAll('\\/', '/').replace(/\\u002f/gi, '/');
     for (const match of script.matchAll(/https?:\/\/[^\s"'<>\\]+/g)) consider(match[0], '', true);
   });
+  for (const destination of startupDiscoveryDestinations(html, pageUrl)) consider(destination, 'Employer website');
   return {
     boards: [...boards.values()],
     links: [...links.values()].sort((a, b) => b.priority - a.priority).slice(0, maximumLinks),
   };
+}
+
+/** The Sequoia API supplies discovery routes, never job records or ATS identities inferred from names. */
+export function extractSequoiaDiscoveryLinks(body: string, pageUrl: string): {
+  boards: WebDiscoveredBoard[]; links: WebDiscoveryLink[];
+} {
+  const found = sequoiaDiscoveryDestinations(body, pageUrl);
+  const boards = new Map<string, WebDiscoveredBoard>();
+  const links: WebDiscoveryLink[] = [];
+  if (found.nextUrl) links.push({ url: found.nextUrl, priority: 130, depthDelta: 0 });
+  for (const value of found.websites) {
+    const url = normalizeDiscoveryUrl(value);
+    if (!url) continue;
+    const board = knownAtsBoardFromUrl(url);
+    if (board) boards.set(`${board.platform}:${board.slug}`, board);
+    else if (isExplorableDiscoveryUrl(url)) links.push({ url, priority: 125 });
+  }
+  return { boards: [...boards.values()], links };
 }

@@ -5,8 +5,9 @@ destinations recognized by the Dashboard's existing ATS board parsers. It can
 discover an employer through a directory, follow the employer's careers link,
 and find that employer's supported ATS board. It does not extract jobs from
 custom employer pages, run JavaScript, render browser pages, invoke an AI model,
-or query Common Crawl. The first version follows HTML links and known ATS URLs
-embedded in scripts and widgets; sitemap traversal is outside this version.
+or query Common Crawl. It follows HTML links and known ATS URLs embedded in
+scripts and widgets, plus the bounded Sequoia public company directory described
+below; sitemap traversal is outside this version.
 
 A [database-free local probe](evidence/ats-web-discovery-pilot-2026-10-20.json)
 recognized Linear's Ashby board from its employer careers page within a six-request
@@ -88,6 +89,73 @@ the database and any `-wal`/`-shm` companions together during recovery. Only one
 worker can own a state file; an interrupted worker's lease expires after two
 minutes. A successful page and its outgoing discoveries commit together, so a
 failed transaction cannot acknowledge a page while losing the discoveries.
+
+## Startup and VC portfolio discovery
+
+The `startup-vc` source pack adds public starting pages for
+[a16z](https://jobs.a16z.com/jobs),
+[Sequoia](https://jobs.sequoiacap.com/companies),
+[Index Ventures](https://www.indexventures.com/companies/),
+[Y Combinator](https://www.ycombinator.com/jobs), and
+[Wellfound](https://wellfound.com/jobs). These directories supply employer and
+ATS destinations. Their copied job listings do not become Dashboard jobs, and
+the directories are not registered as ATS providers.
+
+```bash
+node --import tsx scripts/crawl_ats_boards.ts --source-pack startup-vc \
+  --state /tmp/startup-vc-discovery.sqlite --max-requests 20 --max-seconds 120
+```
+
+Company profiles receive preference over individual directory job pages. YC
+and Wellfound job links also expose a company profile route, allowing discovery
+to reach the employer without entering their application account flows.
+Wellfound's public company metadata supplies its employer website when that
+website is absent from ordinary HTML links. All destinations still pass the
+existing URL safety, robots, depth, deduplication and request-budget controls.
+No page JavaScript executes, and missing metadata does not imply an empty or
+closed employer board.
+
+Sequoia's company page loads its directory through a public JSON search endpoint.
+Discovery obtains an anonymous session from the public company page, then reads
+21 companies per request and follows the endpoint's opaque continuation cursor.
+Only the companies' published website URLs are used; provider labels, company
+names and domains never substitute for a verified ATS URL. Session cookies and
+CSRF tokens remain in memory for a single crawl pass and are sent only to that
+exact Sequoia endpoint. Bootstrap and API requests use the normal safe transport,
+robots checks, pacing, host allowance, byte budget and resource guards. No login
+or browser is needed. Malformed JSON, incomplete responses and expired sessions
+remain retryable, rather than becoming empty or closed boards.
+
+Each continuation is saved as an ordinary frontier URL at the same link depth as
+its preceding directory page. Employer websites use the next link depth. This
+allows the complete directory to resume across bounded passes without exhausting
+the default five-link distance just by paging through companies.
+
+[Public HTML checks on November 13, 2026](evidence/ats-startup-vc-discovery-2026-11-13.json)
+established these access paths. A database-free, depth-zero live pass visited all
+seven starting pages in 12 requests and retained 12 ATS board candidates. This
+measures starting-page discovery only, not complete directory coverage.
+
+| Directory | Observed discovery path and limit |
+| --- | --- |
+| a16z | Job-list HTML contains direct supported ATS application links; company profiles expose employer websites and careers links. |
+| YC | Job-list HTML links to company/job pages; company profiles expose employer websites. |
+| Wellfound | Public job links lead to company profiles; public company JSON exposes the employer website. |
+| Index | Public company directory links to profiles, which expose employer websites. Its JavaScript job-search catalogue is not collected. |
+| Sequoia | Public company-directory API traversed all 10 pages across two bounded passes; the source reported 209 companies. A separate crawl from its published Sierra website found two supported Ashby board identities on Sierra's careers page. |
+
+The [completed integration audit](ATS_STARTUP_VC_DISCOVERY_AUDIT_2026-11-13.md)
+records live pagination/resume evidence and the final validation results. The
+directory is a source of employer routes; the reported company total and ATS
+candidates are not counts of newly admitted production boards.
+
+The M70 service includes the source pack alongside its existing operator seed
+file. The existing activation markers and stopped-timer behavior still apply;
+adding the pack does not activate a disabled worker. A release deployment is
+required to update an already-running M70 worker. Existing saved frontier work,
+board retirement/holds, job states and scores are preserved. Discoveries are
+candidates until the ordinary validation/admission handoff accepts them; counts
+are not claims of new employers or suitable jobs beyond production inventory.
 
 ## Default work limits
 

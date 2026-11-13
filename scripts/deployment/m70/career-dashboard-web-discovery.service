@@ -18,7 +18,7 @@ Environment=ATS_WEB_DISCOVERY_STATE=/var/lib/career-dashboard/data/runtime/ats-w
 Environment=DASHBOARD_RESPONSIVENESS_FILE=/var/lib/career-dashboard/data/runtime/dashboard-responsiveness.json
 EnvironmentFile=/etc/career-dashboard/runtime.env
 EnvironmentFile=/etc/career-dashboard/acquisition-release.env
-ExecStart=/usr/local/bin/node --max-old-space-size=256 scripts/with-env.mjs /usr/local/bin/node --max-old-space-size=256 --import tsx scripts/crawl_ats_boards.ts --seeds-file /etc/career-dashboard/web-discovery-seeds.txt --publish
+ExecStart=/usr/local/bin/node --max-old-space-size=256 scripts/with-env.mjs /usr/local/bin/node --max-old-space-size=256 --import tsx scripts/crawl_ats_boards.ts --seeds-file /etc/career-dashboard/web-discovery-seeds.txt --source-pack startup-vc --publish
 Nice=19
 CPUQuota=50%
 MemoryHigh=384M

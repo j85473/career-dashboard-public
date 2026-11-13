@@ -1,9 +1,11 @@
 import {
-  discoveryLinkPriority, extractAtsDiscoveryLinks, isExplorableDiscoveryUrl, knownAtsBoardFromUrl, normalizeDiscoveryUrl,
+  discoveryLinkPriority, extractAtsDiscoveryLinks, extractSequoiaDiscoveryLinks, isExplorableDiscoveryUrl, knownAtsBoardFromUrl, normalizeDiscoveryUrl,
 } from './atsWebDiscoveryLinks';
 import { DISCOVERY_USER_AGENT, discoveryRobotsAllows, parseDiscoveryRobots } from './atsWebDiscoveryRobots';
 import { AtsWebDiscoveryState, type DiscoveryPage } from './atsWebDiscoveryState';
 import { safeExternalFetch } from './safeExternalFetch';
+import { isSequoiaDiscoveryApiUrl, SEQUOIA_DISCOVERY_BOOTSTRAP, sequoiaDiscoveryRequest,
+  sequoiaDiscoverySession, type SequoiaDiscoverySession } from './sequoiaDiscovery';
 
 export const ATS_WEB_DISCOVERY_DEFAULTS = {
   maxRequests: 60, maxSeconds: 300, maxResponseBytes: 2 * 1024 * 1024, maxBytes: 32 * 1024 * 1024,
@@ -47,6 +49,7 @@ export async function runAtsWebDiscovery(
   let bytes = 0;
   let pages = 0;
   let stopReason = 'idle';
+  let sequoiaSession: SequoiaDiscoverySession | undefined;
 
   const checkBudget = () => {
     if (dependencies.signal?.aborted) throw new BudgetReached('interrupted');
@@ -64,7 +67,8 @@ export async function runAtsWebDiscovery(
     checkBudget();
   };
 
-  const fetchOne = async (url: string, maximumBytes: number, robots = false): Promise<{ response: Response; body: string }> => {
+  const fetchOne = async (url: string, maximumBytes: number, robots = false,
+    override?: ReturnType<typeof sequoiaDiscoveryRequest>): Promise<{ response: Response; body: string }> => {
     checkBudget();
     if (requests >= options.maxRequests) throw new BudgetReached('request_budget');
     if (bytes + maximumBytes > options.maxBytes) throw new BudgetReached('byte_budget');
@@ -81,9 +85,9 @@ export async function runAtsWebDiscovery(
       const remaining = Math.max(1, Math.min(15_000, deadline - now()));
       const timeout = AbortSignal.timeout(remaining);
       const response = await request(url, {
-        method: 'GET', redirect: 'manual',
+        method: override?.method || 'GET', ...(override ? { body: override.body } : {}), redirect: 'manual',
         signal: dependencies.signal ? AbortSignal.any([timeout, dependencies.signal]) : timeout,
-        headers: { 'User-Agent': DISCOVERY_USER_AGENT, Accept: robots ? 'text/plain' : 'text/html,application/xhtml+xml' },
+        headers: { 'User-Agent': DISCOVERY_USER_AGENT, Accept: robots ? 'text/plain' : 'text/html,application/xhtml+xml', ...override?.headers },
       }, maximumBytes);
       const payload = new Uint8Array(await response.arrayBuffer());
       if (payload.byteLength > maximumBytes) throw new Error('Discovery response exceeded its byte allowance');
@@ -164,7 +168,23 @@ export async function runAtsWebDiscovery(
           state.finishPage(page.url, 'blocked', now() + 86_400_000, null, 'Site robots rules disallow this page');
           continue;
         }
-        const { response, body } = await fetchOne(page.url, options.maxResponseBytes);
+        const sequoiaApi = isSequoiaDiscoveryApiUrl(page.url);
+        if (sequoiaApi && !sequoiaSession) {
+          if (!await robotsAllowed({ ...page, url: SEQUOIA_DISCOVERY_BOOTSTRAP })) {
+            throw new Deferred('Sequoia directory bootstrap disallowed by robots');
+          }
+          const bootstrap = await fetchOne(SEQUOIA_DISCOVERY_BOOTSTRAP, options.maxResponseBytes);
+          if (!bootstrap.response.ok || !/text\/html/i.test(bootstrap.response.headers.get('content-type') || '')) {
+            throw new Deferred('Sequoia public directory temporarily unavailable');
+          }
+          sequoiaSession = sequoiaDiscoverySession(bootstrap.body, bootstrap.response.headers.getSetCookie());
+        }
+        const { response, body } = await fetchOne(page.url, options.maxResponseBytes, false,
+          sequoiaApi ? sequoiaDiscoveryRequest(page.url, sequoiaSession!) : undefined);
+        if (page.url === SEQUOIA_DISCOVERY_BOOTSTRAP && response.ok) {
+          try { sequoiaSession = sequoiaDiscoverySession(body, response.headers.getSetCookie()); }
+          catch { /* A direct API visit can obtain a fresh anonymous session later. */ }
+        }
         if (REDIRECT.has(response.status)) {
           const location = response.headers.get('location');
           const target = location ? normalizeDiscoveryUrl(location, page.url) : null;
@@ -176,21 +196,26 @@ export async function runAtsWebDiscovery(
               state.enqueue(target, page.url, page.depth, page.priority, now(), options.maxUrls, page.redirect_hops + 1);
             }
           });
-        } else if (response.ok && /(?:text\/html|application\/xhtml\+xml)/i.test(response.headers.get('content-type') || '')) {
+        } else if (response.ok && (sequoiaApi || /(?:text\/html|application\/xhtml\+xml)/i.test(response.headers.get('content-type') || ''))) {
           const nofollow = /(?:^|[\s,:])(?:nofollow|none)(?:$|[\s,])/i.test(response.headers.get('x-robots-tag') || '');
-          const found = nofollow ? { boards: [], links: [] } : extractAtsDiscoveryLinks(body, page.url);
+          if (sequoiaApi && !/application\/json/i.test(response.headers.get('content-type') || '')) throw new Error('Sequoia returned no directory JSON');
+          const found = nofollow ? { boards: [], links: [] } : sequoiaApi
+            ? extractSequoiaDiscoveryLinks(body, page.url) : extractAtsDiscoveryLinks(body, page.url);
           state.transaction(() => {
             // Release this page's queue slot before admitting its children.
             // A failed commit restores the page, its slot and its discoveries.
             state.finishPage(page.url, 'visited', now() + options.revisitMs, response.status);
             for (const board of found.boards) state.recordBoard(board, page.url, now());
-            if (page.depth < options.maxDepth) for (const link of found.links) {
-              state.enqueue(link.url, page.url, page.depth + 1, link.priority, now(), options.maxUrls);
+            for (const link of found.links) {
+              const depth = page.depth + (link.depthDelta ?? 1);
+              if (depth <= options.maxDepth) state.enqueue(link.url, page.url, depth, link.priority, now(), options.maxUrls);
             }
             state.increment('pagesVisited');
           });
           pages++;
-        } else if (response.status === 429 || response.status === 408 || response.status >= 500) {
+        } else if (response.status === 429 || response.status === 408 || response.status >= 500
+          || sequoiaApi && [401, 403, 412].includes(response.status)) {
+          if (sequoiaApi) sequoiaSession = undefined;
           state.finishPage(page.url, 'retry', Math.max(now() + 15 * 60_000, state.host(page.origin).cooldown_until), response.status, `HTTP ${response.status}`);
         } else {
           state.finishPage(page.url, 'ignored', now() + 30 * 86_400_000, response.status, 'Not an accessible HTML discovery page');
