@@ -1159,6 +1159,9 @@ async function orchestratePipeline(releaseLock: () => void) {
     const superviseLoop = (name: string, loopFn: () => Promise<void>) => supervisePipelineLoop(loopFn, {
       signal: ac.signal,
       shouldStop: pipelineOperatorStopRequested,
+      // A Stop can arrive through another route context or host. Propagate
+      // the shared flag to loops that wait only on this run's local signal.
+      onStopRequested: () => ac.abort(new Error('Shared pipeline stop requested.')),
       canRun: () => !readStoragePressure().backgroundPaused,
       wait: waitForPipelineDelay,
       onError: (error, consecutiveFailures) => recordWarning(`${name} loop (restart ${consecutiveFailures})`, error),

@@ -187,3 +187,44 @@ test('worker errors retain bounded retry backoff', async () => {
   assert.deepEqual(failures, [1, 2, 3, 4, 5, 6, 7, 8]);
   assert.deepEqual(waits, [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000]);
 });
+
+test('a shared Stop aborts a sibling that waits only on the owning run signal', async () => {
+  const controller = new AbortController();
+  const siblingEntered = deferred();
+  let stopped = false;
+  let siblingFinished = false;
+  const options = {
+    signal: controller.signal,
+    shouldStop: async () => stopped,
+    onStopRequested: () => controller.abort(),
+    canRun: () => true,
+    wait: async () => {},
+    onError: (error: unknown) => { throw error; },
+  };
+  const sibling = supervisePipelineLoop(async () => {
+    await new Promise<void>((resolve) => {
+      controller.signal.addEventListener('abort', () => resolve(), { once: true });
+      siblingEntered.resolve();
+    });
+    siblingFinished = true;
+  }, options);
+  await siblingEntered.promise;
+  await supervisePipelineLoop(async () => { stopped = true; }, options);
+  await sibling;
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(siblingFinished, true);
+});
+
+test('a temporary storage hold never broadcasts a shared Stop', async () => {
+  const controller = new AbortController();
+  let broadcasts = 0;
+  await supervisePipelineLoop(async () => { throw new Error('worker must wait'); }, {
+    signal: controller.signal,
+    shouldStop: async () => false,
+    onStopRequested: () => { broadcasts++; },
+    canRun: () => false,
+    wait: async () => controller.abort(),
+    onError: (error) => { throw error; },
+  });
+  assert.equal(broadcasts, 0);
+});
