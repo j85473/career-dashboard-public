@@ -43,6 +43,10 @@ export function adpEmployerWebsite(body: AdpCareerCenter): string | null {
                 // a scheme. Preserve that host; no tenant/name guessing.
                 const hostOnly = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?:[/?#]|$)/i.test(published);
                 const url = new URL(hostOnly ? 'https://' + published : published);
+                // Older centers still publish HTTP corporate links. Request
+                // their explicit host/path over HTTPS, with the same evidence
+                // and redirect checks as any other corporate lookup.
+                if (url.protocol === 'http:') url.protocol = 'https:';
                 if (url.protocol !== 'https:' || url.username || url.password || url.port
                     || /(?:^|\.)(?:adp\.com|linkedin\.com|facebook\.com|instagram\.com|youtube\.com|twitter\.com|x\.com)$/.test(url.hostname)) return [];
                 return [url.href];

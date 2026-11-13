@@ -78,6 +78,17 @@ test('ADP explicit configuration names take precedence and avoid a corporate loo
     assert.equal(calls.length, 2);
 });
 
+test('ADP upgrades explicit legacy HTTP corporate links and still requires public employer evidence', async () => {
+    const { reader, calls } = harness({ center: center(['http://www.employer.example/']) });
+    assert.equal((await reader.detail(link())).company, 'Verified Employer');
+    assert.ok(calls.includes(site));
+    assert.equal(calls.some(url => url.startsWith('http:')), false);
+    assert.equal((await harness({ center: center(['http://www.employer.example/']),
+        siteHtml: '<title>Welcome</title>' }).reader.detail(link())).company, 'Unknown Company');
+    assert.equal((await harness({ center: center(['http://www.employer.example/']),
+        siteLanded: 'https://other.example/' }).reader.detail(link())).company, 'Unknown Company');
+});
+
 test('ADP retains unnamed exact postings and completes the saved catalogue', async () => {
     const { reader } = harness({ total: 2, jobs: [job('42'), job('43')], center: center([]) });
     const progress = loadBrowserSweepPage(newBrowserSweep(board), await reader.listing(1));
@@ -105,7 +116,7 @@ test('ADP accepts a plain corporate homepage title only when the exact JD indepe
 
 test('ADP never invents a company from a tenant, social link, conflicting websites or a foreign redirect', async () => {
     for (const sites of [[], ['https://linkedin.com/company/example'], [site, 'https://other.example/'],
-        ['http://www.employer.example/'], ['https://user:password@employer.example/'], ['https://workforcenow.adp.com/']])
+        ['ftp://www.employer.example/'], ['http://user:password@employer.example/'], ['https://user:password@employer.example/'], ['https://workforcenow.adp.com/']])
         assert.equal(adpEmployerWebsite(center(sites)), null);
     for (const options of [{ center: center([]) }, { siteHtml: '<title>Welcome to our website</title>' },
         { siteLanded: 'https://other.example/' }]) {

@@ -4291,8 +4291,9 @@ export async function ingestJobs(
         let museBudgetStopped = false;
 
         for (const category of MUSE_CATEGORIES) {
-          if (museBudgetStopped) break;
+          if (museBudgetStopped || signal?.aborted) break;
           for (let offset = 0; offset < MUSE_PAGES_PER_RUN; offset += 1) {
+            if (signal?.aborted) break;
             const page = (windowStart + offset) % MUSE_PAGE_LIMIT;
             try {
               await reserveSourceRequest('TheMuse', { dailyLimit: MUSE_DAILY_REQUEST_LIMIT });
@@ -4303,7 +4304,9 @@ export async function ingestJobs(
 
             const museUrl = `https://www.themuse.com/api/public/jobs?page=${page}`
               + `&category=${encodeURIComponent(category)}`;
-            const museRes = await fetch(museUrl);
+            const museRes = await fetch(museUrl, {
+              signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+            });
             await requireUnchallengedProviderResponse('TheMuse', museRes);
             // Past the undocumented depth cap. End of range, not a failure.
             if (museRes.status === 400) break;
@@ -4313,6 +4316,7 @@ export async function ingestJobs(
             const data = await museRes.json();
             const jobs = data.results || [];
             for (const job of jobs) {
+              if (signal?.aborted) break;
               const location = job.locations?.map((place: { name?: string }) => place.name).filter(Boolean).join("; ") || "Unknown Location";
               if (!/\b(us|usa|u\.s\.|united states|remote|flexible)\b|,\s*[A-Z]{2}\b/i.test(location)) continue;
 
@@ -4336,8 +4340,10 @@ export async function ingestJobs(
 
         if (museReachedProvider || museBudgetStopped) markSourceSuccess('TheMuse');
       } catch (e) {
-        markSourceError('TheMuse', e);
-        console.error("The Muse scraper failed", e);
+        if (!signal?.aborted) {
+          markSourceError('TheMuse', e);
+          console.error("The Muse scraper failed", e);
+        }
       }
     }
 

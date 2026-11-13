@@ -184,6 +184,18 @@ continue remains intact, and this change does not bulk-edit existing cards.
 
 The old Mac acquisition and repair-watchdog LaunchAgents are unloaded, disabled and archived outside `~/Library/LaunchAgents`. The retired native scoring watcher stays retired. The separate, previously paused Codex ATS cutover automation remains paused; its obsolete Pi/Mac instructions must not be resumed blindly.
 
+ADP also reads employer sections across editor formatting wrappers, accepts
+unambiguous named-employer EEO declarations, and follows explicitly published
+legacy HTTP corporate links over HTTPS. Client references, generic subjects,
+conflicting employers and foreign website redirects cannot supply a name.
+For existing active/cooldown cards, `scripts/repair_adp_company_names.ts --plan
+<file>` saves exact public-posting and optional branding evidence for review.
+Apply with `--apply <file> --selection-hash <hash> --receipt <file>`; it replays
+the evidence, locks unchanged candidates, updates only company/employer, and
+verifies every other job column plus scoring, history and batch records.
+Archived and dismissed cards are outside this repair. Missing public evidence
+leaves the existing card intact; it does not trigger scoring or lifecycle work.
+
 The remaining legacy API acquisition loop has a separate, explicit
 [retirement procedure](ATS_LEGACY_WORKER_RETIREMENT.md). Its migration is dormant
 until the guarded retirement command runs after release verification. It does

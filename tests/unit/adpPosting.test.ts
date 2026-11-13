@@ -114,3 +114,36 @@ test('ADP employer sections reject client mentions, unnamed subjects, conflictin
     '<script>var text="About Us Example Employer is hiring staff. Our team is growing.";</script>',
   ]) assert.equal(parseAdpPosting({ ...fixture, requisitionDescription: description }, url)?.company, undefined);
 });
+
+test('ADP recovers the exact USGBC posting despite wrapped headings and missing tenant names', () => {
+  const body = JSON.parse(readFileSync(new URL('../fixtures/adp/usgbc-channel-partner.json', import.meta.url), 'utf8'));
+  const target = 'https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid=8d661a1d-66d3-4337-be21-bf05f238bb42&ccId=19000101_000001&jobId=577272';
+  const posting = parseAdpPosting(body, target)!;
+  assert.equal(posting.company, 'U.S. Green Building Council');
+  assert.equal(posting.title, 'Channel Partner Account Manager');
+  assert.match(posting.text, /Green Business Certification Inc/);
+  assert.match(posting.text, /HOW YOU/);
+  assert.match(posting.text, /Culture and Values Statement/);
+  assert.equal(parseAdpPosting(body, target.replace('577272', '577273')), null);
+});
+
+test('ADP reads employer sections across wrappers and accepts named EEO declarations', () => {
+  for (const [description, expected] of [
+    ['<div><p><b>ABOUT US</b></p></div><p>Example Employer is a manufacturer. Our team builds products.</p>', 'Example Employer'],
+    ['<p>About Example Employer:</p><p>Example Employer builds products.</p>', 'Example Employer'],
+    ['<div>Example Employer is an equal opportunity employer.</div>', 'Example Employer'],
+    ['<p>About Us</p><p>Example Employer (EE) is a manufacturer. Our team builds products.</p><p>Example Employer is an Equal Employment Opportunity Employer.</p>', 'Example Employer'],
+  ]) assert.equal(parseAdpPosting({ ...fixture, requisitionDescription: description }, url)?.company, expected);
+});
+
+test('ADP EEO evidence rejects generic subjects, clients, scripts and conflicting employers', () => {
+  for (const description of [
+    '<p>Our client Example Employer is an equal opportunity employer.</p>',
+    '<p>The company is an equal opportunity employer.</p>',
+    '<p>We are an equal opportunity employer.</p>',
+    '<p>Example Employer is an equal opportunity employer.</p><p>Other Employer is an equal opportunity employer.</p>',
+    '<p>About Other Employer</p><p>At Other Employer, we build products.</p><p>Example Employer is an equal opportunity employer.</p>',
+    '<script>Example Employer is an equal opportunity employer.</script>',
+    '<p>We partner with Example Employer, which is an equal opportunity employer.</p>',
+  ]) assert.equal(parseAdpPosting({ ...fixture, requisitionDescription: description }, url)?.company, undefined);
+});
