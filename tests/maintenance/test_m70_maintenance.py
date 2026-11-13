@@ -273,6 +273,27 @@ class CoordinationTests(unittest.TestCase):
         self.assertFalse((self.fake.state / 'skip-travel-dashboard.service').exists())
         self.assertEqual(json.loads((self.fake.state / 'status.json').read_text())['status'], 'healthy')
 
+    def test_pipeline_coordinator_stops_for_maintenance_and_recovers_after_web_health(self):
+        unit = 'career-dashboard-pipeline.service'
+        self.fake.units.add(unit)
+        self.fake.loaded_units.add(unit)
+        self.fake.run()
+        pending = json.loads(self.fake.pending.read_text())
+        self.assertIn(unit, pending['background'])
+        self.assertNotIn(unit, self.fake.units)
+        stopped = next(index for index, event in enumerate(self.fake.events)
+                       if event[0] == 'stop' and unit in event)
+        self.assertLess(stopped, self.fake.events.index(('drain',)))
+        self.fake.events.clear()
+        self.fake.boot = 'after'
+        self.fake.required = False
+        self.fake.recover()
+        self.assertIn(unit, self.fake.units)
+        health = next(index for index, event in enumerate(self.fake.events) if event[0] == 'health')
+        resumed = next(index for index, event in enumerate(self.fake.events)
+                       if event[0] == 'start' and unit in event)
+        self.assertLess(health, resumed)
+
     def test_http_collection_stops_before_drain_and_recovers_only_after_health(self):
         timer = 'career-dashboard-public-http.timer'
         self.fake.units.add(timer)

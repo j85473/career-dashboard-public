@@ -349,7 +349,7 @@ test('the operator ticker reports remote acquisition from durable rows', () => {
   assert.match(formatAtsDistributedTelemetry(draining, now), /State draining.*Staging 136150\/100000.*Held 14/);
 
   // The poller must not fight the Pi's own child for the lane.
-  const route = source('src/app/api/pipeline/run/route.ts');
+  const route = source('src/lib/pipelineRunner.ts');
   const telemetry = source('src/lib/atsDistributedTelemetry.ts');
   const ledger = source('src/lib/atsAcquisitionLedger.ts');
   const schema = source('prisma/schema.prisma');

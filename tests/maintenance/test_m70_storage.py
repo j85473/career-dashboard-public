@@ -66,6 +66,28 @@ class StorageTest(unittest.TestCase):
         (proc / 'cmdline').write_bytes(f'node\0/opt/career-dashboard-releases/{revision}/scripts/worker.js\0'.encode())
         self.assertEqual(m.process_releases(self.root), {revision})
 
+    def test_worker_release_and_rollback_survive_multiple_web_only_releases(self):
+        releases = [self.release(n) for n in range(1, 7)]
+        links = self.root / 'links'
+        links.mkdir()
+        (links / 'career-dashboard').symlink_to(releases[-1])
+        (links / 'career-dashboard-workers').symlink_to(releases[0])
+        (links / 'career-dashboard-workers.rollback').symlink_to(releases[1])
+        real_path = Path
+
+        def mapped_path(value):
+            if str(value).startswith('/opt/career-dashboard'):
+                return links / real_path(value).name
+            if str(value) == '/etc/career-dashboard':
+                return self.root / 'absent-config'
+            return real_path(value)
+
+        with patch.object(m, 'Path', side_effect=mapped_path), patch.object(m, 'RELEASES', self.root.resolve()), \
+                patch.object(m, 'process_releases', return_value=set()):
+            protected = m.protected_releases([])
+        self.assertEqual(protected, {releases[n].name for n in (0, 1, 5)})
+        self.assertEqual(m.release_plan(self.root, protected, 200000), [releases[2]])
+
     def test_allocate_test_database_and_deployment_snapshot_without_spending_nightly_reserve(self):
         backup = self.root / 'backups'
         ssd = self.root / 'ssd'

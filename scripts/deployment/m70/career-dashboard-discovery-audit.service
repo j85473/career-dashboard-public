@@ -7,7 +7,7 @@ ConditionPathExists=/etc/career-dashboard/production-enabled
 [Service]
 Type=simple
 User=career-dashboard
-WorkingDirectory=/opt/career-dashboard
+WorkingDirectory=/opt/career-dashboard-workers
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=/etc/career-dashboard/runtime.env
 EnvironmentFile=/etc/career-dashboard/acquisition-release.env

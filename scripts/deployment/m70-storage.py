@@ -89,7 +89,8 @@ def check_capacity(directory, ssd, extra_bytes=0, extra_backup=False, disk_usage
 
 def protected_releases(extra):
     protected = set(extra) | process_releases()
-    for link in ('/opt/career-dashboard', '/opt/career-dashboard.next', '/opt/career-dashboard.rollback'):
+    for link in ('/opt/career-dashboard', '/opt/career-dashboard.next', '/opt/career-dashboard.rollback',
+                 '/opt/career-dashboard-workers', '/opt/career-dashboard-workers.next', '/opt/career-dashboard-workers.rollback'):
         path = Path(link)
         if path.is_symlink():
             target = path.resolve(strict=True)

@@ -20,6 +20,10 @@ REV=$(git rev-parse HEAD)
 STAGE=/opt/career-dashboard-releases/$REV
 ssh "$REMOTE" "sudo -n install -d -o j85473 -g career-dashboard -m 750 '$STAGE'"
 git archive HEAD | ssh "$REMOTE" "sudo -n tar -xf - -C '$STAGE'"
+# Hash committed worker inputs, including unknown paths. UI-only changes can
+# then leave the existing worker release pinned and running.
+node scripts/deployment/worker-release-manifest.mjs create "$REV" \
+ | ssh "$REMOTE" "sudo -n tee '$STAGE/.worker-release.json' > /dev/null"
 if [[ -n ${RAPIDAPI_KEYS:-} ]]; then
  printf '%s' "$RAPIDAPI_KEYS" | ssh "$REMOTE" "sudo -n /usr/local/bin/node '$STAGE/scripts/deployment/rapidapi-key-env.mjs' apply /etc/career-dashboard/runtime.env && sudo -n chown root:career-dashboard /etc/career-dashboard/runtime.env && sudo -n chmod 640 /etc/career-dashboard/runtime.env"
 fi

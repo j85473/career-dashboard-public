@@ -63,7 +63,7 @@ test('the claim hands its verified payload facts to whoever completes the chunk'
 });
 
 test('every completion call site forwards the facts its own claim verified', () => {
-  for (const path of ['src/lib/jobIngestion.ts', 'src/app/api/pipeline/run/route.ts']) {
+  for (const path of ['src/lib/jobIngestion.ts', 'src/lib/pipelineRunner.ts']) {
     const text = readFileSync(path, 'utf8');
     const callIndex = text.indexOf('completeAtsBatchProcessing({');
     assert.notEqual(callIndex, -1, path);

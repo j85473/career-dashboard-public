@@ -32,7 +32,7 @@ test('all Inbox writers use the shared company admission policy', () => {
     assert.match(source(relativePath), /resolveInboxAdmission\(/, relativePath);
   }
   assert.match(source('src/app/api/tailoring/import/route.ts'), /parkSameCompanyInboxJobs\(/);
-  assert.match(source('src/app/api/pipeline/run/route.ts'), /Startup cooldown enforcement/);
+  assert.match(source('src/lib/pipelineRunner.ts'), /Startup cooldown enforcement/);
 });
 
 test('existing scored-row ATS enrichment still cannot rewrite score identity metadata', () => {

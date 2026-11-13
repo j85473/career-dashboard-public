@@ -31,7 +31,7 @@ BACKGROUND = (
     'career-dashboard-first-collections.timer', 'career-dashboard-stats-warm.timer', 'career-dashboard-rotation-balance.timer',
     'career-dashboard-backup.timer', 'walking-dashboard-update.timer',
     'travel-dashboard-backup.timer', 'career-dashboard-acquisition.service',
-    'career-dashboard-discovery-audit.service',
+    'career-dashboard-discovery-audit.service', 'career-dashboard-pipeline.service',
 )
 INVOCATIONS = tuple(unit.replace('.timer', '.service') for unit in BACKGROUND
                     if unit.endswith('.timer'))

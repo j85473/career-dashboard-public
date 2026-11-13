@@ -20,10 +20,10 @@ After=network-online.target postgresql.service career-dashboard.service
 ConditionPathExists=/etc/career-dashboard/production-enabled
 
 [Service]
-ExecCondition=/usr/bin/python3 /opt/career-dashboard/scripts/deployment/m70-storage-monitor.py --allow background
+ExecCondition=/usr/bin/python3 /opt/career-dashboard-workers/scripts/deployment/m70-storage-monitor.py --allow background
 Type=oneshot
 User=career-dashboard
-WorkingDirectory=/opt/career-dashboard
+WorkingDirectory=/opt/career-dashboard-workers
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=NODE_ENV=production
 Environment=DATABASE_RUNTIME_HOST=127.0.0.1

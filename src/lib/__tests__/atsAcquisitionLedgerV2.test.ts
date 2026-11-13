@@ -347,7 +347,7 @@ test('a repeated full Workday page ends an overrun without truncating distinct p
 test('v2 progress writes are row-granular and segment publication is credit-fenced', () => {
   const ledger = source('src/lib/atsAcquisitionLedger.ts');
   const dispatcher = source('src/lib/atsAcquisitionDispatcherV2.ts');
-  const route = source('src/app/api/pipeline/run/route.ts');
+  const route = source('src/lib/pipelineRunner.ts');
   const worker = source('scripts/workers/ats-acquisition.ts');
   const migration = source('prisma/migrations/20260830213000_ats_acquisition_ledger_phase2_runtime/migration.sql');
   assert.match(ledger, /atsIngestionPage\.create/);

@@ -78,8 +78,8 @@ test('recovery releases exactly stale local-scoring leases', async () => {
 
 test('full and Local-only pipeline entrypoints use the shared recovery helper', () => {
   const routes = [
-    readFileSync(path.join(process.cwd(), 'src/app/api/pipeline/run/route.ts'), 'utf8'),
-    readFileSync(path.join(process.cwd(), 'src/app/api/pipeline/local/route.ts'), 'utf8'),
+    readFileSync(path.join(process.cwd(), 'src/lib/pipelineRunner.ts'), 'utf8'),
+    readFileSync(path.join(process.cwd(), 'src/lib/pipelineManualRunners.ts'), 'utf8'),
   ];
   for (const route of routes) {
     assert.match(route, /import \{ recoverStaleLocalScoringLeases \} from '@\/lib\/localScoringLeaseRecovery'/);

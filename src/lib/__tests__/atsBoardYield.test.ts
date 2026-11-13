@@ -142,7 +142,7 @@ test('ATS-adjacent scoring shares the transaction ceiling and stops with the pip
     'utf8',
   );
   const pipeline = readFileSync(
-    path.join(process.cwd(), 'src/app/api/pipeline/run/route.ts'),
+    path.join(process.cwd(), 'src/lib/pipelineRunner.ts'),
     'utf8',
   );
 

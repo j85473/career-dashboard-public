@@ -59,7 +59,7 @@ test('a release proves quiescence and fails closed when deciding whether a migra
 });
 
 test('online recovery-point selection aborts on backup failure before changing live services', () => {
-  const backupBlock = activation.slice(activation.indexOf('BACKUP_REQUIRED=1\n'), activation.indexOf('SCHEDULE=0; WATCHDOG=0;'));
+  const backupBlock = activation.slice(activation.indexOf('BACKUP_REQUIRED=1\n'), activation.indexOf('# Only known-compatible UI releases'));
   for (const scenario of [
     { status: 0, force: 0, existing: '', fail: 0, dump: false },
     { status: 1, force: 0, existing: '', fail: 0, dump: true },
@@ -430,7 +430,7 @@ test('strict repair readiness audits every worker and lease class before cron en
 test('a deployment quiesce leaves an operator pause alone so the deploy cannot restart the pipeline', () => {
   const stopRoute = readFileSync(path.resolve('src/app/api/pipeline/stop/route.ts'), 'utf8');
   const activation = readFileSync(path.resolve('scripts/deployment/activate-m70.sh'), 'utf8');
-  const runRoute = readFileSync(path.resolve('src/app/api/pipeline/run/route.ts'), 'utf8');
+  const runRoute = readFileSync(path.resolve('src/lib/pipelineRunner.ts'), 'utf8');
 
   // The deploy stops the pipeline with the quiesce mode, and restarts the
   // scheduler timer afterwards. If the quiesce also cleared the pause, that

@@ -186,6 +186,11 @@ const pipelineStateMirrorWriter = createLatestOnlyAsyncWriter<{
   (error) => console.error('Failed to sync pipeline state to DB:', error),
 );
 
+/** Called after owned work drains, before the coordinator closes its pools. */
+export function flushPipelineState(): Promise<void> {
+  return pipelineStateMirrorWriter.waitForIdle();
+}
+
 /**
  * Mirrors the file-backed ticker state without allowing completion order to
  * become state order. The normal caller coalesces progress updates, and this

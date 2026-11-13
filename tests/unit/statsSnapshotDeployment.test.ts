@@ -51,7 +51,7 @@ test('a release proves the visitor cache works before acquisition resumes and ke
   const hit = activation.indexOf("grep -i '^x-career-stats-cache: hit'", warm);
   const restart = activation.lastIndexOf('restart_background');
   assert.ok(healthy >= 0 && healthy < warm && warm < hit && hit < restart);
-  assert.match(activation, /if \[\[ \$MODE == normal \]\]; then\n systemctl enable --now career-dashboard-stats-warm\.timer/);
+  assert.match(activation, /if \[\[ \$MODE == normal \]\]; then[\s\S]*?systemctl enable --now career-dashboard-stats-warm\.timer/);
   assert.match(activation, /\[\[ \$MODE != maintenance \]\] \|\| STATS_WARM=0/);
   const recovery = activation.slice(activation.indexOf('recover() {'), activation.indexOf('trap recover ERR'));
   assert.match(recovery, /systemctl stop career-dashboard-stats-warm\.timer career-dashboard-stats-warm\.service/);

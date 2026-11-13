@@ -640,7 +640,7 @@ test('split-path migration and worker contract are additive and auditable', () =
     path.join(process.cwd(), 'prisma/migrations/20260827160000_ats_split_ingestion_paths/migration.sql'),
     'utf8',
   );
-  const route = readFileSync(path.join(process.cwd(), 'src/app/api/pipeline/run/route.ts'), 'utf8');
+  const route = readFileSync(path.join(process.cwd(), 'src/lib/pipelineRunner.ts'), 'utf8');
   const ingestion = readFileSync(path.join(process.cwd(), 'src/lib/jobIngestion.ts'), 'utf8');
   const acquisition = readFileSync(path.join(process.cwd(), 'src/lib/atsAcquisition.ts'), 'utf8');
   const stats = readFileSync(path.join(process.cwd(), 'src/app/api/stats/route.ts'), 'utf8');

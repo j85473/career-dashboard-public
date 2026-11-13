@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
-const routePath = path.resolve(process.cwd(), 'src/app/api/pipeline/run/route.ts');
+const routePath = path.resolve(process.cwd(), 'src/lib/pipelineRunner.ts');
 const loopPath = path.resolve(process.cwd(), 'src/lib/atsAcquisitionLoop.ts');
 const processPath = path.resolve(process.cwd(), 'src/lib/pipelineWorkerProcess.ts');
 const workerPath = path.resolve(process.cwd(), 'scripts/workers/ats-acquisition.ts');
@@ -12,7 +12,7 @@ const ingestionPath = path.resolve(process.cwd(), 'src/lib/jobIngestion.ts');
 test('pipeline route supervises exactly one isolated acquisition launcher and always drains batches', () => {
   const route = readFileSync(routePath, 'utf8');
 
-  assert.match(route, /export const runtime = 'nodejs'/);
+  assert.match(readFileSync(path.resolve('src/app/api/pipeline/run/route.ts'), 'utf8'), /export const runtime = 'nodejs'/);
   assert.equal(route.match(/runAtsAcquisitionWorkerProcess\(\{/g)?.length, 1);
   assert.match(route, /superviseLoop\('ATS Acquisition Process', runAtsAcquisitionProcess\)/);
   assert.match(route, /supervisePipelineLoop\(loopFn,/);

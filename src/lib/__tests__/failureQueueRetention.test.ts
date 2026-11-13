@@ -53,7 +53,7 @@ test('the retention receipt is automated authority only until a later user actio
 
 test('automatic dismissal is visible, audited, score-preserving, and runs in maintenance', () => {
   const retention = readFileSync(path.join(process.cwd(), 'src/lib/failureQueueRetention.ts'), 'utf8');
-  const pipeline = readFileSync(path.join(process.cwd(), 'src/app/api/pipeline/run/route.ts'), 'utf8');
+  const pipeline = readFileSync(path.join(process.cwd(), 'src/lib/pipelineRunner.ts'), 'utf8');
   const log = readFileSync(path.join(process.cwd(), 'src/components/ScoringLogTab.tsx'), 'utf8');
 
   assert.match(retention, /status: 'dismissed'/);

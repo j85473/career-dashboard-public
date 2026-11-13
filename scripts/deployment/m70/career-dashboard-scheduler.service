@@ -3,10 +3,11 @@ Description=Career Dashboard scheduled pipeline tick
 After=career-dashboard.service
 ConditionPathExists=/etc/career-dashboard/production-enabled
 [Service]
-ExecCondition=/usr/bin/python3 /opt/career-dashboard/scripts/deployment/m70-storage-monitor.py --allow background
+ExecCondition=/usr/bin/python3 /opt/career-dashboard-workers/scripts/deployment/m70-storage-monitor.py --allow background
 Type=oneshot
 User=career-dashboard
-WorkingDirectory=/opt/career-dashboard
+WorkingDirectory=/opt/career-dashboard-workers
+Environment=PIPELINE_EXECUTION_MODE=service
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=/etc/career-dashboard/runtime.env
 EnvironmentFile=/etc/career-dashboard/acquisition-release.env

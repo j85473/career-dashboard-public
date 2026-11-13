@@ -10,8 +10,8 @@ function source(...segments: string[]): string {
 const ingestion = source('src', 'lib', 'jobIngestion.ts');
 const localScoring = source('src', 'lib', 'jobScoring.ts');
 const jdRecovery = source('src', 'app', 'api', 'jobs', 'batch-jd-submit', 'route.ts');
-const pipeline = source('src', 'app', 'api', 'pipeline', 'run', 'route.ts');
-const extractionRoute = source('src', 'app', 'api', 'pipeline', 'extraction', 'route.ts');
+const pipeline = source('src', 'lib', 'pipelineRunner.ts');
+const extractionRoute = source('src', 'lib', 'pipelineManualRunners.ts');
 const queues = source('src', 'lib', 'jobListQuery.ts');
 const inboxVerification = source('src', 'lib', 'verifyJobsAlive.ts');
 

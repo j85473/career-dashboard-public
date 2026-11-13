@@ -9,9 +9,9 @@ ConditionPathExists=!/etc/career-dashboard/storage-maintenance
 Type=oneshot
 User=root
 Group=career-dashboard
-WorkingDirectory=/opt/career-dashboard
+WorkingDirectory=/opt/career-dashboard-workers
 Environment=NODE_ENV=production
-ExecStart=/bin/bash /opt/career-dashboard/scripts/deployment/run-crawl-archive.sh
+ExecStart=/bin/bash /opt/career-dashboard-workers/scripts/deployment/run-crawl-archive.sh
 TimeoutStartSec=180
 TimeoutStopSec=150
 UMask=0027

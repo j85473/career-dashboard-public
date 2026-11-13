@@ -223,7 +223,7 @@ test('ATS processing labels an empty synchronized batch truthfully', () => {
 test('the operator panel has fixed telemetry rows and structured ATS grids', () => {
   const component = readFileSync(path.join(process.cwd(), 'src/components/ScoringLogTab.tsx'), 'utf8');
   const css = readFileSync(path.join(process.cwd(), 'src/app/globals.css'), 'utf8');
-  const route = readFileSync(path.join(process.cwd(), 'src/app/api/pipeline/run/route.ts'), 'utf8');
+  const route = readFileSync(path.join(process.cwd(), 'src/lib/pipelineRunner.ts'), 'utf8');
 
   assert.match(component, /pipeline-acquisition-detail/);
   assert.match(component, /pipeline-stage-grid/);

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { controlPrisma } from '@/lib/controlPrisma';
 import { abortActivePipeline, PIPELINE_PAUSE_DEFAULT_MS, updatePipelineState } from '@/lib/pipelineState';
+import { requestPipelineService } from '@/lib/pipelineServiceClient';
 
 type StopMode = 'pause' | 'quiesce' | 'indefinite';
 
@@ -58,9 +59,18 @@ export async function POST(request: Request) {
         ? 'Pipeline paused by the stop endpoint.'
         : 'Pipeline quiescence requested by deployment.',
     );
+    // The durable stop above remains effective if the control service is
+    // restarting. Wake its local signal immediately when it is available.
+    let workerSignaled = false;
+    if (process.env.PIPELINE_EXECUTION_MODE === 'service') {
+      workerSignaled = await requestPipelineService('/abort')
+        .then((result) => result.status === 200)
+        .catch(() => false);
+    }
     return NextResponse.json({
       message: pauseSchedule ? 'Pipeline pause signal sent.' : 'Pipeline quiescence signal sent.',
       abortedLocally,
+      workerSignaled,
       // Report the pause that is actually in force, which after a quiesce is
       // whatever the operator had already set rather than this mode's default.
       schedulePaused: state.schedulePaused,

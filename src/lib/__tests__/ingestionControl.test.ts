@@ -414,7 +414,7 @@ test('a concurrent immutable event upsert returns the winning row', () => {
 });
 
 test('durable task nextRunAt is authoritative over legacy portfolio clocks', () => {
-  const route = readFileSync('src/app/api/pipeline/run/route.ts', 'utf8');
+  const route = readFileSync('src/lib/pipelineRunner.ts', 'utf8');
   assert.doesNotMatch(route, /now\s*-\s*state\.lastRunPaidApis\s*>/);
   assert.doesNotMatch(route, /now\s*-\s*state\.lastRunCareerforce\s*>/);
   assert.doesNotMatch(route, /now\s*-\s*state\.lastRunStandard\s*>/);
@@ -493,7 +493,7 @@ test('fair ATS planning gives Workable a bounded turn beside 10,000 Workday boar
     { platform: 'workday', selectedCount: 25, remainingDueCount: 9_975 },
     { platform: 'workable', selectedCount: 1, remainingDueCount: 0 },
   ]);
-  const route = readFileSync('src/app/api/pipeline/run/route.ts', 'utf8');
+  const route = readFileSync('src/lib/pipelineRunner.ts', 'utf8');
   assert.match(route, /planAtsPlatformBatches/);
   assert.match(route, /for \(const turn of turns\)/);
   assert.match(route, /taskContinuationDelayMs/);
@@ -576,7 +576,7 @@ test('legacy source routes use shared pending-A/E ingestion or explicit disabled
 });
 
 test('external job routes are claimed by durable source tasks, not polled every loop', () => {
-  const route = readFileSync('src/app/api/pipeline/run/route.ts', 'utf8');
+  const route = readFileSync('src/lib/pipelineRunner.ts', 'utf8');
   assert.match(route, /const routeSources = ROUTE_SOURCE_TASK_DEFINITIONS\.map/);
   assert.match(route, /orderDueIngestionTaskSpecs\(routeSources\.map/);
   assert.match(route, /runDurableRouteSource\(/);
@@ -584,7 +584,7 @@ test('external job routes are claimed by durable source tasks, not polled every 
 });
 
 test('CareerOneStop remains a bounded opt-in canary instead of a portfolio sweep', () => {
-  const route = readFileSync('src/app/api/pipeline/run/route.ts', 'utf8');
+  const route = readFileSync('src/lib/pipelineRunner.ts', 'utf8');
   assert.match(route, /CAREERONESTOP_USER_ID\s*&&\s*process\.env\.CAREERONESTOP_API_TOKEN/);
   assert.match(route, /runStandardProvider\('CareerOneStop', \['channel sales'\], careerOneStopCanaryLane, 24 \* 60 \* 60 \* 1000\)/);
   assert.doesNotMatch(route, /runStandardProvider\('CareerOneStop', primaryQueries, GEO_LANES/);
@@ -737,7 +737,7 @@ test('catalog reconciliation previews retirement/reactivation, refuses leases, a
 
 test('seed command and pipeline consume the same catalog without executing providers', () => {
   const seedScript = readFileSync('scripts/seed_ingestion_tasks.ts', 'utf8');
-  const pipelineRoute = readFileSync('src/app/api/pipeline/run/route.ts', 'utf8');
+  const pipelineRoute = readFileSync('src/lib/pipelineRunner.ts', 'utf8');
   const packageJson = readFileSync('package.json', 'utf8');
   assert.match(seedScript, /canonicalIngestionTaskDefinitions/);
   assert.match(seedScript, /reconcileIngestionTaskCatalog/);
@@ -788,7 +788,7 @@ test('every rollout-era source-run writer carries explicit reconciliation eviden
 
 test('browser scrapers are process-group bounded and stop between durable CareerForce claims', () => {
   const ingestion = readFileSync('src/lib/jobIngestion.ts', 'utf8');
-  const route = readFileSync('src/app/api/pipeline/run/route.ts', 'utf8');
+  const route = readFileSync('src/lib/pipelineRunner.ts', 'utf8');
   const careerForce = readFileSync('src/scripts/careerForceScraper.ts', 'utf8');
   const dejobs = readFileSync('src/scripts/dejobsScraper.ts', 'utf8');
   assert.equal((ingestion.match(/detached: process\.platform !== 'win32'/g) || []).length, 2);
@@ -803,7 +803,7 @@ test('browser scrapers are process-group bounded and stop between durable Career
 });
 
 test('manual stops pause cron until an explicit manual run while deployments only quiesce', () => {
-  const runRoute = readFileSync('src/app/api/pipeline/run/route.ts', 'utf8');
+  const runRoute = readFileSync('src/lib/pipelineRunner.ts', 'utf8');
   const stopRoute = readFileSync('src/app/api/pipeline/stop/route.ts', 'utf8');
   const cron = readFileSync('scripts/cron/http.ts', 'utf8');
   const deploy = readFileSync('scripts/deployment/activate-m70.sh', 'utf8');

@@ -28,7 +28,7 @@ const ingestionSource = readFileSync(
   'utf8',
 );
 const pipelineRunSource = readFileSync(
-  path.join(process.cwd(), 'src', 'app', 'api', 'pipeline', 'run', 'route.ts'),
+  path.join(process.cwd(), 'src', 'lib', 'pipelineRunner.ts'),
   'utf8',
 );
 const dashboardSource = readFileSync(

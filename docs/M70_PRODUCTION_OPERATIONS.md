@@ -19,7 +19,8 @@ Migration record from September 2, 2026; operating layout checked against the re
 | Stats snapshot refresh | `career-dashboard-stats-warm.timer` | Calls the web process every minute, including overnight, so the first visitor can use its retained Stats snapshot. A stale request starts one shared background rebuild; the ten-minute serving ceiling remains enforced. |
 | ATS cohort workload balance | `career-dashboard-rotation-balance.timer` | Refreshes workload reservations daily at 00:10 Chicago time and reviews at most 100 completed-board moves weekly. New validated boards still collect immediately. See the [balancing rules](ATS_COHORT_WORKLOAD_BALANCING.md). |
 | ATS acquisition | `career-dashboard-acquisition.service` | Runs the existing portable acquisition child with the existing eight-slot ceiling; waits through an operator pause. The historical logical lane name still says `mac-continuation`; it does not identify the physical host. |
-| Scheduled pipeline, publication and persistence | `career-dashboard-scheduler.timer` | Invokes the existing scheduled pipeline every minute with its existing database coordination and a filesystem lock. |
+| Continuous pipeline, publication and persistence | `career-dashboard-pipeline.service` | Owns the existing processing loops outside the web process. Accepts private local Start/Stop commands; retains the single database owner and existing task leases. |
+| Scheduled pipeline starts | `career-dashboard-scheduler.timer` | Every minute, asks the coordinator to start through its private socket and exits. Honors operator pauses; does not depend on the web process. |
 | Repair watchdog | `career-dashboard-watchdog.timer` | Runs the existing repair checks every 15 minutes. Preserves the cap of three repairs per action per six hours and the ledger across releases. A critical finding remains a failed service result, not a successful health check. |
 | Database and file backups | `career-dashboard-backup.timer` | Runs daily at 03:15 America/Chicago and catches a missed run after startup. Copies completed backups to the dedicated SSD attached to the M70. |
 | Common Crawl board discovery | `career-dashboard-discovery.timer` | Looks for candidate ATS boards weekly. Discovery does not itself activate every candidate. |
@@ -314,6 +315,56 @@ service to become inactive or failed. A systemd one-shot service remains
 `activating` while its command runs; `systemctl is-active` returning nonzero
 does not prove that crawler has finished. Starting, stopping, and reloading
 states keep the wait active. An unreadable or unknown state blocks the release.
+
+### Independent web and worker releases (November 13, 2026)
+
+The pipeline coordinator runs as a separate systemd service. The Dashboard's
+full-pipeline, Local Scoring and JD Extraction controls delegate execution to
+that service. Status remains database-backed. Stop first records its durable
+pause/stop intent, then wakes the coordinator's abort signal through a Unix
+socket accessible only to the service account. A missing coordinator returns
+HTTP 503; the production web application never starts a fallback pipeline.
+Local development retains inline execution unless configured for service mode.
+
+The first deployment of this change uses the full guarded shutdown and handoff.
+The coordinator starts without starting processing on its own: the scheduler or
+an explicit manual Start controls processing. Existing operator pauses and a
+stopped scheduler remain respected. The coordinator is included in automatic
+maintenance ownership and restart recovery.
+
+Web routing remains `/opt/career-dashboard`. Background units use the independent
+`/opt/career-dashboard-workers` release link, and `acquisition-release.env`
+identifies that worker release. Both links select immutable committed release
+directories. Runtime state remains shared. Release cleanup protects both active
+links, their rollback targets, configured worker releases and running processes.
+
+Each deployment archives a manifest of committed worker inputs. Only dedicated
+UI paths and non-runtime test/CI metadata are exempt; shared libraries, API
+handlers, worker scripts, units, dependencies, schema, runtime evidence and
+unknown paths affect the fingerprint. A normal release can update only the web
+process when this fingerprint matches the pinned worker release, Prisma confirms
+no pending migration, the worker environment fingerprint and installed web unit
+match, and the coordinator proves
+its expected release and control protocol. Missing or uncertain proof uses the
+full coordinated path. Forced backup, explicit backup reuse and maintenance
+activation also retain that path. API changes are deliberately conservative in
+this first phase: they still use coordinated activation.
+
+Independent activation leaves worker processes, timers, leases and release
+configuration untouched. A failed web health or coordinator proof rolls back
+only web routing. A full release drains the coordinator and other workers,
+migrates under the existing safeguards, and switches both release links. Its
+rollback restores the previous web and worker releases separately and never
+restores an older database. Fingerprints select release procedure only; they
+never invalidate scores, reset work, or change saved crawl positions.
+
+Before calling the production cutover verified, check both release links and
+`career-dashboard-pipeline.service`, exercise manual Start/Stop and pause
+preservation, and deploy a compatible UI change while recording the coordinator
+PID, pipeline lock owner and continuing progress. Confirm the PID and owner stay
+the same through both web activation and web rollback. The local automated
+rehearsal exercises process replacement and rollback using bounded fake work;
+it is not production execution proof.
 
 ## Backups and recovery
 
