@@ -1251,3 +1251,27 @@ test('SmartRecruiters detail candidate location restricts an otherwise broad rem
   assert.equal(readAtsJobEnrichmentMarker(enriched)?.location, 'Remote - Germany');
   assert.deepEqual(job, original);
 });
+
+test('SmartRecruiters detail carries the posting brand through the durable handoff without renaming the shared board', async () => {
+  const job = { id: '744000160676880', name: 'Account Manager', company: { name: 'StepStone Group' } };
+  const original = structuredClone(job);
+  const harness = createHarness({ body: { company: job.company,
+    customField: [{ fieldLabel: 'Brands', valueLabel: 'Appcast' }, { fieldLabel: 'Legal Entity', valueLabel: 'Appcast Inc' }],
+    jobAd: { sections: { jobDescription: { text: 'Manage Appcast client accounts.' } } } } });
+  const enriched = await enrichAtsListingJob({ platform: 'smartrecruiters', slug: 'StepStoneGroup', job,
+    requestTimeoutMs: 1000 }, harness.dependencies);
+  assert.equal(readAtsJobEnrichmentMarker(enriched)?.company, 'Appcast');
+  assert.equal(readAtsJobEnrichmentMarker(enriched)?.description, 'Manage Appcast client accounts.');
+  assert.deepEqual(job, original);
+  assert.equal(harness.urls.length, 1);
+});
+
+test('SmartRecruiters listing brand survives when a complete description needs no detail request', async () => {
+  const harness = createHarness();
+  const enriched = await enrichAtsListingJob({ platform: 'smartrecruiters', slug: 'StepStoneGroup',
+    job: { id: '744000160676880', name: 'Account Manager', description: 'Already complete.',
+      company: { name: 'StepStone Group' }, customField: [{ fieldLabel: 'Brands', valueLabel: 'Appcast' }] },
+    requestTimeoutMs: 1000 }, harness.dependencies);
+  assert.equal(readAtsJobEnrichmentMarker(enriched)?.company, 'Appcast');
+  assert.deepEqual(harness.urls, []);
+});

@@ -1,4 +1,6 @@
 import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
+import { readLinkedInEasyApply } from './atsDisplay';
+import { smartRecruitersPostingCompany } from './smartRecruitersCompany';
 import { readAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
 import { AtsPlatformDeferredError, RateLimitedError, PLATFORM_THROTTLE_MS, fetchAtsPlatformResponse, platformPauseRemainingMs, waitForPlatformSlot, IngestionInterruptedError, interruptionError } from './atsProviderRequest';
 // Compatibility exports for consumers that predate the separate request runtime.
@@ -160,6 +162,7 @@ import {
 } from './ingestionControl';
 
 export type IncomingJob = {
+  linkedinEasyApply?: unknown;
   title?: unknown;
   company?: unknown;
   description?: unknown;
@@ -2083,7 +2086,24 @@ export function providerGeoPlan(provider: string, laneId: GeoLaneId | string): P
   return { ...base, lane: laneId };
 }
 
+function linkedInApplicationFields(source: string, value: unknown) {
+  const linkedinEasyApply = readLinkedInEasyApply({ linkedinEasyApply: value });
+  return /^linkedin\b/i.test(source.trim()) && linkedinEasyApply !== null ? { linkedinEasyApply } : {};
+}
+
+async function refreshLinkedInApplicationMethod(
+  jobId: string, source: string, value: unknown, store: Pick<Prisma.TransactionClient, 'job'> = prisma,
+) {
+  const data = linkedInApplicationFields(source, value);
+  if (data.linkedinEasyApply === undefined) return;
+  // This metadata refresh has no score, status, URL, or ATS-override authority.
+  await store.job.updateMany({
+    where: { id: jobId, source: { startsWith: 'LinkedIn', mode: 'insensitive' } }, data,
+  });
+}
+
 export type ExternalJobInput = {
+  linkedinEasyApply?: boolean | null;
   title: string;
   company: string;
   description?: string | null;
@@ -2283,6 +2303,7 @@ export async function ingestExternalJob(
 
   const observation = resolvedObservation.observation;
   if (observation) {
+    await refreshLinkedInApplicationMethod(observation.jobId, input.source, input.linkedinEasyApply);
     if (['inbox', 'pending_af', 'applied', 'interviewing'].includes(observation.job.status)
       && await consolidateStoredAtsReprint(observation.jobId)) return 'duplicate';
     if (!/^ATS-/i.test(observation.job.source || '')) await withIngestionTransaction(tx => preferIncomingDirectAtsSource(tx, observation.jobId, {
@@ -2362,6 +2383,7 @@ export async function ingestExternalJob(
   });
   if (existing) {
     await withIngestionTransaction(async (tx) => {
+      await refreshLinkedInApplicationMethod(existing.id, input.source, input.linkedinEasyApply, tx);
       await preferIncomingDirectAtsSource(tx, existing.id, {
         title, company, description, location, source: input.source, sourceId, url, canonicalUrl,
       });
@@ -2428,6 +2450,7 @@ export async function ingestExternalJob(
         canonicalUrl,
         source: input.source,
         sourceId,
+        ...linkedInApplicationFields(input.source, input.linkedinEasyApply),
         // Leave the legacy unique candidate fingerprint null. It cannot safely
         // distinguish two real requisitions with identical display labels.
         fingerprint: null,
@@ -3411,6 +3434,7 @@ export async function ingestJobs(
       : 'Unknown Location';
     const rawUrl = typeof jobData.url === 'string' ? jobData.url : '';
     const source = typeof jobData.source === 'string' ? jobData.source : 'Unknown';
+    const applicationFields = linkedInApplicationFields(source, jobData.linkedinEasyApply);
     const suppliedSourceId = jobData.sourceId;
     const candidatePostedAt = jobData.postedAt instanceof Date ? jobData.postedAt : new Date(String(jobData.postedAt || ''));
     const postedAt = Number.isNaN(candidatePostedAt.getTime()) ? new Date() : candidatePostedAt;
@@ -3467,6 +3491,7 @@ export async function ingestJobs(
       }
     }
     if (obs) {
+      await refreshLinkedInApplicationMethod(obs.jobId, source, jobData.linkedinEasyApply);
       const consolidation = ['inbox', 'pending_af', 'applied', 'interviewing'].includes(obs.job.status)
         ? await consolidateStoredAtsReprint(obs.jobId) : null;
       if (consolidation) {
@@ -3632,6 +3657,7 @@ export async function ingestJobs(
       // Record observation to track duplicate source
       try {
         await withIngestionTransaction(async (tx) => {
+          await refreshLinkedInApplicationMethod(existingJob.id, source, jobData.linkedinEasyApply, tx);
           await preferIncomingDirectAtsSource(tx, existingJob.id, {
             title, company, description, location, source, sourceId: sourceId.toString(), url: rawUrl, canonicalUrl,
           });
@@ -3880,6 +3906,7 @@ export async function ingestJobs(
     });
     if (enrichedDuplicate) {
       await withIngestionTransaction(async (tx) => {
+        await refreshLinkedInApplicationMethod(enrichedDuplicate.id, source, jobData.linkedinEasyApply, tx);
         await preferIncomingDirectAtsSource(tx, enrichedDuplicate.id, {
           title, company, description: finalDescription, location, source,
           sourceId: sourceId.toString(), url: finalUrl, canonicalUrl: finalCanonicalUrl,
@@ -3976,6 +4003,7 @@ export async function ingestJobs(
             sourceId: sourceId.toString(),
             canonicalUrl: finalCanonicalUrl,
             manualAts,
+            ...applicationFields,
             fingerprint: null,
             identityFingerprint,
             postingIdentity,
@@ -4067,6 +4095,7 @@ export async function ingestJobs(
           sourceId: sourceId.toString(),
           canonicalUrl: finalCanonicalUrl,
           manualAts,
+          ...applicationFields,
           fingerprint: null,
           identityFingerprint,
           postingIdentity,
@@ -5760,6 +5789,7 @@ export async function ingestJobs(
              * exactly as it does today.
              */
             let smartRecruitersDetailLocation = board.platform === "smartrecruiters" ? atsEnrichmentMarker?.location : null;
+            let smartRecruitersDetailCompany = board.platform === "smartrecruiters" ? atsEnrichmentMarker?.company : null;
             if (parentAtsNetworkAllowed && board.platform === "smartrecruiters" && !rawDescription && job.id) {
               const detailSource = `${boardSource} Details`;
               try {
@@ -5776,6 +5806,7 @@ export async function ingestJobs(
                   markSourceSuccess(detailSource);
                   const detail = await res.json();
                   smartRecruitersDetailLocation = smartRecruitersPostingLocation(detail);
+                  smartRecruitersDetailCompany = smartRecruitersPostingCompany(detail);
                   // companyDescription is left out on purpose: it is boilerplate
                   // marketing that inflates length without describing the role,
                   // which is exactly what the 650-character gate exists to catch.
@@ -6103,7 +6134,7 @@ export async function ingestJobs(
                 ?? resolveWorkdayPlaceholderLocation(workdayLocationsText, job.externalPath)
                 ?? workdayLocationsText;
             } else if (board.platform === "smartrecruiters") {
-              company = data.company?.name || board.slug;
+              company = smartRecruitersDetailCompany || smartRecruitersPostingCompany(job) || data.company?.name || board.slug;
               locationStr = smartRecruitersDetailLocation || smartRecruitersPostingLocation(job) || "Unknown Location";
             } else if (board.platform === "workable") {
               company = data.name || titleCaseSlug(board.slug);

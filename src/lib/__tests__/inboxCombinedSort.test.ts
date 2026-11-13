@@ -72,7 +72,7 @@ function listCandidate(
   overrides: Partial<InboxListCandidate> = {},
 ): InboxListCandidate {
   return {
-    ...candidate(id, '2026-09-04T12:00:00Z', 'LinkedIn', 70),
+    ...candidate(id, '2026-09-04T12:00:00Z', 'Other Feed', 70),
     createdAt: new Date('2026-09-04T10:00:00Z'),
     reqFitScore: 65,
     ...overrides,
@@ -103,6 +103,23 @@ test('ATS choices include only represented card labels, with Unknown last', () =
   ];
   assert.deepEqual(availableInboxAtsSystems(rows), ['Greenhouse', 'Lever', 'Workday', 'Unknown']);
   assert.deepEqual(availableInboxAtsSystems([]), []);
+});
+
+test('source ATS labels and both LinkedIn application methods filter independently before pagination', () => {
+  const rows = [
+    listCandidate('linkedin', { source: 'LinkedIn (Apify)', url: 'https://jobs.lever.co/acme/1', manualAts: 'Lever' }),
+    listCandidate('easy', { source: 'LinkedIn', linkedinEasyApply: true }),
+    listCandidate('jsearch', { source: 'JSearch', manualAts: 'Workday' }),
+    listCandidate('himalayas', { source: 'Himalayas' }),
+    listCandidate('serp', { source: 'SerpApi' }),
+  ];
+  assert.deepEqual(availableInboxAtsSystems(rows), ['Himalayas', 'JSearch', 'LinkedIn', 'LinkedIn Easy Apply', 'SerpAPI']);
+  for (const [label, id] of [['LinkedIn', 'linkedin'], ['LinkedIn Easy Apply', 'easy'], ['JSearch', 'jsearch'], ['Himalayas', 'himalayas'], ['SerpAPI', 'serp']]) {
+    for (const sort of ['newest', 'oldest', 'combined', 'aim_fit', 'experience_fit']) {
+      assert.deepEqual(orderAtsInboxCandidates(rows, label, sort).map(row => row.id), [id]);
+    }
+  }
+  assert.deepEqual(orderAtsInboxCandidates(rows, 'Lever', 'newest'), []);
 });
 
 test('ATS choices cover the full Inbox before filtering and paging, and refresh as jobs leave', async t => {

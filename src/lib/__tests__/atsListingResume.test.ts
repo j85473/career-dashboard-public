@@ -257,6 +257,48 @@ test('a repeated Workday response is saved once and closes the listing phase', a
   assert.deepEqual(writes, ['compaction']);
 });
 
+test('Workday retains or recovers its positive total while preserving literal page evidence and listing completion', async t => {
+  const claim = { ...fixture('workday').claim, listingOffset: 20 };
+  const batch = { id: claim.batchId, writerMode: 'v2', ledgerVersion: 2, activeLedgerGeneration: 1,
+    acquisitionClaimToken: claim.claimToken, acquisitionClaimFence: claim.claimFence,
+    acquisitionLeaseExpiresAt: new Date(Date.now() + 60_000), acquisitionPhase: 'listing',
+    listingOffset: 20, latestObservedTotal: 0 };
+  const firstPage = Object.freeze({ providerTotal: 120 });
+  const saved: Array<{ providerTotal: number }> = [];
+  const writes: Array<{ latestObservedTotal?: number; acquisitionPhase: string; listingOffset: number }> = [];
+  let firstPageReads = 0;
+  const tx = {
+    atsIngestionBatch: { findUniqueOrThrow: async () => batch,
+      updateMany: async ({ data }: { data: typeof writes[number] }) => { writes.push(data); Object.assign(batch, data); return { count: 1 }; } },
+    atsIngestionPage: {
+      findFirst: async () => null,
+      findUnique: async ({ where }: { where: { batchId_generation_requestedOffset: { generation: number; requestedOffset: number } } }) => {
+        const key = where.batchId_generation_requestedOffset;
+        assert.equal(key.generation, 1, 'recovery must stay within the active listing generation');
+        if (key.requestedOffset === 0) { firstPageReads++; return firstPage; }
+        return null;
+      },
+      create: async ({ data }: { data: typeof saved[number] }) => { saved.push(data); },
+    },
+    atsListingObservation: { createMany: async () => {} },
+    atsAcquisitionWorkReceipt: { update: async () => {} },
+  };
+  mockPrismaTransaction(t, prisma, async (run: (client: Prisma.TransactionClient) => Promise<unknown>) =>
+    run(tx as unknown as Prisma.TransactionClient));
+  for (const offset of [20, 40]) {
+    const result = await commitAtsV2ListingPage({ claim: { ...claim, listingOffset: offset },
+      requestedOffset: offset, requestedLimit: 20, providerTotal: 0,
+      jobs: Array.from({ length: 20 }, (_, i) => ({ id: String(offset + i) })),
+      requestedAt: new Date(), respondedAt: new Date(), httpStatus: 200, listingComplete: false });
+    assert.equal(result.listingComplete, false);
+    assert.equal(writes.at(-1)?.latestObservedTotal, 120);
+    assert.equal(writes.at(-1)?.acquisitionPhase, 'listing');
+    assert.equal(saved.at(-1)?.providerTotal, 0, 'raw response total must not be rewritten');
+  }
+  assert.equal(firstPageReads, 1, 'an existing broken count is recovered once');
+  assert.deepEqual(firstPage, { providerTotal: 120 });
+});
+
 test('a saved repeated Workday page completes under its claim without another request', async t => {
   const f = fixture('workday');
   f.claim.listingOffset = 2620;

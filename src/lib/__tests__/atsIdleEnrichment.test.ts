@@ -11,14 +11,17 @@ async function retry(itemRetry: Date | null | undefined, state: string, openUnti
   const client = {
     atsIngestionItem: { findFirst: async (input: unknown) => {
       const query = input as { where: Record<string, unknown>; orderBy: unknown };
-      assert.deepEqual(query.where, { batchId: 'retained', ledgerGeneration: 2, enrichmentStatus: 'pending' });
+      assert.deepEqual(query.where, { batchId: 'retained', ledgerGeneration: 2, enrichmentStatus: 'pending', itemClaimToken: null });
       assert.deepEqual(query.orderBy, { nextDetailAt: { sort: 'asc', nulls: 'first' } });
       return itemRetry === undefined ? null : { nextDetailAt: itemRetry, enrichmentReason };
     } },
     providerCircuit: { findUnique: async () => ({ state, openUntil }) },
     atsAcquisitionWorkReceipt: { findMany: async (input: { where: unknown; take: number }) => {
       assert.deepEqual(input.where, { batchId: 'retained', startGeneration: 2, workType: 'enrichment',
-        OR: [{ id: 'current' }, { finishedAt: { not: null } }] });
+        OR: [{ id: 'current' }, { finishedAt: { not: null }, OR: [
+          { itemsProgressed: { gt: 0 } }, { detailRequestCount: { gt: 0 } },
+          { yieldReason: { in: ['interrupted', 'expired', 'error'] } },
+        ] }] });
       assert.equal(input.take, 8);
       return recent;
     } },
@@ -80,4 +83,21 @@ test('only repeated unsuccessful detail requests earn the bounded board delay', 
     assert.equal(atsV2UnproductiveDetailRetryMs([
       { ...unsuccessful, yieldReason }, ...Array(6).fill(unsuccessful),
     ]), 60_000, 'shutdown and control failures do not inflate the streak');
+});
+
+test('empty scheduling checks cannot push unsuccessful detail requests out of the bounded retry history', async () => {
+  const idle = { ...unsuccessful, detailRequestCount: 0 };
+  const history = [idle, ...Array(50).fill(idle), ...Array(6).fill(unsuccessful)];
+  const client = {
+    atsIngestionItem: { findFirst: async () => ({ nextDetailAt: null, enrichmentReason: 'network_required' }) },
+    providerCircuit: { findUnique: async () => ({ state: 'closed', openUntil: null }) },
+    atsAcquisitionWorkReceipt: { findMany: async (input: { where: { OR: unknown[] }; take: number }) => {
+      assert.deepEqual(input.where.OR[1], { finishedAt: { not: null }, OR: [
+        { itemsProgressed: { gt: 0 } }, { detailRequestCount: { gt: 0 } },
+        { yieldReason: { in: ['interrupted', 'expired', 'error'] } },
+      ] });
+      return [history[0], ...history.slice(1).filter(row => row.detailRequestCount > 0)].slice(0, input.take);
+    } },
+  } as unknown as Parameters<typeof atsV2IdleEnrichmentRetryAt>[2];
+  assert.equal((await atsV2IdleEnrichmentRetryAt(claim, now, client)).toISOString(), '2026-10-16T17:00:00.000Z');
 });

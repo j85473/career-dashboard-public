@@ -4,7 +4,7 @@ import type { ResumeData } from './resume';
 import { identifyAts } from './atsUtils';
 import { passesPreFilter } from './jobFiltering';
 import { descriptionWorkLocation } from './descriptionWorkLocation';
-import { hasAdditionalTerritoryRetailTitle, hasDealerDistributorAccountEvidence, hasMidLevelCommercialTitle, hasTerritoryAccountSalesEvidence } from './commercialRoleDiscovery';
+import { hasAdditionalTerritoryRetailTitle, hasCustomerAccountResponsibilityEvidence, hasDealerDistributorAccountEvidence, hasMidLevelCommercialTitle, hasTerritoryAccountSalesEvidence } from './commercialRoleDiscovery';
 import { derivePostingFacts } from './postingFacts';
 import { buildSafeJinaReaderUrl, safeExternalFetch } from './safeExternalFetch';
 import { getRapidApiKeys, fetchWithKeyRotation } from './apiFallback';
@@ -514,6 +514,9 @@ export function runLocalHeuristic(job: LocalScoringJob, resumes: ResumeData[], p
   if (titleSignal.points === 0 && hasDealerDistributorAccountEvidence(titleLower, job.fullDescription)) {
     titleSignal = { points: 10, label: 'commercial role with dealer/distributor account duties' };
   }
+  if (titleSignal.points === 0 && hasCustomerAccountResponsibilityEvidence(titleLower, job.fullDescription)) {
+    titleSignal = { points: 10, label: 'commercial role with customer/partner account responsibilities' };
+  }
   const farming = summarizeSignals(combinedText, FARMING_SIGNALS);
   const commercialGrowth = summarizeSignals(combinedText, COMMERCIAL_GROWTH_SIGNALS);
   const hunting = summarizeSignals(combinedText, HUNTING_SIGNALS);
@@ -635,46 +638,6 @@ export function runLocalHeuristic(job: LocalScoringJob, resumes: ResumeData[], p
   const gateReason = titleVerdict.reason;
 
   return { score: finalScore, category, recommendedResume: bestResume, rationale, gatePass, gateReason };
-}
-
-/** Recompute only the local heuristic fields for one existing job. */
-export async function recomputeLocalScore(jobId: string): Promise<Job | null> {
-  const [job, resumes, preferences] = await Promise.all([
-    prisma.job.findUnique({ where: { id: jobId } }),
-    getAllResumes(),
-    prisma.userPreference.findMany(),
-  ]);
-  if (!job || resumes.length === 0) return job;
-
-  const normalizedManualMetadata = normalizeManualImportMetadata({
-    source: job.source,
-    title: job.title,
-    company: job.company,
-    location: job.location,
-    description: job.description,
-    url: job.canonicalUrl || job.url,
-  });
-
-  const { score, category, recommendedResume, rationale } = runLocalHeuristic({
-    title: normalizedManualMetadata.title,
-    company: normalizedManualMetadata.company,
-    url: job.url,
-    source: job.source,
-    manualAts: job.manualAts,
-    fullDescription: job.description || '',
-  }, resumes, preferences);
-
-  const updated = await prisma.job.updateMany({
-    where: { id: job.id },
-    data: {
-      fitScore: score,
-      fitCategory: category,
-      fitRationale: rationale,
-      recommendedResume,
-    },
-  });
-  if (updated.count === 0) return prisma.job.findUnique({ where: { id: job.id } });
-  return prisma.job.findUnique({ where: { id: job.id } });
 }
 
 export type ScoreJobsOptions = {

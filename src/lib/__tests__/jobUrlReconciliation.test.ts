@@ -533,6 +533,9 @@ for (const status of ['archived', 'dismissed', 'passed', 'expired']) {
         preferredId: inbox.id,
       });
       assert.equal(preview.plan.survivorId, inbox.id, 'automatic callers retain their existing behavior');
+      assert.equal(preview.cards.find(card => card.id === destination.id)?.passReason, 'Location mismatch');
+      assert.equal(preview.cards.find(card => card.id === inbox.id)?.passReason, null);
+      assert.equal(f.writes.length, 0, 'reviewing rejection reasons cannot change either card');
       const selected = preview.selectionPlans[destination.id];
       assert.equal(selected.survivorStatus, status);
       assert.equal(selected.blockedReason, null);

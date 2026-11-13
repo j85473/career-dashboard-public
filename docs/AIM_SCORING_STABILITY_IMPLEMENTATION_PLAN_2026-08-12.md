@@ -8,6 +8,34 @@ Original Stage 2 bank: 339 questions
 Audited Stage 2 bank: 154 questions  
 Separate Stage 1 factual screen: 7 questions
 
+## 2026-11-13 compensation preference update
+
+Joseph set his minimum annual base-pay preference to USD 50,000 and is willing
+to consider junior or smaller-scope account, customer, and partner roles. The
+active holistic Aim assessment prompt records this preference, distinguishes
+base salary from OTE/total compensation, and does not treat missing pay as
+evidence of pay below the preference. The current builder accepts the holistic
+assessment after the factual screen; the older deterministic compensation
+parser and its USD 60,000 constants below are retained history, not an active
+local rejection rule. Do not change those replay contracts to implement this
+preference. Previously scored jobs, their scores, and their lifecycle decisions
+remain authoritative. This change does not rescore or reopen existing jobs.
+
+## 2026-11-13 prospective local admission corrections
+
+Unfamiliar commercial titles may reach Aim review when the JD states customer
+or partner account responsibilities and account/relationship work. Incidental
+customer vocabulary, candidate experience requirements, and negated duties do
+not establish those responsibilities. The existing occupational, primary
+outbound, and operations exclusions continue to apply.
+
+Remote labels containing employer or department text without a confirmed
+work-base restriction reach eligibility review. Explicit nonlocal geography,
+foreign scope, residency requirements, and office requirements do not qualify
+for this ambiguity exception. Accepting such a label for new intake is not
+new evidence authorizing restoration of a previously rejected card. These
+corrections do not rescore, invalidate, reopen, or requeue existing work.
+
 ## 2026-08-13 corrections to the implementation authority
 
 These corrections supersede every conflicting statement later in this document:

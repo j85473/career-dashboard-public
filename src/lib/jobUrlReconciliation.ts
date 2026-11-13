@@ -570,6 +570,7 @@ export type DuplicateMergeReviewCard = {
   company: string;
   location: string | null;
   status: string;
+  passReason: string | null;
   source: string | null;
   url: string | null;
   tailoringStaged: boolean;
@@ -607,6 +608,7 @@ export async function previewDuplicateCardMerge(
     company: job.company,
     location: job.location,
     status: job.status,
+    passReason: job.passReason,
     source: job.source,
     url: job.url,
     tailoringStaged: job.tailoringStaged,

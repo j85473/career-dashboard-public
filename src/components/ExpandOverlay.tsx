@@ -6,7 +6,7 @@ import { JobDocuments } from '@/components/JobDocuments';
 import { JobLocations } from '@/components/JobLocations';
 import { Bookmark, CheckCircle, XCircle, ExternalLink, AlertTriangle, Edit2, Loader2, Save, Copy } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
-import { identifyAts, ATS_OPTIONS } from '@/lib/atsUtils';
+import { displayAts, atsChoicesForJob, atsSelectionUpdate } from '@/lib/atsDisplay';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { showAlert, showConfirm, showOptions } from '@/lib/modal';
 import type { JobListItem } from '@/types/job';
@@ -18,6 +18,7 @@ import { CompanyLogo } from '@/components/CompanyLogo';
 import { employerAliasKey } from '@/lib/employerIdentity';
 import { ALREADY_APPLIED_REASON, isAppliedDuplicateReason } from '@/lib/appliedDuplicatePolicy';
 import { consolidatedIntoJobId } from '@/lib/jobConsolidationReason';
+import { originalSourcePostingUrl } from '@/lib/jobSourceProvenance';
 
 type HiddenRepeat = { id: string; title: string; company: string; location: string | null; source: string | null; dismissedAt: string };
 type CombinedCopy = {
@@ -30,6 +31,7 @@ type DuplicateMergeReviewCard = {
   company: string;
   location: string | null;
   status: string;
+  passReason: string | null;
   source: string | null;
   url: string | null;
   tailoringStaged: boolean;
@@ -115,6 +117,7 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
   const dialogRef = useModalDialog(onClose);
   const [job, setJob] = useState(initialJob);
   const companyLabel = job.employer || companyDisplayName(job.company, job.source);
+  const originalSourceUrl = originalSourcePostingUrl(job);
   // The source's own spelling was grouped under a different name by evidence,
   // not just cleaned up; Joseph can say it is another employer.
   const employerGroupedByEvidence = Boolean(job.employer) && employerAliasKey(job.company) !== employerAliasKey(companyLabel);
@@ -883,6 +886,12 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
                       <div><dt>Experience Fit</dt><dd>{card.reqFitScore ?? 'No score'}</dd></div>
                       <div><dt>Source</dt><dd>{card.source || 'Unknown'}</dd></div>
                     </dl>
+                    {['dismissed', 'archived', 'passed', 'expired'].includes(card.status) && (
+                      <div className="duplicate-merge-rejection">
+                        <strong>{card.status === 'expired' ? 'Expiration reason' : 'Rejection reason'}</strong>
+                        <p>{card.passReason?.trim() || 'No reason was recorded.'}</p>
+                      </div>
+                    )}
                     {card.hasSubmittedResume && <div className="duplicate-merge-protection">Submitted résumé attached</div>}
                     {card.tailoringStaged && <div className="duplicate-merge-protection">Tailoring in progress</div>}
                     {card.url && <a href={card.url} target="_blank" rel="noreferrer">Open this card’s link <ExternalLink size={13} /></a>}
@@ -1029,31 +1038,31 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
 
 
               {job.source && job.source.toLowerCase() !== 'careerforce' && (
-                <span 
+                <a
                   className="expand-badge meta" 
-                  style={{ cursor: 'pointer' }}
+                  href={originalSourceUrl || undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ cursor: originalSourceUrl ? 'pointer' : 'default', textDecoration: 'none' }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    const targetUrl = job.source?.toLowerCase() === 'indeed' && job.sourceId 
-                      ? `https://www.indeed.com/viewjob?jk=${job.sourceId}` 
-                      : (job.url || '');
-                    if (targetUrl) window.open(targetUrl, '_blank', 'noreferrer');
                   }}
-                  title="Open original source"
+                  title={originalSourceUrl ? 'Open original source' : 'Original source link unavailable'}
                 >
                   Via {job.source}
-                </span>
+                </a>
               )}
               
               <div style={{ position: 'relative', display: 'inline-block' }}>
                 <select
                   className="expand-badge meta"
                   style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', border: 'none', appearance: 'none', cursor: 'pointer', paddingRight: '20px' }}
-                  value={identifyAts(job)}
-                  onChange={(e) => updateJob({ manualAts: e.target.value })}
+                  value={displayAts(job)}
+                  disabled={atsChoicesForJob(job).length === 1}
+                  onChange={(e) => updateJob(atsSelectionUpdate(job, e.target.value))}
                 >
-                  <option value={identifyAts(job)} disabled>⚙️ ATS: {identifyAts(job)}</option>
-                  {ATS_OPTIONS.map(ats => <option key={ats} value={ats}>{ats}</option>)}
+                  <option value={displayAts(job)} disabled>⚙️ ATS: {displayAts(job)}</option>
+                  {atsChoicesForJob(job).map(ats => <option key={ats} value={ats}>{ats}</option>)}
                 </select>
                 <div style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', fontSize: '9px', color: '#10b981' }}>▼</div>
               </div>

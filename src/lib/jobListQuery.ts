@@ -1,6 +1,6 @@
 import type { Prisma } from './prismaClient';
 
-import { ATS_OPTIONS } from './atsUtils';
+import { DISPLAY_ATS_OPTIONS } from './atsDisplay';
 import { aimScoringPriorityOrder } from './manualScoringPriority';
 import { manualScoringStatusWhere } from './manualScoringEligibility';
 import { operationalQueueWhere } from './operationalQueue';
@@ -24,7 +24,7 @@ export function positiveInteger(value: string | null, fallback: number, maximum?
 export function inboxJobFilter(value: string | null, status: string): InboxJobFilter {
   if (status !== 'inbox' || !value?.startsWith('ats:')) return 'all';
   const requestedAts = value.slice('ats:'.length);
-  const ats = ATS_OPTIONS.find((option) => option === requestedAts);
+  const ats = DISPLAY_ATS_OPTIONS.find((option) => option === requestedAts);
   return ats ? `ats:${ats}` : 'all';
 }
 

@@ -3,7 +3,8 @@ import { Prisma } from './prismaClient';
 import { prisma } from './prisma';
 import { nonManualImportSourceWhere } from './manualImportPolicy';
 import { isAcostaChannelSalesPriorityRole, type JobIdentity } from './priorityOpportunity';
-import { ATS_OPTIONS, identifyAts } from './atsUtils';
+import { identifyAts } from './atsUtils';
+import { DISPLAY_ATS_OPTIONS, displayAts } from './atsDisplay';
 
 /**
  * A job's true Inbox entry time — not `createdAt`, which is when the row was
@@ -58,6 +59,7 @@ export type CombinedInboxCandidate = JobIdentity & {
   enteredInboxAt: Date;
   source: string | null;
   manualAts: string | null;
+  linkedinEasyApply?: boolean | null;
   url: string | null;
   aimFitScore: number | null;
 };
@@ -74,9 +76,9 @@ export type InboxAtsPage = {
 };
 
 /** Build choices from the whole Inbox before applying an ATS filter or page. */
-export function availableInboxAtsSystems(jobs: readonly Parameters<typeof identifyAts>[0][]): string[] {
-  const represented = new Set(jobs.map(identifyAts));
-  return ATS_OPTIONS.filter(ats => represented.has(ats));
+export function availableInboxAtsSystems(jobs: readonly Parameters<typeof displayAts>[0][]): string[] {
+  const represented = new Set(jobs.map(displayAts));
+  return DISPLAY_ATS_OPTIONS.filter(ats => represented.has(ats));
 }
 
 export function combinedInboxAtsPriority(
@@ -129,7 +131,7 @@ export function orderAtsInboxCandidates(
   ats: string | null,
   sort: string,
 ): InboxListCandidate[] {
-  const atsCandidates = candidates.filter((candidate) => !ats || identifyAts(candidate) === ats);
+  const atsCandidates = candidates.filter((candidate) => !ats || displayAts(candidate) === ats);
   if (sort === 'combined') return orderCombinedInboxCandidates(atsCandidates);
 
   return [...atsCandidates].sort((left, right) => {
@@ -174,6 +176,7 @@ export async function inboxAtsFilteredPage(
       ${INBOX_ENTERED_AT_SQL} AS "enteredInboxAt",
       j.source,
       j."manualAts",
+      j."linkedinEasyApply",
       j.url,
       j."aimFitScore",
       j."reqFitScore",

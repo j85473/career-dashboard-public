@@ -3,7 +3,6 @@ import { JobUrlConflict, lockJobUrlEdits, reconcileJobUrlEdit } from '@/lib/jobU
 import { normalizeUrl } from '@/lib/jobIngestion';
 import type { Prisma } from '../../../../lib/prismaClient';
 import { prisma } from '@/lib/prisma';
-import { recomputeLocalScore } from '@/lib/jobScoring';
 import { statusAfterScoringInputEdit } from '@/lib/scoringState';
 import { contextDecisionAlreadyHandled } from '@/lib/contextFeedbackPolicy';
 import { recordJobPipelineEvent } from '@/lib/ingestionControl';
@@ -103,6 +102,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const body = await request.json();
+  const { linkedinEasyApply } = body;
+  if (linkedinEasyApply !== undefined && typeof linkedinEasyApply !== 'boolean') {
+    return NextResponse.json({ error: 'LinkedIn Easy Apply must be true or false.' }, { status: 400 });
+  }
   const { status, tailoringStaged, manualAts, url, canonicalUrl, description, passReason, title, company, location, skipRescore, forceRescore } = body;
   const editedUrl = url !== undefined ? url : canonicalUrl;
   if (editedUrl !== undefined && (typeof editedUrl !== 'string' || (url !== undefined && canonicalUrl !== undefined && normalizeUrl(url) !== normalizeUrl(canonicalUrl)))) {
@@ -174,7 +177,6 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     locationChanged ? 'location' : null,
     descriptionChanged ? 'description' : null,
   ].filter((field): field is string => field !== null);
-  const manualAtsChanged = manualAts !== undefined && manualAts !== currentJob.manualAts;
   const identityInputChanged = titleChanged || companyChanged || locationChanged;
   const effectiveStatus = status !== undefined ? status : currentJob.status;
   const effectivePassReason = (status === 'passed' || status === 'dismissed') && typeof passReason === 'string'
@@ -230,6 +232,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   if (manualAts !== undefined) {
     data.manualAts = manualAts;
   }
+  if (linkedinEasyApply !== undefined) data.linkedinEasyApply = linkedinEasyApply;
   if (editedUrl !== undefined) {
     Object.assign(data, userCanonicalJobUrlFields(editedUrl));
   }
@@ -431,17 +434,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
 
       return { job: updated, invalidation, suppressedDuplicateIds, consolidatedJobId: null };
     });
-    let job = mutation.job;
-
-    // ATS choice affects only the deterministic heuristic. Preserve the
-    // native A/E evaluation and the user's lifecycle decision.
-    if (manualAtsChanged && !shouldQueueRescore && !mutation.consolidatedJobId) {
-      try {
-        job = await recomputeLocalScore(id) || job;
-      } catch (error) {
-        console.error('Failed to recompute local ATS score:', error);
-      }
-    }
+    // ATS selection is metadata only; it never recalculates saved scores.
+    const job = mutation.job;
 
     // We no longer send 'applied' actions to the Context Profile to prevent 
     // bridge roles from watering down the master archetype.

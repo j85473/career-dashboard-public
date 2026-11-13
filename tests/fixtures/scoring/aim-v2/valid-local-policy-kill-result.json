@@ -7,10 +7,10 @@
     "exportSchemaVersion": "career-dashboard-aim-export-v2",
     "extractorSemanticVersion": "aim-factual-extractor-v7",
     "id": "11111111-1111-4111-8111-111111111111",
-    "manifestHash": "6a49704bc3c8c231058cf187f73d8137c92848b0a1b62b41986083ceb69f8dab",
+    "manifestHash": "510d40da5b816b07ab84b27c3fd19a2d83637ed055a2f35cc9d05fca53e74721",
     "packetStrategyHash": "0723425ac01276ed4374c49fd36b1d28c69971c0e3b6d30aa62bc46113022636",
     "packetStrategyVersion": "aim-stage2-packetizer-v4",
-    "promptContractHash": "556657521b0276c3d4389d57c0c97a7f700f1d7eb392d92144c0bee7ea2bfb44",
+    "promptContractHash": "3f6df5e435af45bcc4c1c3bb74c0827b90bcd270353fe7cbf874dae112830e5d",
     "promptContractVersion": "aim-stage1-factual-stage2-holistic-v1",
     "protocolVersion": "career-dashboard-scoring-protocol-v2",
     "questionRegistryHash": "9848046cbf0c311df8f2346bcd71001e75c071a3f622ec566585a6d658abd485",
@@ -35,11 +35,11 @@
     "startedAt": "2026-08-13T12:00:00.000Z",
     "totalModelCalls": 0
   },
-  "resultHash": "43ba5b2eb4621eeed9bb4774119540aed14229442496da7cb6ee97fd5093d99f",
+  "resultHash": "a31c225472d1b5b75c84e7836399745c5bc082aa07ae2f04d3087cecf2e8e7fe",
   "results": [
     {
       "extractionIdentity": null,
-      "inputHash": "409bdab3e27b732c09bc28ce5d14425c69c81db97049c813b69b604e7ddc2574",
+      "inputHash": "56f13b46b1ead829d79b958945499402af215e0bae7eeb1290f86e6ea75fc71d",
       "jobId": "00000002-2222-4222-8222-000000000002",
       "ordinal": 0,
       "packetPlanHash": null,
@@ -55,7 +55,7 @@
         "trustedMetadataHash": "5bb8f0c11f90df7ac4b4308c68b140190f54c89ffc518967ab8b6d7a1f2fd9ef",
         "variant": "local_policy_kill"
       },
-      "resultHash": "dc848d3d7d05a3aed2dd5e0b4888b56b49fd6d4d7e7319eaf5eede56029c7ef4",
+      "resultHash": "73f63838d46fe4efafe8b0a6ab960e07dfddb81ac1599c6732c8a020c817def9",
       "semanticResultHash": "365f6ec351ea014c43b4f0598c4d40eec86c850105735448dcd8b0769fbdb355",
       "sourceJdHash": "d4a7c5eac5952a017ae3a738ba8f4db7dafefb0655003b7b85c84c2e3fe38ce3",
       "trustedMetadataHash": "5bb8f0c11f90df7ac4b4308c68b140190f54c89ffc518967ab8b6d7a1f2fd9ef",

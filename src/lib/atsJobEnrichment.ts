@@ -1,5 +1,6 @@
 import { parseAdditionalDetail } from './additionalPublicAts';
 import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
+import { smartRecruitersPostingCompany } from './smartRecruitersCompany';
 import { expandedPostingIdentity, parseCornerstonePosting, polymerDetailRequest, parsePolymerDetail } from './expandedPublicAts';
 import { readAtsRetryReason, withAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
 import { createAtsDetailRequestSession, AtsDetailHttpError, AtsDetailResponseError, AtsEnrichmentControlError, isAbortError } from './atsDetailRequest';
@@ -126,7 +127,7 @@ const DETAIL_MUTABLE_FIELDS: Readonly<Record<string, ReadonlySet<DetailMutableFi
   successfactors: new Set(['company', 'location']),
   eightfold: new Set(['description', 'company', 'location']),
   workday: new Set(['description', 'company', 'location']),
-  smartrecruiters: new Set(['description', 'location']),
+  smartrecruiters: new Set(['description', 'company', 'location']),
   workable: new Set(['description']),
   bamboohr: new Set(['description']),
   breezy: new Set(['description', 'company', 'location']),
@@ -664,6 +665,7 @@ function preparedDetailPlan(input: {
   }
 
   if (platform === 'smartrecruiters') {
+    fields.company = smartRecruitersPostingCompany(job);
     fields.location = smartRecruitersPostingLocation(job);
     if (rawDescriptionPresent) return { plan: null, reason: 'description_already_present', fields };
     if (immutableListingTitleRejected(input)) {
@@ -685,6 +687,7 @@ function preparedDetailPlan(input: {
           };
           return {
             ...fields,
+            company: smartRecruitersPostingCompany(payload) || fields.company,
             location: location || fields.location,
             description: [
               sectionText('jobDescription'),

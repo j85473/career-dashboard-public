@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { readLinkedInEasyApply } from '@/lib/atsDisplay';
 import {
   cleanHtmlText,
   countExternalIngestionOutcome,
@@ -115,6 +116,7 @@ export async function POST(request: Request) {
           sourceUrl: url,
           source,
           sourceId,
+          linkedinEasyApply: readLinkedInEasyApply(item),
           postedAt: parsedDate && !Number.isNaN(parsedDate.getTime()) ? parsedDate : undefined,
           searchQuery: 'sales',
           ingestionMode: context.ingestionMode,

@@ -25,7 +25,7 @@ import {
 import type { JobListItem, PaginationMeta } from '@/types/job';
 import { selectedJobSort } from '@/lib/jobSort';
 import type { InboxJobFilter } from '@/lib/jobListQuery';
-import { identifyAts } from '@/lib/atsUtils';
+import { displayAts } from '@/lib/atsDisplay';
 import { companyDisplayName } from '@/lib/companyPresentation';
 import { sameEmployer } from '@/lib/employerIdentity';
 import { ADVANCED_JOB_STATUS_FILTERS, type AdvancedJobSearchStatus } from '@/lib/advancedJobSearch';
@@ -596,7 +596,7 @@ export default function Dashboard() {
     const leavesInbox = !companyFilter && dataStatus === 'inbox'
       && ((updates.status !== undefined && updates.status !== 'inbox') || updates.tailoringStaged === true);
     const priorJob = jobs.find(job => job.id === id);
-    const atsChanged = priorJob && identifyAts(priorJob) !== identifyAts({ ...priorJob, ...updates });
+    const atsChanged = priorJob && displayAts(priorJob) !== displayAts({ ...priorJob, ...updates });
     const updatedEmployer = typeof updates.employer === 'string' ? updates.employer
       : typeof updates.company === 'string' ? updates.company : null;
     const leavesCompanyView = Boolean(

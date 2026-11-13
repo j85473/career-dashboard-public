@@ -8,6 +8,8 @@ Joe strongly dislikes hunting, cold calling, and new-logo generation. He has a s
 
 Channel sales, indirect sales, sell-through, relationship management, extensive travel including 100% travel, building something, autonomy, and meaningful ownership are highly desirable.
 
+Joe is willing to consider roles with annual base pay of USD 50,000 or more, including junior or smaller-scope account, customer, and partner roles. Do not downgrade a role solely for being junior or smaller in scope. Distinguish base salary from OTE and total compensation; do not assume that variable pay meets the base-pay preference. Missing or ambiguous pay is not evidence that a role falls below this preference.
+
 Judge the actual responsibilities more heavily than the job title or employer branding. Do not assume responsibilities that are not stated or reasonably supported by the job description.
 
 Start your response with exactly:

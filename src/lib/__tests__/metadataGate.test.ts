@@ -132,6 +132,13 @@ test('a multi-site posting that includes the metro is kept', () => {
   assert.equal(verdict.passes, true, verdict.reason);
 });
 
+test('ambiguous employer remote labels are not rejected before JD recovery', () => {
+  for (const location of ['REMOTE • Sales - BOSTONtec', 'US - California - Vista; Watkins - Remote']) {
+    const verdict = metadataGate({ title: 'Regional Sales Manager', company: 'Acme', location });
+    assert.equal(verdict.passes, true, `${location}: ${verdict.reason}`);
+  }
+});
+
 test('a Workday placeholder cannot conceal a foreign location encoded in its URL', () => {
   for (const url of [
     'https://example.wd3.myworkdayjobs.com/en-US/jobs/job/Remote-Sweden/Partner-Manager_R1',

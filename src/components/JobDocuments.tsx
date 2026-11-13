@@ -26,6 +26,7 @@ export function JobDocuments({ job, onJobUpdate }: {
   const [captureBusy, setCaptureBusy] = useState(false);
   const [captureError, setCaptureError] = useState('');
   const attachments = job.attachments || NO_ATTACHMENTS;
+  const canAttach = job.status === 'interviewing' || job.hasInterviewHistory === true;
   const attachmentsRef = useRef(attachments);
   useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
   const ordered = newestJobAttachments(attachments);
@@ -159,10 +160,13 @@ export function JobDocuments({ job, onJobUpdate }: {
     }
   };
 
+  // Existing uploads remain accessible even if a legacy card lacks history.
+  if (!canAttach && attachments.length === 0) return null;
+
   return (
     <section className="job-documents" aria-label={`Documents for ${job.title}`} onClick={event => event.stopPropagation()}>
       <div className="job-documents-heading">Documents</div>
-      <div className="job-card-attachments">
+      {canAttach && <div className="job-card-attachments">
         <input ref={input} className="job-attachment-file-input" type="file" multiple
           accept=".pdf,.docx,.txt,.vtt,.srt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/vtt"
           aria-label={`Choose a document for ${job.title} at ${job.employer || job.company}`}
@@ -179,7 +183,7 @@ export function JobDocuments({ job, onJobUpdate }: {
           onClick={() => chooseFiles('transcript')}>
           <Paperclip size={14} /> {uploading && uploadKind === 'transcript' ? 'Uploading…' : 'Attach transcripts'}
         </button>
-      </div>
+      </div>}
       {job.status === 'interviewing' && !hasJd && <div className="job-jd-capture">
         {captureError && <p role="status">{captureError}</p>}
         {captureBusy || capture?.status === 'queued' || capture?.status === 'capturing'

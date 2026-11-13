@@ -77,9 +77,8 @@ test('a failed background refresh preserves the latest successful snapshot', asy
 test('a snapshot past its serve ceiling makes the caller wait instead of answering with it', async () => {
   let now = 0;
   let value = 'morning';
-  let calls = 0;
   const cache = createLatestSuccessfulSnapshot(
-    async () => { calls += 1; return value; },
+    async () => value,
     { freshForMs: 100, maxServeAgeMs: 1_000, now: () => now },
   );
 

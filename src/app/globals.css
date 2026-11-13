@@ -1478,6 +1478,9 @@ body {
 .duplicate-merge-card dd { overflow: hidden; margin: 4px 0 0; color: var(--text); font: 600 13px 'JetBrains Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
 .duplicate-merge-card a { display: inline-flex; align-items: center; gap: 5px; margin-top: 14px; color: var(--accent); font-size: 12px; text-decoration: none; }
 .duplicate-merge-protection { margin-top: 8px; color: var(--amber); font-size: 12px; }
+.duplicate-merge-rejection { margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: rgba(0,0,0,.16); }
+.duplicate-merge-rejection strong { display: block; margin-bottom: 5px; color: var(--amber); font-size: 12px; }
+.duplicate-merge-rejection p { margin: 0; color: var(--text); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .duplicate-merge-result { display: flex; flex-direction: column; gap: 5px; margin-top: 18px; padding: 16px 18px; border: 1px solid rgba(0,111,255,.28); border-radius: 10px; background: rgba(0,111,255,.07); color: var(--muted); font-size: 13px; }
 .duplicate-merge-result strong { margin-bottom: 3px; color: var(--text); }
 .duplicate-merge-error, .link-update-error { padding: 10px 12px; border: 1px solid rgba(240,61,61,.38); border-radius: 8px; background: var(--red-dim); color: var(--text); font-size: 12px; }

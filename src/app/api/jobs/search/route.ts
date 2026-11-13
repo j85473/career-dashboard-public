@@ -39,6 +39,7 @@ const searchSelect = {
   canonicalUrl: true,
   source: true,
   sourceId: true,
+  linkedinEasyApply: true,
   manualAts: true,
   postedAt: true,
   status: true,

@@ -864,7 +864,7 @@ export async function atsV2IdleEnrichmentRetryAt(
   const [item, circuit, recent] = await Promise.all([
     client.atsIngestionItem.findFirst({
       where: { batchId: claim.batchId, ledgerGeneration: claim.listingGeneration,
-        enrichmentStatus: 'pending' },
+        enrichmentStatus: 'pending', itemClaimToken: null },
       orderBy: { nextDetailAt: { sort: 'asc', nulls: 'first' } },
       select: { nextDetailAt: true, enrichmentReason: true },
     }),
@@ -874,7 +874,10 @@ export async function atsV2IdleEnrichmentRetryAt(
     }),
     client.atsAcquisitionWorkReceipt.findMany({
       where: { batchId: claim.batchId, startGeneration: claim.listingGeneration, workType: 'enrichment',
-        OR: [{ id: claim.workReceiptId }, { finishedAt: { not: null } }] },
+        OR: [{ id: claim.workReceiptId }, { finishedAt: { not: null }, OR: [
+          { itemsProgressed: { gt: 0 } }, { detailRequestCount: { gt: 0 } },
+          { yieldReason: { in: ['interrupted', 'expired', 'error'] } },
+        ] }] },
       orderBy: [{ startedAt: 'desc' }, { id: 'desc' }],
       take: 8,
       select: { itemsProgressed: true, detailRequestCount: true, yieldReason: true },

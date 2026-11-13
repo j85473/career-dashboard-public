@@ -182,11 +182,20 @@ async function loadAtsZeroJobFailureResolutionPlan(
   };
 }
 
+function publicFailureResolutionPlan(plan: AtsZeroJobFailureResolutionPlan): AtsZeroJobFailureResolutionPlan {
+  return {
+    unresolvedFailureCount: plan.unresolvedFailureCount,
+    eligibleCount: plan.eligibleCount,
+    ineligibleCount: plan.ineligibleCount,
+    existingResolutionCount: plan.existingResolutionCount,
+    selectionHash: plan.selectionHash,
+  };
+}
+
 export async function readAtsZeroJobFailureResolutionPlan(
   database: CutoverDatabase = prisma,
 ): Promise<AtsZeroJobFailureResolutionPlan> {
-  const { rows: _rows, ...plan } = await loadAtsZeroJobFailureResolutionPlan(database);
-  return plan;
+  return publicFailureResolutionPlan(await loadAtsZeroJobFailureResolutionPlan(database));
 }
 
 export async function recordAtsZeroJobFailureResolutions(expectedSelectionHash: string): Promise<{
@@ -235,7 +244,7 @@ export async function recordAtsZeroJobFailureResolutions(expectedSelectionHash: 
     const created = data.length > 0
       ? await transaction.atsZeroJobFailureResolution.createMany({ data })
       : { count: 0 };
-    const { rows: _afterRows, ...after } = await loadAtsZeroJobFailureResolutionPlan(transaction);
+    const after = publicFailureResolutionPlan(await loadAtsZeroJobFailureResolutionPlan(transaction));
     return { createdCount: created.count, before, after };
   }, { maxWait: 10_000, timeout: 30_000 });
 }

@@ -33,8 +33,9 @@ function storeFor(rows: Array<Omit<typeof survivor, 'passReason'> & { passReason
       queries.push('jobs');
       return rows.filter(row => query.where.id.in.includes(row.id));
     } },
-    jobStatusHistory: { findMany: async () => {
+    jobStatusHistory: { findMany: async (query: { where: { status?: string } }) => {
       queries.push('history');
+      if (query.where.status === 'interviewing') return [];
       return [{ jobId: survivor.id, status: 'applied', createdAt: applicationDate }];
     } },
   } as unknown as Pick<PrismaClient, 'job' | 'jobStatusHistory'>;
@@ -63,11 +64,12 @@ test('combining with a card that was never applied to does not claim an applicat
   assert.equal(result.combinedInto?.appliedAt, null);
 });
 
-test('ordinary pages do not query related jobs and never infer an application from employer', async () => {
+test('ordinary pages check interview history without querying related jobs or inferring an application from employer', async () => {
   const queries: string[] = [];
   const [result] = await withJobApplicationContext([{ ...copy, status: 'inbox', passReason: null }], storeFor([survivor], queries));
   assert.equal(result.combinedInto, null);
-  assert.deepEqual(queries, []);
+  assert.deepEqual(queries, ['history']);
+  assert.equal(result.hasInterviewHistory, false);
 });
 
 test('missing and cyclic consolidation targets do not invent an application', async () => {
@@ -82,4 +84,31 @@ test('a second consolidation still reaches the saved application', async () => {
   const [result] = await withJobApplicationContext([{ ...copy, passReason: `${CONSOLIDATED_REASON_PREFIX}middle` }], storeFor([middle, survivor]));
   assert.equal(result.combinedInto?.id, survivor.id);
   assert.equal(result.combinedInto?.appliedAt, applicationDate);
+});
+
+test('interview document eligibility survives later statuses without relying on remaining attachments', async () => {
+  const jobs = [
+    { id: 'never', status: 'applied', aimFitScore: 72, attachments: [] },
+    { id: 'current', status: 'interviewing', aimFitScore: 85, attachments: [] },
+    { id: 'returned', status: 'applied', aimFitScore: 88, attachments: [] },
+    { id: 'bookmarked', status: 'bookmarked', aimFitScore: 90, attachments: [] },
+    { id: 'passed', status: 'passed', aimFitScore: 70, attachments: [] },
+  ];
+  const before = structuredClone(jobs);
+  const queries: unknown[] = [];
+  const store = {
+    job: { findMany: async () => { throw new Error('No consolidation lookup expected'); } },
+    jobStatusHistory: { findMany: async (query: { where: { status?: string } }) => {
+      if (query.where.status !== 'interviewing') return [];
+      queries.push(query);
+      return ['returned', 'bookmarked', 'passed'].map(jobId => ({ jobId }));
+    } },
+  } as unknown as Pick<PrismaClient, 'job' | 'jobStatusHistory'>;
+  const result = await withJobApplicationContext(jobs, store);
+  assert.deepEqual(result.map(job => [job.id, job.hasInterviewHistory]), [
+    ['never', false], ['current', true], ['returned', true], ['bookmarked', true], ['passed', true],
+  ]);
+  assert.deepEqual(queries, [{ where: { jobId: { in: ['never', 'returned', 'bookmarked', 'passed'] }, status: 'interviewing' },
+    select: { jobId: true }, distinct: ['jobId'] }]);
+  assert.deepEqual(jobs, before);
 });

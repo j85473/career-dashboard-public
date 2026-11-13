@@ -295,6 +295,40 @@ test('provider remote spelling variants remain in scope', () => {
   }
 });
 
+test('remote labels with employer or department text reach eligibility review', () => {
+  for (const location of [
+    'REMOTE • Sales - BOSTONtec',
+    'Watkins - Remote',
+    'Remote: Commercial Accounts',
+    'Virtual • Customer Partnerships',
+    'Home-Based - Partner Team',
+    'Remote • Sales in US',
+    'US - California - Vista; Watkins - Remote',
+  ]) {
+    const verdict = locationTriageVerdict(location);
+    assert.equal(verdict.pass, true, `${location}: ${verdict.reason}`);
+    assert.match(verdict.reason, /eligibility review/i);
+  }
+});
+
+test('ambiguous remote labels cannot override explicit work-base restrictions', () => {
+  for (const location of [
+    'Remote CAN', 'Remote FRA', 'Remote • Canada', 'REMOTE • Sales - TX',
+    'Remote — Kyiv, Ukraine', 'Remote - Chile', 'Remote • Türkiye',
+    'Remote • Sales; Kyiv, Ukraine',
+    'Remote ca', 'Remote • Sales ca only',
+    'Remote • Sales - Austin, TX', 'Remote • Sales - London, United Kingdom',
+    'Remote • NL Nieuwegein', 'Remote • Sales; London, United Kingdom',
+    'Remote • Sales (must live in Illinois)',
+    'Remote • Sales; must reside in Chicago, IL',
+    'Remote • Sales - Hybrid', 'Sales • not remote',
+    'Remote • Sales - on-site only',
+  ]) {
+    const verdict = locationTriageVerdict(location);
+    assert.equal(verdict.pass, false, `${location}: ${verdict.reason}`);
+  }
+});
+
 test('worldwide availability reaches review because it does not exclude Minnesota', () => {
   for (const location of ['Remote / Anywhere in the World', 'Remote - Worldwide', 'Anywhere in the World']) {
     const verdict = locationTriageVerdict(location);

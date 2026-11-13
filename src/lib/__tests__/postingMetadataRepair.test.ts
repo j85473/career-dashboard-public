@@ -21,3 +21,16 @@ test('repair never replaces a known role with another source role or turns a sta
  assert.equal(planPostingMetadataRepair(job,{...evidence,title:'Other role'},{hasScores:false,hasHumanDecision:false}),null);
  assert.equal(canonicalRepairedLocation('USA - CA (Remote)'),'USA - CA (Remote)');
 });
+
+test('a newly accepted ambiguous remote label never restores an existing card decision',()=>{
+ for(const status of ['dismissed','archived','passed']) {
+  for(const hasScores of [false,true]) {
+   const location='REMOTE • Sales - BOSTONtec';
+   const existing={...job,status,location,passReason:`Locally triaged out: Location outside the searched geographies (${location})`};
+   assert.equal(planPostingMetadataRepair(existing,{...evidence,location},{hasScores,hasHumanDecision:false}),null);
+   const changed=planPostingMetadataRepair(existing,{...evidence,location:'Watkins - Remote'},{hasScores,hasHumanDecision:false});
+   assert.equal(changed?.action,'metadata_only');
+   assert.equal(changed?.lifecycle,undefined);
+  }
+ }
+});

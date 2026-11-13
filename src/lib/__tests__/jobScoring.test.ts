@@ -64,6 +64,53 @@ test('generic sales titles need account duties and still obey hunter and operati
   }
 });
 
+test('unfamiliar commercial titles reach review on actual customer account responsibilities', () => {
+  const examples = [
+    {
+      title: 'Manager, Customer Parternships',
+      description: 'Build, strengthen, and maintain a book of business including long-term customers, to support retention, revenue growth, and quarterly performance goals. Lead renewal activities including preparation, strategy development, contract review, and customer negotiations.',
+    },
+    {
+      title: 'National Distribution Manager',
+      description: 'Serve as a primary day-to-day point of contact for the assigned strategic customer and an additional point of contact for distributor and channel partner inquiries. Support the development and execution of growth-oriented account plans, channel programs, promotions, and incentives.',
+    },
+    {
+      title: 'Account Coordinator',
+      description: 'Manage assigned lower-volume clients. Build and maintain strong client relationships and resolve service issues.',
+    },
+  ];
+  for (const { title, description } of examples) {
+    const result = scoreJob(title, description);
+    assert.equal(result.gatePass, true, `${title}: ${result.gateReason}`);
+    assert.match(result.rationale, /customer\/partner account responsibilities/);
+  }
+});
+
+test('customer vocabulary, qualifications, and negated duties cannot rescue unrelated roles', () => {
+  for (const [title, description] of [
+    ['Account Coordinator', 'Update account records and schedule internal meetings. Our clients value relationships and account growth.'],
+    ['Customer Program Specialist', 'Previous experience managing existing customer accounts and leading renewals is required. Maintain project calendars.'],
+    ['Customer Program Specialist', 'This role does not manage customer accounts or own renewals. Schedule internal meetings.'],
+    ['Software Engineer', 'Manage existing customer accounts and lead renewals.'],
+    ['Warehouse Distribution Manager', 'Manage distributor accounts and expand existing account relationships.'],
+    ['Accounting Clerk', 'Manage customer accounts and lead renewals.'],
+  ]) {
+    const result = scoreJob(title, description);
+    assert.equal(result.gatePass, false, `${title}: ${result.gateReason}`);
+  }
+});
+
+test('responsibility-based title admission still obeys hunter and operations exclusions', () => {
+  for (const extra of [
+    'The primary responsibility is cold calling and outbound prospecting to win new logos.',
+    'Own revenue operations, deal desk and CRM administration.',
+  ]) {
+    const result = scoreJob('Customer Program Specialist', `Manage existing customer accounts and lead renewals. ${extra}`);
+    assert.equal(result.gatePass, false, result.gateReason);
+    assert.match(result.gateReason, /hunter|operations/i);
+  }
+});
+
 // Local triage now withholds roles the heuristic has already capped below its
 // own bar. Aim and Experience are the paid AI evaluation; they are not a sieve
 // for 26,000 postings, 87% of which had no target title signal at all. The

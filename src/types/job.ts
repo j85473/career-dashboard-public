@@ -69,11 +69,14 @@ export interface JobListItem {
   /** The canonical employer (src/lib/employerIdentity.ts); what cards show and group by. */
   employer?: string | null;
   status: string;
+  /** True once the card has been marked Interviewing, regardless of current status. */
+  hasInterviewHistory?: boolean;
   location?: string | null;
   url?: string | null;
   canonicalUrl?: string | null;
   source?: string | null;
   sourceId?: string | null;
+  linkedinEasyApply?: boolean | null;
   manualAts?: string | null;
   postedAt?: string | null;
   createdAt?: string;

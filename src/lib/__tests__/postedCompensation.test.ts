@@ -4,6 +4,24 @@ import test from 'node:test';
 import { extractPostedBaseCompensation, extractPostedCompensation } from '../postedCompensation';
 import { derivePostingFacts } from '../postingFacts';
 
+test('retains the Jones Stephens/Ferguson range with its conditional monthly/hourly units', () => {
+  const statement = 'Estimated Ranges displayed are Monthly for Salaried roles OR Hourly for all other roles.';
+  const description = 'Pay Range:\n-\nActual pay rate may vary depending upon location. '
+    + 'The estimated pay range for this position is below. The specific rate will depend on a candidate’s qualifications and prior experience.\n-\n'
+    + '$6,374.70 - $15,033.70-\n' + statement + '\n-\nThis role is Bonus or Incentive Plan eligible.';
+  const expected = '$6,374.70–$15,033.70 (monthly for salaried roles; hourly otherwise)';
+  assert.equal(extractPostedCompensation(description), expected);
+  assert.equal(derivePostingFacts(description).postedCompensation, expected);
+  assert.equal(extractPostedBaseCompensation(description), null, 'the conditional range is not annual base salary');
+  assert.equal(extractPostedCompensation(description.replace(/\n/g, '<p>')), expected);
+  assert.equal(extractPostedCompensation(`Pay Range: $20,000 - $30,000\n${statement}`), '$20,000–$30,000 (monthly for salaried roles; hourly otherwise)');
+  for (const band of ['CAD$6,374.70 - $15,033.70', '$15,033.70 - $6,374.70', '$6,374.70 - $15,033.70 CAD', '$6,374.70',
+    'California: $6,000-$12,000\nMinnesota: $5,000-$10,000']) {
+    assert.equal(extractPostedCompensation(`Pay Range: ${band}\n${statement}`), null, band);
+  }
+  assert.equal(extractPostedCompensation(`Bonus range: $6,374.70-$15,033.70\n${statement}`), null);
+});
+
 test('extracts the explicit base pay range from the eHealth-style JD wording', () => {
   const description = [
     'For more information on our total rewards offerings, please visit our career site.',

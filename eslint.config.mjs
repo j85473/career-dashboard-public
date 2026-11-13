@@ -17,6 +17,8 @@ const eslintConfig = defineConfig([
     "prisma/generated/**",
     "vendor/**",
     "scratch/**",
+    ".tasks/**",
+    "data/runtime/**",
     "scripts/migrate_old_dbs.ts",
   ]),
   {

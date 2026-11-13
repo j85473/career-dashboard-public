@@ -93,11 +93,11 @@ test('retired saved postings cannot bypass the targeted live check or reactivate
 });
 
 test('pending intake is durable without a Job write; absence discards the retained JD', async () => {
-  const writes: any[] = [];
-  const fake = { aggregatorIntakeCandidate: { upsert: async (value: unknown) => { writes.push(value); } } } as never;
+  const writes: Prisma.AggregatorIntakeCandidateUpsertArgs[] = [];
+  const fake = { aggregatorIntakeCandidate: { upsert: async (value: Prisma.AggregatorIntakeCandidateUpsertArgs) => { writes.push(value); } } } as never;
   const input = { job: { ...job, sourceId: '123', description: 'Full original JD' }, ...job, sourceId: '123', reason: 'live_unavailable', expired: false, context: {} };
   await retainAggregatorCandidate(input, fake, new Date('2026-11-06T00:00:00Z'));
-  assert.equal(writes[0].create.status, 'pending'); assert.equal(writes[0].create.payload.description, 'Full original JD');
+  assert.equal(writes[0].create.status, 'pending'); assert.deepEqual(writes[0].create.payload, input.job);
   assert.equal('nextAttemptAt' in writes[0].update, false); assert.equal('leaseToken' in writes[0].update, false);
   await retainAggregatorCandidate({ ...input, expired: true, reason: 'absent_from_complete_employer_catalogue' }, fake);
   assert.equal(writes[1].update.status, 'expired'); assert.equal(writes[1].update.payload, Prisma.DbNull);
@@ -105,26 +105,32 @@ test('pending intake is durable without a Job write; absence discards the retain
 
 test('retry leases prevent double admission and retain failures for a later attempt', async () => {
   for (const claim of [0, 1]) {
-    let calls = 0; const updates: any[] = [];
+    let calls = 0; const updates: Prisma.AggregatorIntakeCandidateUpdateManyArgs[] = [];
     const fake = { pipelineState: { findUnique: async () => null }, aggregatorIntakeCandidate: {
       findMany: async () => [{ id: 'candidate', source: 'Himalayas', sourceId: '123', payload: job, attempts: 1 }],
-      updateMany: async (args: any) => { updates.push(args); return { count: claim }; },
+      updateMany: async (args: Prisma.AggregatorIntakeCandidateUpdateManyArgs) => { updates.push(args); return { count: claim }; },
       findUnique: async () => ({ status: 'pending' }),
     }, jobSourceObservation: { findUnique: async () => null } } as never;
     const result = await retryAggregatorCandidates({ limit: 10, ingest: async () => { calls++; throw new Error('temporary failure'); } }, fake);
     assert.equal(calls, claim); assert.equal(result.pending, claim);
-    if (claim) { assert.equal(updates.at(-1).data.status, 'pending'); assert.match(updates.at(-1).data.lastError, /temporary failure/); assert.equal('payload' in updates.at(-1).data, false); }
+    if (claim) {
+      const data = updates.at(-1)!.data;
+      assert.equal(data.status, 'pending');
+      assert.ok(typeof data.lastError === 'string');
+      assert.match(data.lastError, /temporary failure/);
+      assert.equal('payload' in data, false);
+    }
   }
 });
 
 test('a successful retry retires its payload only after a real source observation exists', async () => {
-  const updates: any[] = [];
+  const updates: Prisma.AggregatorIntakeCandidateUpdateManyArgs[] = [];
   const fake = { pipelineState: { findUnique: async () => null }, aggregatorIntakeCandidate: {
     findMany: async () => [{ id: 'candidate', source: 'Himalayas', sourceId: '123', payload: job, attempts: 0 }],
-    updateMany: async (args: any) => { updates.push(args); return { count: 1 }; }, findUnique: async () => ({ status: 'pending' }),
+    updateMany: async (args: Prisma.AggregatorIntakeCandidateUpdateManyArgs) => { updates.push(args); return { count: 1 }; }, findUnique: async () => ({ status: 'pending' }),
   }, jobSourceObservation: { findUnique: async () => ({ jobId: 'real-job' }) } } as never;
   assert.equal((await retryAggregatorCandidates({ limit: 1, ingest: async () => {} }, fake)).released, 1);
-  assert.equal(updates.at(-1).data.jobId, 'real-job'); assert.equal(updates.at(-1).data.payload, Prisma.DbNull);
+  assert.equal(updates.at(-1)!.data.jobId, 'real-job'); assert.equal(updates.at(-1)!.data.payload, Prisma.DbNull);
   const now = new Date('2026-11-06T00:00:00Z');
   assert.equal(aggregatorIntakeRetryAt(1, now).getTime() - now.getTime(), 600_000);
   assert.equal(aggregatorIntakeRetryAt(100, now).getTime() - now.getTime(), 21_600_000);
@@ -141,7 +147,7 @@ test('scheduled retries honor indefinite and timed pauses, including a pause bet
       } },
       aggregatorIntakeCandidate: {
         findMany: async () => [1, 2].map(id => ({ id: String(id), source: 'Himalayas', sourceId: String(id), payload: job, attempts: 0 })),
-        updateMany: async (args: any) => { if (args.data.attempts) claims++; return { count: 1 }; },
+        updateMany: async (args: Prisma.AggregatorIntakeCandidateUpdateManyArgs) => { if (args.data.attempts) claims++; return { count: 1 }; },
         findUnique: async () => ({ status: 'pending' }),
       }, jobSourceObservation: { findUnique: async () => null },
     } as never;

@@ -2,6 +2,7 @@ import { atsLedgerHash, canonicalJson } from './atsEvidenceHash';
 export { atsLedgerHash } from './atsEvidenceHash';
 import { resolveAtsItemRaw } from './atsRawEvidence';
 import { atsRetryColumns, readAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
+import { retainedAtsDetailRetryAt } from './atsDetailRetryPolicy';
 import { storageAllows } from './storagePressure';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import { nextAtsProcessingContinuationAt } from './atsProcessingSchedule';
@@ -999,6 +1000,7 @@ export async function commitAtsV2ListingPage(input: AtsLedgerPageInput): Promise
         acquisitionLeaseExpiresAt: true,
         acquisitionPhase: true,
         listingOffset: true,
+        latestObservedTotal: true,
       },
     });
     assertClaimMatchesBatch(batch, input.claim, now);
@@ -1104,6 +1106,24 @@ export async function commitAtsV2ListingPage(input: AtsLedgerPageInput): Promise
         })),
       });
     }
+    // Workday's later pages use total: 0 even while returning real rows. Keep
+    // that literal response on the page, but retain a useful scheduling total.
+    // Existing in-flight batches can recover it from their own saved first page.
+    let schedulingTotal = input.providerTotal ?? undefined;
+    if (input.claim.platform === 'workday' && input.requestedOffset > 0
+      && (input.providerTotal == null || input.providerTotal === 0)) {
+      if (batch.latestObservedTotal && batch.latestObservedTotal > 0) {
+        schedulingTotal = batch.latestObservedTotal;
+      } else {
+        const firstPage = await transaction.atsIngestionPage.findUnique({
+          where: { batchId_generation_requestedOffset: {
+            batchId: input.claim.batchId, generation: input.claim.listingGeneration, requestedOffset: 0,
+          } },
+          select: { providerTotal: true },
+        });
+        schedulingTotal = firstPage?.providerTotal && firstPage.providerTotal > 0 ? firstPage.providerTotal : undefined;
+      }
+    }
     const updated = await transaction.atsIngestionBatch.updateMany({
       where: {
         id: input.claim.batchId,
@@ -1115,7 +1135,7 @@ export async function commitAtsV2ListingPage(input: AtsLedgerPageInput): Promise
       },
       data: {
         listingOffset: nextOffset,
-        latestObservedTotal: input.providerTotal ?? undefined,
+        latestObservedTotal: schedulingTotal,
         rawObservationCount: { increment: inlineObservations ? input.jobs.length : 0 },
         acquisitionBytes: { increment: hashes.rawBodyBytes },
         acquisitionPhase: listingComplete && inlineObservations ? 'compaction' : 'listing',
@@ -1671,7 +1691,7 @@ export async function enrichNextAtsV2DetailItem(input: {
         OR: [{ nextDetailAt: null }, { nextDetailAt: { lte: now } }],
         itemClaimToken: null,
       },
-      orderBy: { canonicalOrdinal: 'asc' },
+      orderBy: [{ detailAttemptCount: 'asc' }, { canonicalOrdinal: 'asc' }],
     });
     if (!candidate) return null;
     const itemClaimToken = randomUUID();
@@ -1753,17 +1773,21 @@ export async function enrichNextAtsV2DetailItem(input: {
     if (!updated) throw new AtsLedgerAuthorityError(`ATS v2 item ${item.id} lost its fence.`);
     return 'terminal';
   } catch (error) {
-    const retryAt = error && typeof error === 'object' && 'retryAt' in error
+    const suggestedRetryAt = error && typeof error === 'object' && 'retryAt' in error
       && error.retryAt instanceof Date
       ? error.retryAt
-      : new Date(Date.now() + 15 * 60_000);
+      : undefined;
+    const retryReason = readAtsRetryReason(error) || { code: 'internal_error', scope: 'posting' } as const;
+    const retryAt = retainedAtsDetailRetryAt({
+      now: new Date(), attemptCount: item.detailAttemptCount, reason: retryReason, suggestedRetryAt,
+    });
     await prisma.atsIngestionItem.updateMany({
       where: { id: item.id, itemClaimToken: item.itemClaimToken, itemClaimFence: item.itemClaimFence },
       data: {
         enrichmentStatus: 'pending',
         detailError: (error instanceof Error ? error.message : String(error)).slice(0, 500),
         nextDetailAt: retryAt,
-        ...atsRetryColumns(readAtsRetryReason(error) || { code: 'internal_error', scope: 'posting' }),
+        ...atsRetryColumns(retryReason),
         itemClaimToken: null,
         itemClaimOwner: null,
         itemHeartbeatAt: new Date(),

@@ -84,6 +84,7 @@ test('the detail API presents a readable JD while retaining score events and mak
     assert.equal(Reflect.get(target, method), implementation);
   };
   replace(prisma.job, 'findUnique', async () => job);
+  replace(prisma.jobStatusHistory, 'findMany', async () => []);
   replace(prisma.jobScoreEvent, 'findMany', async () => [scoreEvent]);
   replace(prisma, '$queryRaw', async () => [scoreEvent]);
   const noWrites = () => { throw new Error('Description presentation must not write to the database'); };

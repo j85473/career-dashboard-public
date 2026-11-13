@@ -44,7 +44,9 @@ export function planPostingMetadataRepair(job: MetadataRepairJob, evidence: Meta
   if (location !== job.location) metadata.location = location;
   const geoRejected = automaticGeographyReason(job.passReason);
   const canRestore = evidence.completeLocations && !hasIncompleteLocations(location)
-    && locationTriageVerdict(location).pass && ['archived','dismissed','passed'].includes(job.status)
+    // An ambiguous remote label may enter new intake, but a filter relaxation
+    // is not new evidence authorizing restoration of an existing decision.
+    && locationTriageVerdict(location, { allowAmbiguousRemote: false }).pass && ['archived','dismissed','passed'].includes(job.status)
     && (geoRejected || (guard.reviewedRestore && job.passReason === 'Location mismatch'))
     && (!guard.hasHumanDecision || guard.reviewedRestore)
     && (!guard.hasScores || guard.reviewedRestore) && (!job.tailoringStaged || guard.reviewedRestore);

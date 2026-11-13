@@ -24,6 +24,8 @@ model Job {
   url                   String?
   source                String?
   sourceId              String?
+  /// Explicit LinkedIn provider application method; null means not supplied.
+  linkedinEasyApply     Boolean?
   canonicalUrl          String?
   /// Latest link explicitly supplied by the user. Background writers cannot
   /// replace it; redirects are used only to retrieve posting details.
@@ -80,7 +82,7 @@ model Job {
   submittedResume       String?
   cooldownUntil         DateTime?
   compensation          String?
-  // Literal annual pay with explicit base/total labels, including employer
+  // Literal posted pay with explicit base/total or period labels, including employer
   // header facts; never an Aim/Experience assessment or a calculated pay split.
   postedCompensation    String?
   // The travel expectation the posting states outright ("up to 50%", "none

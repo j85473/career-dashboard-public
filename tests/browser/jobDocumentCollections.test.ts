@@ -36,7 +36,7 @@ test('multiple prep packs keep one newest shortcut, preserve history, and suppor
     await context.route('**/api/**', async route => {
       const request = route.request(); const url = new URL(request.url());
       if (url.pathname === '/api/jobs') return route.fulfill({ json: {
-        jobs: [{ id: 'job', title: 'Sales Manager', company: 'Employer', status: 'applied', attachments }],
+        jobs: [{ id: 'job', title: 'Sales Manager', company: 'Employer', status: 'applied', hasInterviewHistory: true, attachments }],
         pagination: { page: 1, total: 1, hasMore: false, limit: 48 }, atsOptions: [],
       } });
       if (url.pathname === '/api/pipeline/status') return route.fulfill({ json: { isRunning: false, schedulePaused: true } });

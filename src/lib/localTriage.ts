@@ -6,6 +6,7 @@ import {
   hasAssignedTerritoryResidencyRequirement,
   hasRegularPresenceRequirement,
   hasResidencyRequirement,
+  hasExplicitRemoteExclusion,
   isExplicitInternationalLocationOption,
   isGeneralRemoteOption,
   isLocalMinnesotaOption,
@@ -301,10 +302,50 @@ function isUnresolvedFieldLocation(option: string): boolean {
   return new RegExp(`^(?:${arrangement}(?:\\s*[-,]?\\s*(?:${scope}|US|USA|United States))?|${scope}(?:\\s*[, -]?\\s*(?:US|USA|United States))?(?:\\s*[, -]?\\s*${arrangement})?)$`, 'i').test(value);
 }
 
+// An unknown label can be a department, but it can also be a country missing
+// from the older geography vocabulary. Use the runtime's full country names
+// before applying the new ambiguity exception; preserve the US as in scope.
+function foreignCountryPattern(): RegExp {
+  const regions = new Intl.DisplayNames(['en'], { type: 'region' });
+  const names = new Set<string>();
+  for (const first of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
+    for (const second of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
+      const code = first + second;
+      const name = regions.of(code);
+      if (code !== 'US' && name && name !== code) names.add(name);
+    }
+  }
+  const alternatives = [...names].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  return new RegExp(`(?:^|[^\\p{L}])(?:${alternatives})(?=$|[^\\p{L}])`, 'iu');
+}
+const FOREIGN_COUNTRY_NAME = foreignCountryPattern();
+
+/** Department/employer text around "Remote" is not a required work base. */
+function isUnresolvedRemoteLocation(option: string): boolean {
+  const value = normalizeLocationOption(option).replace(/[•·:]/g, ',');
+  if (!/\b(?:remote|virtual|home[- ]based|work from home|work at home)\b/i.test(value)) return false;
+  // Keep concrete geography and residence/office restrictions out of this
+  // ambiguity exception, including state abbreviations after provider labels.
+  if (containsNonlocalGeography(value)
+    || isExplicitInternationalLocationOption(value)
+    || FOREIGN_COUNTRY_NAME.test(value)
+    || new RegExp(`\\b${US_STATE_LOCATION_PATTERN}\\b`).test(value)
+    || new RegExp(`\\b${US_STATE_LOCATION_PATTERN}(?:\\s+only)?$`, 'i').test(value)
+    || /\b(?:CAN|GBR|FRA|DEU|NLD|AUS|NZL|IND|MEX|BRA)\b/i.test(value)
+    || hasExplicitRemoteExclusion(value)
+    || hasResidencyRequirement(value)
+    || hasAssignedTerritoryResidencyRequirement(value)
+    || hasRegularPresenceRequirement(value, true)) return false;
+  return true;
+}
+
 /** Worldwide availability is not evidence that Minnesota is excluded. */
 const GLOBAL_SCOPE = /\b(?:anywhere in the world|worldwide|world[- ]?wide|globally|any country|anywhere on earth)\b/i;
 
-export function locationTriageVerdict(location: string | null | undefined): LocalTriageVerdict {
+export function locationTriageVerdict(
+  location: string | null | undefined,
+  controls: { allowAmbiguousRemote?: boolean } = {},
+): LocalTriageVerdict {
   const value = (location || '').trim();
   if (!value) return PASS;
   if (hasIncompleteLocations(value)) return { pass: true, reason: 'Location list is incomplete; retain for review' };
@@ -331,6 +372,16 @@ export function locationTriageVerdict(location: string | null | undefined): Loca
   if (GLOBAL_SCOPE.test(value)) return { pass: true, reason: 'Worldwide availability; retain for eligibility review' };
   if (options.some(hasMinnesotaCoverageOption)) return { pass: true, reason: 'Coverage list includes Minnesota; retain for work-base review' };
   if (options.some(acceptableLocationOption)) return PASS;
+  if (controls.allowAmbiguousRemote !== false
+    && !hasExplicitInternational
+    && !FOREIGN_COUNTRY_NAME.test(value)
+    && !hasResidencyRequirement(value)
+    && !hasAssignedTerritoryResidencyRequirement(value)
+    && !hasRegularPresenceRequirement(value, true)
+    && !hasExplicitRemoteExclusion(value)
+    && options.some(isUnresolvedRemoteLocation)) {
+    return { pass: true, reason: 'Remote label has no confirmed work-base restriction; retain for eligibility review' };
+  }
   if (!hasExplicitInternational && options.every(isUnresolvedFieldLocation)) {
     return { pass: true, reason: 'Field or regional work base is unresolved; retain for eligibility review' };
   }

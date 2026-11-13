@@ -4,12 +4,11 @@ import json
 import re
 import sys
 import tempfile
-import time
 import unittest
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
+from threading import Barrier, Lock
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -611,6 +610,7 @@ class AimRunnerV2Tests(unittest.TestCase):
         sources = [f"No relevant facts are stated for source {index}." for index in range(4)]
         exported, _ = make_aim_v2_export(REPO_ROOT, sources=sources)
         lock = Lock()
+        stage1_started = Barrier(4)
         active_total = 0
         maximum_total = 0
         active_by_source = {source: 0 for source in sources}
@@ -625,8 +625,12 @@ class AimRunnerV2Tests(unittest.TestCase):
                 active_by_source[source] += 1
                 maximum_total = max(maximum_total, active_total)
                 maximum_by_source[source] = max(maximum_by_source[source], active_by_source[source])
-            time.sleep(0.01)
             try:
+                # Hold the first call for each job until all four have entered.
+                # A sleep only measured incidental overlap and failed when
+                # source preparation or the host was slower than 10 ms.
+                if kwargs["effort"] == "medium":
+                    stage1_started.wait(timeout=15)
                 return self.unsupported_worker(**kwargs)
             finally:
                 with lock:

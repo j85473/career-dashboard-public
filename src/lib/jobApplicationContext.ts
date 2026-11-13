@@ -12,7 +12,19 @@ export async function withJobApplicationContext<T extends ContextJob>(
   jobs: readonly T[],
   store: ContextStore = prisma,
 ) {
-  const datedJobs = await withApplicationDates(jobs, store);
+  const historyIds = [...new Set(jobs.filter(job => job.status !== 'interviewing').map(job => job.id))];
+  const [datedJobs, interviewHistory] = await Promise.all([
+    withApplicationDates(jobs, store),
+    historyIds.length ? store.jobStatusHistory.findMany({
+      where: { jobId: { in: historyIds }, status: 'interviewing' },
+      select: { jobId: true },
+      distinct: ['jobId'],
+    }) : [],
+  ]);
+  const interviewedIds = new Set(interviewHistory.map(history => history.jobId));
+  const documentJobs = datedJobs.map(job => ({
+    ...job, hasInterviewHistory: job.status === 'interviewing' || interviewedIds.has(job.id),
+  }));
   const targets = new Map<string, {
     id: string; title: string; company: string; employer: string | null;
     status: string; passReason: string | null;
@@ -31,7 +43,7 @@ export async function withJobApplicationContext<T extends ContextJob>(
   }
   const datedTargets = new Map((await withApplicationDates([...targets.values()], store))
     .map(target => [target.id, target]));
-  return datedJobs.map(job => {
+  return documentJobs.map(job => {
     let id = consolidatedIntoJobId(job.passReason);
     const visited = new Set([job.id]);
     while (id && !visited.has(id)) {

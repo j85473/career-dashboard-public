@@ -1,3 +1,5 @@
+import { readLinkedInEasyApply } from './atsDisplay';
+
 type Row = Record<string, unknown>;
 type Diagnostic = Record<string, string | number | boolean | null>;
 export type LinkedInSearchProgress = {
@@ -54,6 +56,7 @@ export function parseLinkedInJob(row: Row) {
   const derived = Array.isArray(row.locations_derived) ? row.locations_derived.map(text).filter(Boolean) : [];
   const postedDate = text(row.date_posted) || text(row.posted_date);
   return { title, url, sourceId, source: 'LinkedIn',
+    linkedinEasyApply: readLinkedInEasyApply(row),
     company: text(row.organization) || text(company?.name) || text(row.company_name) || 'Unknown Company',
     description: text(row.description_text) || text(row.description),
     location: derived.join('; ') || text(row.location) || 'Unknown Location',

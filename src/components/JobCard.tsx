@@ -3,7 +3,7 @@
 import React from 'react';
 import { formatDistanceToNow, format, differenceInDays } from 'date-fns';
 import { AlertTriangle } from 'lucide-react';
-import { identifyAts, ATS_OPTIONS } from '@/lib/atsUtils';
+import { displayAts, atsChoicesForJob, atsSelectionUpdate } from '@/lib/atsDisplay';
 import { showAlert } from '@/lib/modal';
 import type { JobListItem } from '@/types/job';
 import { isAcostaChannelSalesPriorityRole, ACOSTA_CHANNEL_SALES_PRIORITY_BANNER, isPromptHealthPriorityRole, PROMPT_HEALTH_PRIORITY_BANNER } from '@/lib/priorityOpportunity';
@@ -227,12 +227,13 @@ function JobCard({ job, onSelect, primaryScore = 'aim', onJobUpdate, showStatusB
                   cursor: 'pointer',
                   outline: 'none'
                 }}
-                value={identifyAts(job)}
-                onChange={(e) => updateJob({ manualAts: e.target.value })}
+                value={displayAts(job)}
+                disabled={atsChoicesForJob(job).length === 1}
+                onChange={(e) => updateJob(atsSelectionUpdate(job, e.target.value))}
                 onClick={(e) => e.stopPropagation()}
               >
-                <option value={identifyAts(job)} disabled>⚙️ ATS: {identifyAts(job)}</option>
-                {ATS_OPTIONS.map(r => <option key={r} value={r}>⚙️ ATS: {r}</option>)}
+                <option value={displayAts(job)} disabled>⚙️ ATS: {displayAts(job)}</option>
+                {atsChoicesForJob(job).map(r => <option key={r} value={r}>⚙️ ATS: {r}</option>)}
               </select>
               <div style={{ position: 'absolute', right: '6px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', fontSize: '8px', color: '#eab308' }}>▼</div>
             </div>

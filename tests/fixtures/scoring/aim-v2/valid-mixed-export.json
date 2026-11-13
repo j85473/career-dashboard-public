@@ -8,10 +8,10 @@
     "exportSchemaVersion": "career-dashboard-aim-export-v2",
     "extractorSemanticVersion": "aim-factual-extractor-v7",
     "id": "11111111-1111-4111-8111-111111111111",
-    "manifestHash": "5bf629c6c488fec6bf11e07df7235200d23e43f1f68b1805fb945ca8f38cc5e2",
+    "manifestHash": "0f9daa09b9450b18172435e0e08f0baf61ff2ed35b58ba901b092619a1f776fa",
     "packetStrategyHash": "0723425ac01276ed4374c49fd36b1d28c69971c0e3b6d30aa62bc46113022636",
     "packetStrategyVersion": "aim-stage2-packetizer-v4",
-    "promptContractHash": "556657521b0276c3d4389d57c0c97a7f700f1d7eb392d92144c0bee7ea2bfb44",
+    "promptContractHash": "3f6df5e435af45bcc4c1c3bb74c0827b90bcd270353fe7cbf874dae112830e5d",
     "promptContractVersion": "aim-stage1-factual-stage2-holistic-v1",
     "protocolVersion": "career-dashboard-scoring-protocol-v2",
     "questionRegistryHash": "9848046cbf0c311df8f2346bcd71001e75c071a3f622ec566585a6d658abd485",
@@ -27,8 +27,8 @@
   },
   "jobs": [
     {
-      "extractionIdentity": "a7062bd7a43088f2a69ae99aeb657cdfd4b630809fdd88bc0d739beec07d56d8",
-      "inputHash": "ffb6d5c737fffc26d069eadc185f6b2d78970dae3fc8afda6ccc405e12762489",
+      "extractionIdentity": "8d549d8e18ba9f5c72d95fa0af519587296a53772efa7d5787642e88464fb7b7",
+      "inputHash": "1856ecb8779b6e82f10442017dbeb055e8bbd1dc2959f6bb84df7e934bc1b015",
       "jobId": "00000002-2222-4222-8222-000000000002",
       "ordinal": 0,
       "reuse": null,
@@ -49,8 +49,8 @@
       "trustedMetadataHash": "8bcd58ab380530778d35d00489a6e8941eaba33ea0cf9a48993b995f9d54810b"
     },
     {
-      "extractionIdentity": "b40bf44b75b189efad5f0952e7a02e1d3197da98afd7a3a3dc2c707ef6543da2",
-      "inputHash": "55243f3096b50b2753119bb0092a9a48776245e8ae009eacfd09be27fe679439",
+      "extractionIdentity": "2df5505c9df8d07d355cfe618ce92c5c0722f4859c0f3e5b8a3bd8877c722b1d",
+      "inputHash": "6d4bd0175ee9bf761e71b35f97550e8d19ddab6f70ba5fd954256df6ed061c3e",
       "jobId": "00000003-2222-4222-8222-000000000003",
       "ordinal": 1,
       "reuse": null,

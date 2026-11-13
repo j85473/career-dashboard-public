@@ -36,6 +36,31 @@ export function hasTerritoryAccountSalesEvidence(title: string, description: str
 }
 
 /**
+ * An unfamiliar commercial title can still describe ownership of customer or
+ * partner accounts. Require both an affirmative responsibility and evidence of
+ * relationship/account work, rather than incidental customer words or a prior
+ * experience requirement. This is admission to review, never qualification.
+ */
+export function hasCustomerAccountResponsibilityEvidence(title: string, description: string): boolean {
+  const value = title.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  const commercialScope = /\b(?:accounts?|customers?|clients?|relationships?|partners?|partnerships?|channel|distribution|distributors?|dealers?|sales|commercial|territory|regional|field|business)\b/;
+  const role = /\b(?:manager|director|lead|leader|consultant|specialist|associate|coordinator|representative|rep|advisor|executive)\b/;
+  const otherOccupation = /\b(?:warehouse|distribution cent(?:er|re)|logistics|supply chain|inventory|shipping|technician|installer|mechanic|engineer|developer|clerk|accountant|accounting|cashier|store manager|recruiter|human resources)\b/;
+  if (!commercialScope.test(value) || !role.test(value) || otherOccupation.test(value)) return false;
+
+  const duties = description.split(/[.!?;\n]+/).map(part => part.replace(/\s+/g, ' ').trim()).filter(clause => (
+    !/\b(?:do(?:es)? not|will not|never|not responsible for|no responsibility for)\b/i.test(clause)
+    && !/^(?:(?:minimum|at least|ideally|preferred|required|previous|prior|proven|demonstrated)\b|.{0,45}\b(?:years? of experience|experience (?:in|with)|ability to|knowledge of)\b)/i.test(clause)
+  ));
+  const accounts = '(?:book of business|portfolio of (?:accounts|customers|clients|partners)|(?:(?:existing|assigned|current|key|strategic|named|enterprise|lower[ -]volume)\\s+){0,3}(?:accounts|customers|clients|partners)|(?:customer|client|partner|account) relationships)';
+  const ownership = new RegExp(`\\b(?:own|manag|oversee|grow|expand|retain|develop|maintain|build|strengthen)\\w*\\b.{0,100}\\b${accounts}\\b`, 'i');
+  const primaryContact = /\b(?:serve|act)\w*\s+as\b.{0,40}\bprimary\b.{0,40}\b(?:contact|accountability)\b.{0,80}\b(?:customer|client|partner|account)s?\b/i;
+  const accountWork = /\b(?:retention|renewals?|upsell|cross[ -]sell|account plans?|account growth|revenue growth)\b|\b(?:build|strengthen|develop|maintain|nurture)\w*\b.{0,100}\b(?:customer|client|partner|distributor|account)\b.{0,50}\brelationships?\b|\b(?:grow|expand)\w*\b.{0,60}\b(?:existing|assigned|current)\s+accounts?\b/i;
+  return duties.some(clause => ownership.test(clause) || primaryContact.test(clause))
+    && duties.some(clause => accountWork.test(clause));
+}
+
+/**
  * Alternate commercial titles may reach review on explicit external-network
  * duties. A dealer mention or generic stakeholder language is not enough.
  * This supplies discovery evidence only; motion and qualification gates remain.

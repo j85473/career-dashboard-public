@@ -1,4 +1,4 @@
-/** Extract explicitly stated annual compensation, independently of scoring. */
+/** Extract explicitly stated compensation with its pay period, independently of scoring. */
 const PAY_MARKER = /\b(?:base\s+(?:pay|salary|compensation)(?:\s+range)?|base(?=\s*(?::|=|\bis\b|\$))|(?:annual(?:ized)?\s+)?salary(?:\s+range)?|(?:annual(?:ized)?\s+)?pay\s+range)\b/gi;
 const AMOUNT = String.raw`(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?(?:[ \t]*[kK])?`;
 const AMOUNT_END = String.raw`(?![\dkK]|[,\.]\d)`;
@@ -21,6 +21,10 @@ const NON_ANNUAL_CONTEXT = /\b(?:hourly|monthly|weekly|daily|biweekly|bi-weekly|
 
 /** An explicit statement that the range is annual, which outranks the floor below. */
 const ANNUAL_CONTEXT = /\bper\s+(?:year|annum)\b|\bannual(?:ly|ized)?\b|\/\s*(?:yr|year)\b/i;
+
+// Ferguson publishes one range with this conditional period statement. Keep
+// that qualification intact; the posting does not identify a single period.
+const CONDITIONAL_PERIOD = /\bEstimated\s+Ranges\s+displayed\s+are\s+Monthly\s+for\s+Salaried\s+roles\s+OR\s+Hourly\s+for\s+all\s+other\s+roles\b/i;
 
 /**
  * A posting can name a pay period this extractor does not recognise, or omit
@@ -104,6 +108,29 @@ function payCandidates(text: string): PayCandidate[] {
   return amounts;
 }
 
+function conditionalPeriodCompensation(text: string): string | null {
+  const period = CONDITIONAL_PERIOD.exec(text);
+  if (!period) return null;
+  const preceding = text.slice(Math.max(0, period.index - 800), period.index);
+  const amounts = payCandidates(preceding);
+  // Multiple regional/level bands cannot be collapsed into the final band.
+  if (amounts.length !== 1 || amounts[0].high === undefined) return null;
+  const amount = amounts[0];
+  const marker = [...preceding.matchAll(PAY_MARKER)].findLast(entry => entry.index < amount.index);
+  if (!marker) return null;
+  const before = preceding.slice(0, amount.index);
+  const after = preceding.slice(amount.end);
+  const bridge = preceding.slice(marker.index + marker[0].length, amount.index);
+  if (VARIABLE_PAY.test(bridge) || FOREIGN_CURRENCY.test(before)
+    || /^\s*(?:CAD|AUD|NZD|SGD|HKD|EUR|GBP)\b/i.test(after)) return null;
+  const low = parseAmount(amount.low);
+  const high = parseAmount(amount.high!);
+  if (!Number.isFinite(low) || !Number.isFinite(high) || low <= 0 || high < low || high / low > MAX_RANGE_RATIO) return null;
+  const lowLabel = displayAmount(amount.low, low);
+  const highLabel = displayAmount(amount.high!, high);
+  return lowLabel && highLabel ? `$${lowLabel}–$${highLabel} (monthly for salaried roles; hourly otherwise)` : null;
+}
+
 const TOTAL_MARKER = /\b(?:OTE|TTC|on[-\s]target\s+earnings|total\s+(?:target\s+)?(?:cash(?:\s+pay)?|compensation|earnings))(?:\s+range)?\b/gi;
 function totalLabel(value: string): string {
   return /\b(?:target|OTE|TTC)\b|on[-\s]target/i.test(value) ? 'total target compensation' : 'total compensation';
@@ -122,6 +149,7 @@ function referencedSalaryTotal(text: string): string | undefined {
 export function extractPostedBaseCompensation(description: string | null | undefined): string | null {
   const text = compensationText(description);
   if (!text) return null;
+  if (CONDITIONAL_PERIOD.test(text)) return null;
   const amounts = payCandidates(text);
 
   const markers = [...text.matchAll(PAY_MARKER)];
@@ -190,6 +218,7 @@ export function extractPostedBaseCompensation(description: string | null | undef
 /** Keep base and total bands separately labeled; never infer a base/variable split. */
 export function extractPostedCompensation(description: string | null | undefined): string | null {
   const text = compensationText(description);
+  if (CONDITIONAL_PERIOD.test(text)) return conditionalPeriodCompensation(text);
   const base = extractPostedBaseCompensation(description);
   const allMarkers = [...text.matchAll(TOTAL_MARKER), ...text.matchAll(PAY_MARKER)];
   // "Pay Range" inside "Total Target Cash Pay Range" belongs to that

@@ -8,10 +8,10 @@
     "exportSchemaVersion": "career-dashboard-aim-export-v2",
     "extractorSemanticVersion": "aim-factual-extractor-v7",
     "id": "11111111-1111-4111-8111-111111111111",
-    "manifestHash": "282319b85b8a945f8e9c92d889eba67e8490b36f472bec9dc51491f3207ffe4c",
+    "manifestHash": "65ed00685a8d9c16e4c34c63a13dab3e16e1d2f0e5a00ba595019121c278897e",
     "packetStrategyHash": "0723425ac01276ed4374c49fd36b1d28c69971c0e3b6d30aa62bc46113022636",
     "packetStrategyVersion": "aim-stage2-packetizer-v4",
-    "promptContractHash": "556657521b0276c3d4389d57c0c97a7f700f1d7eb392d92144c0bee7ea2bfb44",
+    "promptContractHash": "3f6df5e435af45bcc4c1c3bb74c0827b90bcd270353fe7cbf874dae112830e5d",
     "promptContractVersion": "aim-stage1-factual-stage2-holistic-v1",
     "protocolVersion": "career-dashboard-scoring-protocol-v2",
     "questionRegistryHash": "9848046cbf0c311df8f2346bcd71001e75c071a3f622ec566585a6d658abd485",
@@ -27,8 +27,8 @@
   },
   "jobs": [
     {
-      "extractionIdentity": "13a5f05382bc77910b31e20851693fdfe2b06c3d90ec2572e7ced3d1fdcd8659",
-      "inputHash": "3d9248a43172b53215c92f29a1e260b1795ef2824b61c1655df66cb1f5e88300",
+      "extractionIdentity": "724f1aac2732ad1320f6fa6ba436f18ccad4db2b9c2dcd4730fc93cb8719c29d",
+      "inputHash": "04fe1cd889cfd42cdd0b6dd3de05ed0ee8d4aeaaf8bad7a82bf0aa5bd792f370",
       "jobId": "00000002-2222-4222-8222-000000000002",
       "ordinal": 0,
       "reuse": null,

@@ -1,5 +1,6 @@
 import { urlMatchesAnyHost } from './urlHost';
 import { browserAtsBoardFromUrl } from './browserAtsBoards';
+import { linkedinPostingId } from './linkedinIdentity';
 
 /** BrassRing stores the requisition in the fragment. A canonical board URL
  * without it selects no opening and must not replace the exact posting URL. */
@@ -16,6 +17,24 @@ type SourceObservation = {
   source?: string | null;
   url?: string | null;
 };
+
+/** The source badge opens the discovered listing, independently of the
+ * employer/application URL saved on the card. LinkedIn IDs may be full URLs
+ * or numeric posting IDs. Never send a LinkedIn badge to an employer site. */
+export function originalSourcePostingUrl(input: SourceObservation & { sourceId?: string | null }): string | null {
+  const source = input.source?.trim().toLowerCase() || '';
+  const sourceId = input.sourceId?.trim();
+  if (source.includes('linkedin')) {
+    if (sourceId && linkedinPostingId(sourceId)) return sourceId;
+    const postingId = sourceId?.match(/^(?:linkedin-posting:)?(\d+)$/)?.[1];
+    if (postingId) return `https://www.linkedin.com/jobs/view/${postingId}`;
+    return input.url && linkedinPostingId(input.url) ? input.url : null;
+  }
+  if (source === 'indeed' && sourceId) {
+    return `https://www.indeed.com/viewjob?jk=${encodeURIComponent(sourceId)}`;
+  }
+  return input.url || null;
+}
 
 type PreferredJdSourceInput = {
   source?: string | null;
