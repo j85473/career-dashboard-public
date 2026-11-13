@@ -105,9 +105,9 @@ test('ATS choices include only represented card labels, with Unknown last', () =
   assert.deepEqual(availableInboxAtsSystems([]), []);
 });
 
-test('source ATS labels and both LinkedIn application methods filter independently before pagination', () => {
+test('unresolved source labels and both LinkedIn application methods filter independently before pagination', () => {
   const rows = [
-    listCandidate('linkedin', { source: 'LinkedIn (Apify)', url: 'https://jobs.lever.co/acme/1', manualAts: 'Lever' }),
+    listCandidate('linkedin', { source: 'LinkedIn (Apify)', url: 'https://www.linkedin.com/jobs/view/123' }),
     listCandidate('easy', { source: 'LinkedIn', linkedinEasyApply: true }),
     listCandidate('jsearch', { source: 'JSearch', manualAts: 'Workday' }),
     listCandidate('himalayas', { source: 'Himalayas' }),
@@ -144,6 +144,20 @@ test('ATS choices cover the full Inbox before filtering and paging, and refresh 
   assert.deepEqual(await inboxAtsFilteredPage('Lever', 'newest', 1, 0), {
     ids: [], total: 0, atsOptions: ['Workday', 'Unknown'],
   });
+});
+
+test('recovered canonical ATS participates in Inbox choices and filters without changing source', () => {
+  const recovered = listCandidate('recovered', {
+    source: 'JSearch', url: 'https://us.remotejobs.dedyn.io/job/123',
+    canonicalUrl: 'https://recruitingbypaycor.com/career/JobIntroduction.action?clientId=acme&id=123',
+  });
+  const rows = [recovered, listCandidate('unresolved', { source: 'JSearch' })];
+  assert.deepEqual(availableInboxAtsSystems(rows), ['JSearch', 'Paycor']);
+  for (const sort of ['combined', 'newest', 'oldest', 'aim_fit', 'experience_fit']) {
+    assert.deepEqual(orderAtsInboxCandidates(rows, 'Paycor', sort).map(row => row.id), ['recovered']);
+    assert.deepEqual(orderAtsInboxCandidates(rows, 'JSearch', sort).map(row => row.id), ['unresolved']);
+  }
+  assert.equal(recovered.source, 'JSearch');
 });
 
 test('Oracle ingestion and employer URLs share one selectable provider label', () => {

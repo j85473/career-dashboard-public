@@ -17,6 +17,7 @@ const NON_EMPLOYER_HOSTS = [
   'jobsyn.org',
   'linkedin.com',
   'rapidapi.com',
+  'remotejobs.dedyn.io',
   'ziprecruiter.com',
 ] as const;
 

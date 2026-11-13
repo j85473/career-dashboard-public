@@ -45,17 +45,58 @@ test('a release proves quiescence and fails closed when deciding whether a migra
   const backup = activation.indexOf('backup-postgres.mjs');
   const migrate = activation.indexOf('prisma migrate deploy');
   const swap = activation.indexOf('mv -Tf "$APP.next" "$APP"');
+  const ownership = activation.indexOf('SCHEDULE=0; WATCHDOG=0;');
   assert.ok(stopAcquisition >= 0 && stopAcquisition < proven, 'workers stop before quiescence is judged');
-  assert.ok(proven < status, 'migration status is read only after background database work is quiet');
-  assert.ok(status < stopWeb, 'migration status is checked before taking the Dashboard offline');
-  assert.ok(stopWeb < backup, 'a required recovery point is taken only after the Dashboard stops writing');
-  assert.ok(backup < migrate, 'a migration is never the first thing to touch the database');
+  assert.ok(status >= 0 && status < backup, 'migration status decides whether an online backup is required');
+  assert.ok(backup < ownership && ownership < stopAcquisition, 'backup completes before capturing service ownership or stopping workers');
+  assert.ok(proven < stopWeb && stopWeb < migrate, 'only migration and activation require the web outage, after workers drain');
   assert.ok(migrate < swap, 'the schema is migrated before the code that expects it serves traffic');
   assert.match(activation, /BACKUP_REQUIRED=1/);
   assert.match(activation, /elif runuser[^\n]+npx prisma migrate status; then\n BACKUP_REQUIRED=0/);
   assert.match(activation, /Migration status is pending or uncertain; requiring a fresh pre-deployment backup/);
   assert.match(activation, /if \(\( BACKUP_REQUIRED == 1 \)\); then\n runuser[^\n]+backup-postgres\.mjs/);
   assert.match(activation, /Database schema already matches this release; skipping the pre-deployment backup/);
+});
+
+test('online recovery-point selection aborts on backup failure before changing live services', () => {
+  const backupBlock = activation.slice(activation.indexOf('BACKUP_REQUIRED=1\n'), activation.indexOf('SCHEDULE=0; WATCHDOG=0;'));
+  for (const scenario of [
+    { status: 0, force: 0, existing: '', fail: 0, dump: false },
+    { status: 1, force: 0, existing: '', fail: 0, dump: true },
+    { status: 2, force: 0, existing: '', fail: 0, dump: true },
+    { status: 0, force: 1, existing: '', fail: 0, dump: true },
+    { status: 1, force: 0, existing: 'predeploy-20261113T205512Z.dump', fail: 0, dump: false },
+    { status: 1, force: 0, existing: '', fail: 1, dump: true },
+  ]) {
+    const result = spawnSync('bash', ['-c', `
+set -Eeuo pipefail
+STAGE=/unused; SHARED=/unused
+web=running; workers=running
+python3() { echo capacity-checked; }
+systemctl() { echo unexpected-service-change; exit 90; }
+runuser() {
+ case "$*" in
+  *'prisma migrate status') return "$MOCK_STATUS" ;;
+  *backup-postgres.mjs*)
+   [[ $web == running && $workers == running ]]
+   echo online-dump
+   return "$MOCK_BACKUP_FAILURE" ;;
+  *) echo unexpected-command; exit 91 ;;
+ esac
+}
+${backupBlock}
+echo ready-to-quiesce
+`], {
+      encoding: 'utf8',
+      env: { ...process.env, FORCE_PREDEPLOY_BACKUP: String(scenario.force), EXISTING_PREDEPLOY_BACKUP: scenario.existing,
+        MOCK_STATUS: String(scenario.status), MOCK_BACKUP_FAILURE: String(scenario.fail) },
+    });
+    assert.equal(result.status, scenario.fail, JSON.stringify(scenario) + result.stderr);
+    assert.equal(result.stdout.includes('online-dump'), scenario.dump);
+    assert.equal(result.stdout.includes('capacity-checked'), scenario.dump);
+    assert.equal(result.stdout.includes('ready-to-quiesce'), scenario.fail === 0);
+    assert.doesNotMatch(result.stdout, /unexpected-service-change|unexpected-command/);
+  }
 });
 
 test('an operator can force a fresh recovery point for a risky code-only release', () => {

@@ -165,6 +165,64 @@ const zoetisAppliedAt = new Date('2026-09-06T16:43:05.037Z');
 const zoetisNow = new Date('2026-09-06T17:00:00.000Z');
 const zoetisUntil = '2026-09-27T16:43:05.037Z';
 
+test('a shared Remote Quest Jobs label never establishes an employer cooldown', async () => {
+  const publisher = 'remote quest jobs';
+  const store = { job: {
+    findMany: async () => [{
+      id: 'publisher-application', company: publisher, employer: publisher, updatedAt: zoetisNow,
+      statusHistory: [{ status: 'applied', createdAt: zoetisAppliedAt }],
+    }],
+    updateMany: async () => { assert.fail('publisher grouping must not write card decisions or scores'); },
+  } } as unknown as Pick<Prisma.TransactionClient, 'job' | 'jobPipelineEvent'>;
+  for (const employer of [null, 'Remote Quest Jobs', 'REMOTE QUEST JOBS, LLC', 'HP']) {
+    const admission = await resolveInboxAdmission({
+      jobId: 'unrelated-job', title: 'Account Manager', location: 'Remote',
+      company: publisher, employer, source: 'JSearch', proposedStatus: 'inbox',
+      now: zoetisNow, store, actor: 'user',
+    });
+    assert.equal(admission.status, 'inbox');
+    assert.equal(admission.authorityJobId, null);
+  }
+  assert.deepEqual(await parkSameCompanyInboxJobs({
+    authorityJobId: 'publisher-application', company: publisher, employer: publisher,
+    decisionAt: zoetisAppliedAt, now: zoetisNow, store,
+  }), []);
+  assert.deepEqual(await reconcileCompanyCooldowns({ now: zoetisNow, store }), []);
+});
+
+test('resolved employers behind the publisher keep separate cooldowns across admission and parking', async () => {
+  const publisher = 'remote quest jobs';
+  const updates: Array<{ where: { id: string }; data: Record<string, unknown> }> = [];
+  const store = { job: {
+    findMany: async (args: { where: { status: unknown } }) => typeof args.where.status === 'object' ? [{
+      id: 'hp-application', company: publisher, employer: 'HP Inc.', updatedAt: zoetisNow,
+      statusHistory: [{ status: 'applied', createdAt: zoetisAppliedAt }],
+    }] : [
+      { id: 'hp-inbox', company: publisher, employer: 'HP' },
+      { id: 'different-employer', company: publisher, employer: 'Zoetis' },
+      { id: 'unresolved-publisher', company: publisher, employer: publisher },
+    ],
+    updateMany: async (args: typeof updates[number]) => { updates.push(args); return { count: 1 }; },
+  } } as unknown as Pick<Prisma.TransactionClient, 'job' | 'jobPipelineEvent'>;
+  for (const employer of ['HP', 'Zoetis', publisher]) {
+    const admission = await resolveInboxAdmission({
+      jobId: 'new-job', title: 'Account Manager', location: 'Remote',
+      company: publisher, employer, source: 'JSearch', proposedStatus: 'inbox',
+      now: zoetisNow, store, actor: 'user',
+    });
+    assert.equal(admission.status, employer === 'HP' ? 'cooldown' : 'inbox');
+  }
+  assert.deepEqual(await parkSameCompanyInboxJobs({
+    authorityJobId: 'hp-application', company: publisher, employer: 'HP Inc.',
+    decisionAt: zoetisAppliedAt, now: zoetisNow, store,
+  }), ['hp-inbox']);
+  assert.deepEqual(await reconcileCompanyCooldowns({ now: zoetisNow, store }), ['hp-inbox']);
+  for (const update of updates) {
+    assert.equal(update.where.id, 'hp-inbox');
+    assert.deepEqual(Object.keys(update.data).sort(), ['cooldownUntil', 'status'], 'saved scores and employer fields are never rewritten');
+  }
+});
+
 test('Zoetis employer aliases share cooldown in either direction without changing posting identity', async () => {
   for (const appliedCompany of zoetisAliases) {
     const store = { job: { findMany: async () => [{

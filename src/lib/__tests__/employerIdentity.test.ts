@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { employerUrlKey } from '../employerUrl';
 
 import {
   buildEmployerRuleIndex,
@@ -85,6 +86,28 @@ test('a persisted shared JobLeads site rule cannot rename unrelated employers', 
   const rules = index([{ matchType: 'employer_url', matchKey: 'host:jobleads.com', standardName: 'Pelican Products' }]);
   assert.equal(rules.manualByUrl.has('host:jobleads.com'), false);
   assert.equal(resolveEmployer({ company: 'Tekmetric', url: 'https://jobleads.com/job/123' }, rules), 'Tekmetric');
+});
+
+test('Remote Quest publication sites provide no employer ownership or persisted site-rule authority', () => {
+  for (const hostname of ['remotejobs.dedyn.io', 'us.remotejobs.dedyn.io']) {
+    assert.equal(employerUrlKey(`https://${hostname}/job/account-manager`), null);
+    const rules = index([
+      { matchType: 'employer_url', matchKey: `host:${hostname}`, standardName: 'HP' },
+      { matchType: 'employer_url', matchKey: `host:${hostname}`, standardName: 'Zoetis', origin: 'learned' },
+    ]);
+    assert.equal(rules.manualByUrl.size, 0);
+    assert.equal(rules.learnedByUrl.size, 0);
+    assert.equal(resolveEmployer({ company: 'Tekmetric', url: `https://${hostname}/job/123` }, rules), 'Tekmetric');
+  }
+  assert.equal(employerUrlKey('https://hp.wd5.myworkdayjobs.com/careers/job/123'), 'workday:hp.wd5.myworkdayjobs.com');
+});
+
+test('excluding shared publishers for cooldown does not change general identity or real employer keys', () => {
+  for (const employer of ['remote quest jobs', 'Remote-Quest Jobs', 'Remote Quest Jobs, LLC']) {
+    assert.equal(employerIdentityKey({ employer }, { excludeSharedPublishers: true }), '');
+    assert.equal(employerIdentityKey({ employer }), 'remotequestjobs');
+  }
+  assert.equal(employerIdentityKey({ company: 'Remote Quest Jobs', employer: 'HP, Inc.' }, { excludeSharedPublishers: true }), 'hp');
 });
 
 test('persisted placeholder rules cannot assign unrelated imports to Apple', () => {

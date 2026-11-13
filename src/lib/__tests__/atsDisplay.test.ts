@@ -5,18 +5,39 @@ import { identifyAts } from '../atsUtils';
 import { parseLinkedInJob } from '../linkedinSearch';
 import { inboxJobFilter } from '../jobListQuery';
 
-test('requested source labels take precedence over recovered employer URLs and stored ATS metadata', () => {
+test('recovered employer ATS replaces the feed label while preserving source and manual corrections', () => {
   const before = { url: 'https://jobs.lever.co/acme/123', manualAts: 'Workday' };
-  for (const [source, expected] of [['LinkedIn', 'LinkedIn'], ['LinkedIn (Apify) -> ATS', 'LinkedIn'],
-    ['JSearch', 'JSearch'], ['Himalayas', 'Himalayas'], ['SerpApi', 'SerpAPI']]) {
+  for (const source of ['LinkedIn', 'LinkedIn (Apify) -> ATS', 'JSearch', 'Himalayas', 'SerpApi']) {
     const job = { ...before, source };
-    assert.equal(displayAts(job), expected);
+    assert.equal(displayAts(job), 'Workday');
+    assert.equal(displayAts({ ...job, manualAts: null }), 'Lever');
+    assert.equal(job.source, source);
     assert.equal(identifyAts(job), 'Workday', 'retrieval ATS remains independent of presentation');
-    assert.equal(inboxJobFilter(`ats:${expected}`, 'inbox'), `ats:${expected}`);
+    assert.equal(inboxJobFilter('ats:Workday', 'inbox'), 'ats:Workday');
     assert.deepEqual(before, { url: 'https://jobs.lever.co/acme/123', manualAts: 'Workday' });
   }
   assert.equal(displayAts({ source: 'ATS-workday' }), 'Workday');
   assert.equal(displayAts({ source: 'Indeed', url: before.url }), 'Lever');
+});
+
+test('canonical Paycor link controls the label and dropdown on a JSearch card', () => {
+  const job = {
+    source: 'JSearch', url: 'https://us.remotejobs.dedyn.io/job/123',
+    canonicalUrl: 'https://recruitingbypaycor.com/career/JobIntroduction.action?clientId=acme&id=123',
+  };
+  assert.equal(displayAts(job), 'Paycor');
+  assert.ok(atsChoicesForJob(job).includes('Paycor'));
+  assert.ok(atsChoicesForJob(job).includes('Workday'));
+  assert.deepEqual(atsSelectionUpdate(job, 'Workday'), { manualAts: 'Workday' });
+  assert.equal(job.source, 'JSearch');
+  assert.equal(displayAts({ ...job, canonicalUrl: null }), 'JSearch');
+});
+
+test('external ATS on a LinkedIn arrival uses ATS corrections instead of Easy Apply metadata', () => {
+  const job = { source: 'LinkedIn', linkedinEasyApply: false, canonicalUrl: 'https://jobs.lever.co/acme/123' };
+  assert.equal(displayAts(job), 'Lever');
+  assert.ok(atsChoicesForJob(job).includes('Lever'));
+  assert.deepEqual(atsSelectionUpdate(job, 'Workday'), { manualAts: 'Workday' });
 });
 
 test('only affirmative LinkedIn evidence adds Easy Apply; false and unknown remain LinkedIn', () => {

@@ -1,13 +1,21 @@
 import { ATS_OPTIONS, identifyAts } from './atsUtils';
 
-type DisplayJob = Parameters<typeof identifyAts>[0] & { linkedinEasyApply?: boolean | null };
+type DisplayJob = Parameters<typeof identifyAts>[0] & {
+  canonicalUrl?: string | null;
+  linkedinEasyApply?: boolean | null;
+};
 
 export const DISPLAY_ATS_OPTIONS = [...ATS_OPTIONS, 'LinkedIn', 'LinkedIn Easy Apply', 'JSearch', 'Himalayas', 'SerpAPI']
   .sort((a, b) => a === 'Unknown' ? 1 : b === 'Unknown' ? -1 : a.localeCompare(b));
 
-/** These feeds are the ATS label Joe wants to see even after an employer URL
- * is recovered. Keep retrieval/scoring ATS detection independent of display. */
+function postingAts(job: DisplayJob): string {
+  return identifyAts({ ...job, url: job.canonicalUrl?.trim() || job.url });
+}
+
+/** Feed labels are a fallback until the application link identifies an ATS.
+ * The saved discovery source remains separate from the displayed ATS. */
 export function sourceAtsLabel(job: DisplayJob): string | null {
+  if ((job.canonicalUrl?.trim() || job.url) && postingAts(job) !== 'Unknown') return null;
   const source = job.source?.trim() || '';
   if (/^linkedin(?:\b|$)/i.test(source)) return job.linkedinEasyApply === true ? 'LinkedIn Easy Apply' : 'LinkedIn';
   if (/^jsearch(?:\b|$)/i.test(source)) return 'JSearch';
@@ -17,7 +25,7 @@ export function sourceAtsLabel(job: DisplayJob): string | null {
 }
 
 export function displayAts(job: DisplayJob): string {
-  return sourceAtsLabel(job) || identifyAts(job);
+  return sourceAtsLabel(job) || postingAts(job);
 }
 
 export function atsChoicesForJob(job: DisplayJob): readonly string[] {

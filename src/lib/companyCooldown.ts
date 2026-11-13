@@ -18,10 +18,10 @@ import { isManualImportSource, nonManualImportSourceWhere } from './manualImport
 export const COMPANY_COOLDOWN_DAYS = 21;
 const ACTIVE_APPLICATION_STATUSES = ['applied', 'interviewing'] as const;
 
-// One employer, however each source spells it: the canonical employer from
-// src/lib/employerIdentity.ts, or the raw company for a row not yet resolved.
+// Match real employers, using the canonical name or the unresolved raw company.
+// Shared publishers cannot establish a cooldown for unrelated employers.
 function cooldownCompanyKey(job: { employer?: string | null; company?: string | null }): string {
-  return employerIdentityKey(job);
+  return employerIdentityKey(job, { excludeSharedPublishers: true });
 }
 
 type CompanyCooldownStore = Pick<Prisma.TransactionClient, 'job'>;

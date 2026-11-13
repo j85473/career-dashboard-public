@@ -58,6 +58,9 @@ function preflight(alreadyBuilt: boolean, auditResult = 1, directoryPrefix = 'm7
           printf '%s\\n' "$*" >> "$M70_TEST_ROOT/build-calls"
           return 0
         fi
+        # This fixture exercises configuration loading, with no database.
+        # Online backup selection now precedes the audit precheck.
+        if [[ "$*" == *'npx prisma migrate status' ]]; then return 0; fi
         "$@"
       }
       ${prefix}

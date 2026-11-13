@@ -84,6 +84,28 @@ if [[ ! -f /etc/career-dashboard/production-enabled ]]; then
 fi
 OLD=$(readlink -f "$APP")
 [[ $OLD == /opt/career-dashboard-releases/* || $OLD == /opt/career-dashboard.rehearsal-* ]] || { echo 'Unexpected prior release'; exit 1; }
+BACKUP_REQUIRED=1
+if (( FORCE_PREDEPLOY_BACKUP == 1 )); then
+ echo 'A fresh pre-deployment database backup was explicitly requested.'
+elif [[ -n $EXISTING_PREDEPLOY_BACKUP ]]; then
+ BACKUP_REQUIRED=0
+ echo "Reusing operator-selected backup $EXISTING_PREDEPLOY_BACKUP; no new dump will be created."
+elif runuser -u career-dashboard -- node scripts/with-env.mjs npx prisma migrate status; then
+ BACKUP_REQUIRED=0
+ echo 'Database schema already matches this release; skipping the pre-deployment backup.'
+else
+ echo 'Migration status is pending or uncertain; requiring a fresh pre-deployment backup.'
+fi
+if (( BACKUP_REQUIRED == 1 )); then
+ # Leave one full nightly reserve after creating the migration snapshot.
+ python3 "$STAGE/scripts/deployment/m70-storage.py" check-capacity --extra-backup
+fi
+# pg_dump takes a consistent online snapshot; keep the Dashboard and workers
+# running throughout the dump. Abort on failure before changing service state.
+if (( BACKUP_REQUIRED == 1 )); then
+ runuser -u career-dashboard -- node scripts/with-env.mjs node scripts/deployment/backup-postgres.mjs "$SHARED/backups/predeploy-$(date -u +%Y%m%dT%H%M%SZ).dump"
+fi
+# Capture operator service ownership after the potentially long online backup.
 SCHEDULE=0; WATCHDOG=0; ACQUISITION=0; PRUNING=0; DISCOVERY=0; DISCOVERY_AUDIT=0; CANONICAL_RESOLVER=0; GUSTO=0; STATS_WARM=0; ROTATION_BALANCE=0; FIRST_COLLECTIONS=0; CANONICAL_API=0; CANONICAL_API_NEW=0; PUBLIC_BOARDS=0; PUBLIC_BOARDS_NEW=0; PUBLIC_HTTP=0; PUBLIC_HTTP_NEW=0; WEB_DISCOVERY=0; CRAWL_ARCHIVE=0
 systemctl is-active --quiet career-dashboard-crawl-archive.timer && CRAWL_ARCHIVE=1 || true
 [[ -f /etc/systemd/system/career-dashboard-public-boards.timer ]] || PUBLIC_BOARDS_NEW=1
@@ -252,28 +274,8 @@ for ((i=0;i<120;i++)); do
 done
 (( QUIET == 1 ))
 cd "$STAGE"
-BACKUP_REQUIRED=1
-if (( FORCE_PREDEPLOY_BACKUP == 1 )); then
- echo 'A fresh pre-deployment database backup was explicitly requested.'
-elif [[ -n $EXISTING_PREDEPLOY_BACKUP ]]; then
- BACKUP_REQUIRED=0
- echo "Reusing operator-selected backup $EXISTING_PREDEPLOY_BACKUP; no new dump will be created."
-elif runuser -u career-dashboard -- node scripts/with-env.mjs npx prisma migrate status; then
- BACKUP_REQUIRED=0
- echo 'Database schema already matches this release; skipping the pre-deployment backup.'
-else
- echo 'Migration status is pending or uncertain; requiring a fresh pre-deployment backup.'
-fi
-if (( BACKUP_REQUIRED == 1 )); then
- # Leave one full nightly reserve after creating the migration snapshot.
- python3 "$STAGE/scripts/deployment/m70-storage.py" check-capacity --extra-backup
-fi
 systemctl stop career-dashboard.service
-# A fresh or explicitly selected recovery point precedes schema migration.
 # Failed migrations never restore old database data automatically.
-if (( BACKUP_REQUIRED == 1 )); then
- runuser -u career-dashboard -- node scripts/with-env.mjs node scripts/deployment/backup-postgres.mjs "$SHARED/backups/predeploy-$(date -u +%Y%m%dT%H%M%SZ).dump"
-fi
 runuser -u career-dashboard -- node scripts/with-env.mjs npx prisma migrate deploy
 cp /etc/career-dashboard/acquisition-release.env /etc/career-dashboard/acquisition-release.env.previous
 printf 'ATS_WORKER_RELEASE_ID=%s\n' "$REV" > /etc/career-dashboard/acquisition-release.env

@@ -288,8 +288,15 @@ export function resolveEmployer(subject: EmployerSubject, index: EmployerRuleInd
  * The key every "same employer?" question compares. Reads the canonical
  * employer, and the raw company only for rows the resolver has not reached.
  */
-export function employerIdentityKey(job: { employer?: string | null; company?: string | null; source?: string | null }): string {
-  return employerAliasKey(job.employer || presentableEmployerName(job.company, job.source));
+export function employerIdentityKey(
+  job: { employer?: string | null; company?: string | null; source?: string | null },
+  options: { excludeSharedPublishers?: boolean } = {},
+): string {
+  const key = employerAliasKey(job.employer || presentableEmployerName(job.company, job.source));
+  // A publisher label cannot establish an employer-wide application cooldown.
+  // Keep other identity consumers unchanged; a resolved real employer still wins.
+  if (options.excludeSharedPublishers && key === 'remotequestjobs') return '';
+  return key;
 }
 
 export function sameEmployer(
