@@ -12,6 +12,8 @@ import { parseUmantisPostingHtml, umantisPostingIdentity, UmantisPostingUnavaila
 import { bambooHrPageMetadata } from './bambooHrPosting';
 import { talentsConnectPage } from './talentsConnectPosting';
 import { isTalemetryPostingUrl, talemetryPublishedEmployer } from './talemetryEmployer';
+import { isAppOneHost } from './apponePostingIdentity';
+import { AppOnePostingUnavailableError, parseAppOnePostingHtml } from './apponePosting';
 
 type PageTitleMetadata = Pick<PostingMetadata, 'title' | 'company'>;
 
@@ -22,6 +24,13 @@ export async function readManualImportPage(
 ): Promise<{ title: string; company: string; location?: string; description: string }> {
   const domain = new URL(input.url).hostname.replace(/^www\./i, '');
   const $ = cheerio.load(input.html);
+  if (isAppOneHost(new URL(input.url).hostname)) {
+    const appOne = parseAppOnePostingHtml(input.html, input.url);
+    if (!appOne) throw new AppOnePostingUnavailableError();
+    return { title: postingMetadataValue(input.title) || appOne.title!,
+      company: manualImportCompanyValue(input.company, input.url) || appOne.company!,
+      location: appOne.location, description: appOne.text };
+  }
   const posting = extractJsonLdJobPosting(input.html, input.url);
   if (!posting && looksLikeCareersListingPage(input.html)) throw new CareersListingPageError();
   const brandedOffer = talentsConnectPage(input.html, input.url);

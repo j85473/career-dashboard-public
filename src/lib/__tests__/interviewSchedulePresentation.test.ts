@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { load } from 'cheerio';
 import { InterviewSchedule } from '../../components/InterviewSchedule';
 
 function renderNotes(label: string) {
@@ -14,7 +15,13 @@ function renderNotes(label: string) {
 test('saved interview notes render meeting links in new tabs and preserve surrounding text', () => {
   const html = renderNotes('Hiring manager\nJoin https://zoom.us/j/123?pwd=abc&name=Joe or https://meet.google.com/abc-defg-hij');
   assert.match(html, /Hiring manager\nJoin /);
-  assert.match(html, /href="https:\/\/zoom.us\/j\/123\?pwd=abc&amp;name=Joe" target="_blank" rel="noopener noreferrer"/);
+  const $ = load(html);
+  const zoom = $('a').filter((_, node) => $(node).attr('href') === 'https://zoom.us/j/123?pwd=abc&name=Joe');
+  assert.equal(zoom.attr('target'), '_blank');
+  assert.equal(zoom.attr('rel'), 'noopener noreferrer');
+  assert.equal(zoom.text(), 'Join Zoom');
+  assert.equal(zoom.attr('title'), zoom.attr('href'));
+  assert.equal($('details').attr('open'), undefined, 'Full notes are available behind a collapsed summary');
   assert.match(html, /href="https:\/\/meet.google.com\/abc-defg-hij"/);
   assert.equal((html.match(/<a /g) || []).length, 2);
 });
@@ -30,5 +37,5 @@ test('notes stay escaped and non-web schemes are not made clickable', () => {
   const html = renderNotes('<script>alert(1)</script> javascript:alert(1) https://');
   assert.match(html, /&lt;script&gt;/);
   assert.doesNotMatch(html, /<script|<a /);
-  assert.match(renderNotes(''), />Interview<\/span>/);
+  assert.equal(load(renderNotes(''))('.interview-round-label').text(), 'Interview');
 });

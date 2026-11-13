@@ -1,4 +1,6 @@
 import { planPostingMetadataRepair } from '@/lib/postingMetadataRepair';
+import { appOnePostingIdentity } from '@/lib/apponePostingIdentity';
+import { AppOnePostingUnavailableError } from '@/lib/apponePosting';
 import { adpPostingIdentity, matchesAdpPosting } from '@/lib/adpPostingIdentity';
 import { scrapeAtsApi } from '@/lib/atsApi';
 import { coreAtsHostedProvider, coreAtsPostingPageUrl } from '@/lib/coreAtsPostingUrl';
@@ -80,6 +82,17 @@ async function findSurvivingCardForLink(url: string, normalizedUrl: string): Pro
       { canonicalUrl: { contains: indeedKey, mode: 'insensitive' } },
     ] }, orderBy: { updatedAt: 'desc' } });
     const same = candidates.find(job => [job.url, job.canonicalUrl].some(value => indeedPostingKey(value) === indeedKey));
+    if (same) return followConsolidation(same);
+  }
+  // Older AppOne cards have no postingIdentity and may retain an application
+  // or tracking alias. Match the exact R_ID before creating another card.
+  const appOne = appOnePostingIdentity(url);
+  if (appOne) {
+    const candidates = await prisma.job.findMany({ where: { OR: [
+      { url: { contains: `R_ID=${appOne.id}`, mode: 'insensitive' } },
+      { canonicalUrl: { contains: `R_ID=${appOne.id}`, mode: 'insensitive' } },
+    ] }, orderBy: { updatedAt: 'desc' } });
+    const same = candidates.find(job => [job.url, job.canonicalUrl].some(value => value && appOnePostingIdentity(value)?.id === appOne.id));
     if (same) return followConsolidation(same);
   }
   // ADP appends jobId on navigation. The selected (last) ID, tenant and
@@ -297,7 +310,7 @@ export async function POST(req: Request) {
     // 2. Resolve Canonical URL & Generate Fingerprint
     const canonicalUrl = normalizeUrl(url);
     const fingerprint = generateV4Fingerprint(title, company, location || 'unknown');
-    const scopedPosting = Boolean(indeed || readyPosting || adpPostingIdentity(url));
+    const scopedPosting = Boolean(indeed || readyPosting || adpPostingIdentity(url) || appOnePostingIdentity(url));
     
     // 3. Find existing or Create the Job
     let newJob = await prisma.job.findFirst({ 
@@ -408,7 +421,7 @@ export async function POST(req: Request) {
     });
 
   } catch (error: unknown) {
-    const invalidInput = error instanceof CareersListingPageError || error instanceof UmantisPostingUnavailableError
+    const invalidInput = error instanceof CareersListingPageError || error instanceof UmantisPostingUnavailableError || error instanceof AppOnePostingUnavailableError
       || (error instanceof Error && /^(?:The UKG link|Invalid UKG)/.test(error.message));
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: invalidInput ? 422 : 500 });
   }

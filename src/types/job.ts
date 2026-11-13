@@ -57,6 +57,7 @@ export interface JobAttachmentItem {
 export interface JobInterviewItem {
   id: string;
   scheduledAt: string;
+  endsAt?: string | null;
   label: string;
 }
 

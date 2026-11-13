@@ -53,3 +53,17 @@ test('missing jobs, foreign interview IDs, and malformed dates cannot mutate a d
   assert.equal((await api.DELETE(request('DELETE', { id: 'another-jobs-round' }), context)).status, 404);
   assert.deepEqual(calls.pop(), { method: 'delete', args: { where: { id: 'another-jobs-round', jobId: 'job-a' } } });
 });
+
+test('schedule API stores end times on interview rows and rejects a reversed slot without writes', async () => {
+  const api = await route;
+  changeCount = 1;
+  const scheduledAt = '2026-11-13T09:30:00-06:00';
+  const endsAt = '2026-11-13T10:00:00-06:00';
+  const response = await api.POST(request('POST', { scheduledAt, endsAt, label: 'Phone screen' }), context);
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls.pop(), { method: 'create', args: { data: {
+    jobId: 'job-a', scheduledAt: new Date(scheduledAt), endsAt: new Date(endsAt), label: 'Phone screen',
+  } } });
+  assert.equal((await api.PATCH(request('PATCH', { id: 'round-a', scheduledAt, endsAt: scheduledAt }), context)).status, 400);
+  assert.equal(calls.length, 0);
+});

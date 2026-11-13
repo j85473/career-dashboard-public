@@ -3,6 +3,7 @@
 import React, { useCallback, useState, useEffect, useMemo, useRef } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import JobCard from './JobCard';
+import { InterviewJobSections } from './InterviewJobSections';
 import { compareInterviewJobs } from '@/lib/jobInterviewSchedule';
 import { LinkedInTab } from './LinkedInTab';
 import { ExpandOverlay } from './ExpandOverlay';
@@ -637,7 +638,7 @@ export default function Dashboard() {
     });
     setSelectedJob((prev) => (prev && prev.id === id ? { ...prev, ...updates } : prev));
     jobCacheRef.current.clear();
-    if (!companyFilter && dataStatus === 'interviewing' && currentSort === 'interview_time' && updates.interviews !== undefined) {
+    if (!companyFilter && dataStatus === 'interviewing' && updates.interviews !== undefined) {
       void fetchJobs('interviewing', { force: true, preserveLoaded: true });
     }
     if (companyFilter && (updates.status !== undefined || updates.tailoringStaged !== undefined || updates.company !== undefined)) {
@@ -1164,7 +1165,10 @@ export default function Dashboard() {
                 <div className="empty-state">
                   No {currentFilter === 'all' ? '' : `${currentFilter.slice('ats:'.length)} `}jobs found in Inbox.
                 </div>
-              ) : renderJobGrid(jobs, currentSort)}
+              ) : dataStatus === 'interviewing'
+                ? <InterviewJobSections jobs={jobs} sort={currentSort} renderJobs={section => renderJobGrid(section, currentSort)}
+                  onTimeBoundary={pagination.hasMore ? () => { void fetchJobs(dataStatus, { force: true, sort: currentSort, preserveLoaded: true }); } : undefined} />
+                : renderJobGrid(jobs, currentSort)}
               {pagination.hasMore && (
                 <div className="load-more-wrap">
                   <button

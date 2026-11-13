@@ -1170,7 +1170,7 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
             onJobUpdate?.(id, updates);
           }} />
           {(job.status === 'interviewing' || Boolean(job.interviews?.length)) && (
-            <InterviewSchedule job={job} onJobUpdate={(id, updates) => {
+            <InterviewSchedule job={job} compact={false} onJobUpdate={(id, updates) => {
               setJob(current => ({ ...current, ...updates }));
               onJobUpdate?.(id, updates);
             }} />

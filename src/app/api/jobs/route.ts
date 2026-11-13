@@ -103,8 +103,8 @@ async function getJobs(request: Request) {
     const statusEntryPage = usesStatusEntryTimeSort(status, sort)
       ? await statusEntryOrderedPage(where, status, sort === 'oldest' ? 'asc' : 'desc', limit, offset)
       : null;
-    const interviewPage = status === 'interviewing' && sort === 'interview_time'
-      ? await interviewOrderedPage(where, limit, offset)
+    const interviewPage = status === 'interviewing'
+      ? await interviewOrderedPage(where, limit, offset, prisma, Date.now(), sort)
       : null;
     const historyOrderedPage = failurePage || manualScoringPage || statusEntryPage || interviewPage;
     const [pageJobs, total] = atsPage

@@ -101,5 +101,7 @@ Edit `.env` with local credentials before starting. The `cp -n` command leaves a
 | Change a pipeline or scoring rule safely | [Pipeline change guardrails](docs/CAREER_DASHBOARD_PIPELINE_CHANGE_GUARDRAILS.md) |
 | Check resume and evidence authority | [Canonical resume](docs/CANONICAL_RESUME.md) and [Core Evidence](docs/PRIVATE_EVIDENCE.md) |
 | Understand saved job documents | [Job documents](docs/JOB_DOCUMENTS.md) |
+| Import or refresh an AppOne posting | [AppOne posting reader](docs/APPONE_IMPORT.md) |
+| Manage interview dates and page sections | [Interview schedule](docs/INTERVIEW_SCHEDULE.md) |
 
 Historical investigations and implementation plans remain in `docs/` for context; the links above are the starting points for current behavior.

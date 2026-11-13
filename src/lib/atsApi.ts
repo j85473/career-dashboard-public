@@ -41,6 +41,8 @@ import { ashbyEmbed } from './ashbyEmbed';
 import { jobvitePostingIdentity } from './jobviteLocation';
 import { isIndeedHost } from './indeedPostingUrl';
 import { fetchIndeedPosting } from './indeedPosting';
+import { isAppOneHost } from './apponePostingIdentity';
+import { fetchAppOnePosting } from './apponePosting';
 
 function isDomain(hostname: string, domain: string) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
@@ -525,6 +527,7 @@ export async function scrapeAtsApi(url: string): Promise<AtsScrapeResult | null>
     const host = parsed.hostname.toLowerCase();
 
     if (isIndeedHost(host)) return fetchIndeedPosting(url);
+    if (isAppOneHost(host)) return fetchAppOnePosting(url);
 
     if (jobvitePostingIdentity(url)) {
       // nl=1 keeps this exact posting on Jobvite instead of redirecting to
@@ -854,6 +857,12 @@ export function jsonLdPageMetadata(posting: JsonLdJobPosting, html: string): Pos
 
 /** Metadata remains usable even when a page delegates its full description to JavaScript. */
 export async function scrapeJobPostingMetadata(url: string): Promise<PostingMetadata | null> {
+  let parsedUrl: URL;
+  try { parsedUrl = new URL(url); } catch { return null; }
+  if (isAppOneHost(parsedUrl.hostname)) {
+    const posting = await fetchAppOnePosting(url);
+    return posting.postingVerificationError ? null : posting;
+  }
   const response = await safeExternalFetch(url, {
     headers: { 'User-Agent': JSON_LD_FETCH_USER_AGENT },
     signal: AbortSignal.timeout(15000),

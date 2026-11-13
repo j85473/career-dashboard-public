@@ -17,6 +17,7 @@ import { CompanyLogo } from '@/components/CompanyLogo';
 import { InterviewSchedule } from '@/components/InterviewSchedule';
 import { JobDocuments } from '@/components/JobDocuments';
 import { interviewSortKey } from '@/lib/jobInterviewSchedule';
+import { useInterviewClock } from '@/lib/useInterviewClock';
 import { jobLocationPresentation } from '@/lib/jobLocationPresentation';
 
 
@@ -30,12 +31,7 @@ interface JobCardProps {
   showStatusBadge?: boolean;
 }
 function JobCard({ job, onSelect, primaryScore = 'aim', onJobUpdate, showStatusBadge = false }: JobCardProps) {
-  const [now, setNow] = React.useState(Date.now);
-  React.useEffect(() => {
-    if (job.status !== 'interviewing' || !job.interviews?.length) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
-    return () => window.clearInterval(timer);
-  }, [job.status, job.interviews]);
+  const now = useInterviewClock(job.status === 'interviewing' && Boolean(job.interviews?.length));
   const isPromptHealthPriority = isPromptHealthPriorityRole(job);
   const isAcostaPriority = isAcostaChannelSalesPriorityRole(job);
   const hasCurrentScoreAuthority = job.scoreAuthorityState === 'current';

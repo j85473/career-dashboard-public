@@ -3,6 +3,7 @@ import { isGenericManualImportCompany, isGenericManualImportTitle } from './manu
 import { locationTriageVerdict } from './localTriage';
 import { hasIncompleteLocations, separateCommaLocations } from './postingLocation';
 import { isGeneralRemoteOption, hasExplicitUnitedStatesReference } from './jobLocationPolicy';
+import { appOnePostingIdentity } from './apponePostingIdentity';
 
 export const POSTING_METADATA_REPAIR_VERSION = 'posting-metadata-location-v1';
 export const automaticGeographyReason = (reason: string | null) => /^(?:Locally triaged out: Location outside the searched geographies|International location rejected|Outstate MN location rejected|Location rejected\s*\()/i.test(reason || '');
@@ -25,7 +26,10 @@ export function planPostingMetadataRepair(job: MetadataRepairJob, evidence: Meta
   guard: { hasScores: boolean; hasHumanDecision: boolean; reviewedRestore?: boolean }) {
   if (!evidence.identityVerified || !evidence.location.trim()) return null;
   const sameTitle = (a: string, b: string) => a.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim() === b.toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-  if (evidence.title && !sameTitle(evidence.title,job.title) && !isGenericManualImportTitle(job.title)) return null;
+  const wrappedAppOneTitle = Boolean(appOnePostingIdentity(job.url || '') && evidence.title
+    && sameTitle(job.title, `Job Information: ${evidence.title} Job`));
+  const unresolvedTitle = isGenericManualImportTitle(job.title) || wrappedAppOneTitle;
+  if (evidence.title && !sameTitle(evidence.title,job.title) && !unresolvedTitle) return null;
   const location = canonicalRepairedLocation(evidence.location);
   // A country-only page fragment must not erase a known city/work-base. It
   // can be an additional option, but alone it is not proof of expanded scope.
@@ -33,7 +37,7 @@ export function planPostingMetadataRepair(job: MetadataRepairJob, evidence: Meta
     && job.location && !/^(?:unknown(?: location)?|n\/a|not specified|\d+ locations?)$/i.test(job.location)
     && !/^(?:US|USA|United States(?: of America)?|Canada|MN|Minnesota)$/i.test(job.location)) return null;
   const metadata: { title?: string; company?: string; employer?: string; location?: string } = {};
-  if (evidence.title && isGenericManualImportTitle(job.title) && evidence.title !== job.title) metadata.title = evidence.title;
+  if (evidence.title && unresolvedTitle && evidence.title !== job.title) metadata.title = evidence.title;
   if (evidence.company && isGenericManualImportCompany(job.company,job.url) && evidence.company !== job.company) {
     metadata.company = evidence.company; metadata.employer = evidence.company;
   }

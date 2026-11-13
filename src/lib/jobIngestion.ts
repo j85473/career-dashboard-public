@@ -7,6 +7,7 @@ import { acostaPriorityInitialLifecycle, isAcostaChannelSalesPriorityRole } from
 import { atsRotationCohortWhere } from './atsRotationCohort';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import { adpPostingIdentity, adpPostingsConflict, isAdpPostingHost, matchesAdpPosting } from './adpPostingIdentity';
+import { appOnePostingIdentity, isAppOneHost } from './apponePostingIdentity';
 import { providerPostingLocation } from './postingLocation';
 import { recoverMissingSourceLocation } from './sourcePostingLocation';
 import { recoverJobviteCompensation } from './jobviteCompensation';
@@ -1002,6 +1003,11 @@ function requisitionIdentity(value: string | null | undefined): { host: string; 
     const url = new URL(value);
     const host = url.hostname.toLowerCase();
     const pathSegments = url.pathname.split('/').filter(Boolean);
+
+    if (isAppOneHost(host)) {
+      const appOne = appOnePostingIdentity(value);
+      return appOne ? { host: 'appone.com', key: appOne.id } : null;
+    }
 
     if (isPaylocityPostingHost(value)) {
       const id = paylocityPostingId(value);

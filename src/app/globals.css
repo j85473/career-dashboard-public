@@ -1535,19 +1535,38 @@ body {
 @media (max-width: 600px) { .scoring-log .ats-queue-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* Interview rounds stay with their job card, including after a status change. */
-.interview-schedule { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: rgba(96, 165, 250, 0.06); min-width: 0; }
+.interview-sections { display: grid; gap: 28px; }
+.interview-section-divider { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.interview-section-divider::after { content: ''; height: 1px; flex: 1; background: var(--border); }
+.interview-section-divider h2 { margin: 0; font-size: 14px; font-weight: 650; color: var(--text-muted); }
+.interview-job-section-upcoming .interview-section-divider h2 { color: #60a5fa; }
+.interview-section-divider > span { border: 1px solid var(--border); border-radius: 12px; padding: 2px 7px; font-size: 11px; color: var(--text-muted); }
+.interview-section-empty { font-size: 13px; color: var(--text-muted); margin: 0; }
+.interview-job-section .job-grid { align-items: start; }
+.interview-schedule { margin: 4px 0; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: rgba(96, 165, 250, 0.06); min-width: 0; }
 .interview-schedule-heading { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650; color: #60a5fa; }
+.interview-in-progress { margin-left: auto; color: #4ade80; font-size: 10px; font-weight: 600; }
+.interview-primary { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.interview-time-range { min-width: 0; font-size: 11px; line-height: 1.5; }
+.interview-time-range time { font-weight: 600; color: var(--text); }
+.interview-time-range > span { display: block; color: var(--text-muted); }
+.interview-estimate { font-size: 10px; }
+.interview-note-preview { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 11px; line-height: 1.45; margin: 7px 0; color: var(--text-muted); }
+.interview-details > summary { cursor: pointer; width: fit-content; color: #60a5fa; font-size: 11px; }
+.interview-details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.interview-details[open] > summary { margin-bottom: 8px; }
 .interview-schedule-empty, .interview-timezone { color: var(--text-muted); font-size: 11px; margin: 8px 0; }
-.interview-schedule-round { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; }
+.interview-schedule-round { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .interview-schedule-round > div { min-width: 0; }
-.interview-round-label { display: block; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; white-space: pre-wrap; }
+.interview-round-label { display: block; font-size: 11px; line-height: 1.5; margin-top: 6px; overflow-wrap: anywhere; white-space: pre-wrap; }
 .interview-round-label a { color: #60a5fa; text-decoration: underline; text-underline-offset: 2px; }
 .interview-round-label a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.interview-schedule time { display: block; color: var(--text-muted); font-size: 11px; margin-top: 3px; }
+.interview-schedule time { display: block; font-size: 11px; }
 .interview-schedule button { border: 1px solid var(--border); background: var(--surface); color: var(--text); padding: 5px 8px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 11px; }
 .interview-schedule button:disabled { opacity: 0.5; cursor: wait; }
 .interview-schedule .interview-add { margin-top: 10px; color: #60a5fa; }
 .interview-schedule-form { display: grid; gap: 8px; margin-top: 10px; }
+.interview-form-times { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 8px; min-width: 0; }
 .interview-schedule-form label { display: grid; gap: 5px; font-size: 11px; color: var(--text-muted); }
 .interview-schedule-form input, .interview-schedule-form textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: 7px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--surface); font: inherit; color-scheme: dark; }
 .interview-schedule-form textarea { resize: vertical; }
