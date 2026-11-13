@@ -62,19 +62,16 @@ test('the simplified Stats surface keeps results first and only three diagnostic
 });
 
 test('latest stale score suppresses the job instead of resurrecting an older score', () => {
-  // The ranking CTEs moved into the shared scope helper so every calibration
-  // metric draws from one definition. Staleness must be applied AFTER ranking:
-  // filtering it inside the window function would promote a superseded score.
-  const rankingCtes = scopeSource.match(/ranked_(?:aim|experience) AS \([\s\S]*?\)\s*,/g) || [];
-  assert.equal(rankingCtes.length, 2);
-  for (const cte of rankingCtes) {
-    assert.doesNotMatch(cte, /"staleAt" IS NULL/);
-    assert.match(cte, /ROW_NUMBER\(\) OVER/);
-  }
-  for (const scoped of ['current_aim', 'current_experience']) {
-    const block = scopeSource.slice(scopeSource.indexOf(`${scoped} AS (`));
-    assert.match(block, /rank = 1[\s\S]{0,200}"staleAt" IS NULL/);
-  }
+  // Both stages select the latest event before validating it. Otherwise an
+  // invalid newest score could resurrect an older valid result.
+  const aimRanking = scopeSource.slice(scopeSource.indexOf('ranked_aim AS ('), scopeSource.indexOf('current_aim AS ('));
+  assert.match(aimRanking, /ROW_NUMBER\(\) OVER/);
+  assert.doesNotMatch(aimRanking, /"staleAt" IS NULL/);
+  assert.match(scopeSource, /aim.rank = 1[\s\S]{0,100}aim\."staleAt" IS NULL/);
+  const latestExperience = scopeSource.slice(scopeSource.indexOf('JOIN LATERAL ('), scopeSource.indexOf(') experience ON true'));
+  assert.match(latestExperience, /ORDER BY event\."createdAt" DESC, event.id DESC\s+LIMIT 1/);
+  assert.doesNotMatch(latestExperience, /"staleAt" IS NULL|"sourceAimEventId" =/);
+  assert.match(scopeSource, /\) experience ON true[\s\S]*experience\."staleAt" IS NULL/);
 });
 
 test('the score scope binds through the v2 extraction, never the retired v1 artifact', () => {

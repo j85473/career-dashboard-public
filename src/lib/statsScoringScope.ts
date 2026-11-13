@@ -50,26 +50,26 @@ export function currentScoreScope(input: {
         AND aim."schemaVersion" = 'career-dashboard-aim-result-v2'
         AND aim."inputBindings"->>'globalInputVersionsHash' = ${input.aimInputVersionsHash}
     ),
-    ranked_experience AS (
-      SELECT
-        event.*,
-        ROW_NUMBER() OVER (
-          PARTITION BY event."jobId"
-          ORDER BY event."createdAt" DESC, event.id DESC
-        ) AS rank
-      FROM "JobScoreEvent" event
-      WHERE event."evaluationType" = 'experience_fit'
-    ),
     current_experience AS (
       SELECT experience.*
-      FROM ranked_experience experience
-      JOIN current_aim aim
-        ON aim."jobId" = experience."jobId"
-       AND aim.passed = true
-       AND experience."sourceAimEventId" = aim.id
-       AND experience."aimFactualExtractionId" = aim."aimFactualExtractionId"
-       AND experience."inputBindings"->>'aimSemanticResultHash' = aim."semanticResultHash"
-      WHERE experience.rank = 1
+      FROM current_aim aim
+      -- Read the latest Experience event once per passing Aim through the
+      -- job/evaluation index. Ranking the entire Experience history inside a
+      -- nested loop repeated that work thousands of times when the planner
+      -- underestimated the Aim population. Keep validation after LIMIT so an
+      -- invalid latest event cannot fall back to an older valid score.
+      JOIN LATERAL (
+        SELECT event.*
+        FROM "JobScoreEvent" event
+        WHERE event."jobId" = aim."jobId"
+          AND event."evaluationType" = 'experience_fit'
+        ORDER BY event."createdAt" DESC, event.id DESC
+        LIMIT 1
+      ) experience ON true
+      WHERE aim.passed = true
+        AND experience."sourceAimEventId" = aim.id
+        AND experience."aimFactualExtractionId" = aim."aimFactualExtractionId"
+        AND experience."inputBindings"->>'aimSemanticResultHash' = aim."semanticResultHash"
         AND experience."staleAt" IS NULL
         AND experience."schemaVersion" = 'career-dashboard-experience-result-v2'
         -- Experience prompt/evidence versions are provenance. Changing them

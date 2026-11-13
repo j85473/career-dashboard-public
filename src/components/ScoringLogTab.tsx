@@ -531,7 +531,8 @@ export function ScoringLogTab({ onSelectJob, activeLogTab, pipelineState }: Scor
     const controller = new AbortController();
     abortRef.current = controller;
     const canApply = dashboardRefreshGuard();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 15_000);
     if (!quiet) {
       if (append) setLoadingMore(true);
       else setLoading(true);
@@ -556,7 +557,11 @@ export function ScoringLogTab({ onSelectJob, activeLogTab, pipelineState }: Scor
       };
       if (quiet) quietCommit(apply); else apply();
     } catch (reason) {
-      if (reason instanceof DOMException && reason.name === 'AbortError') return;
+      if (abortRef.current !== controller) return;
+      if (reason instanceof DOMException && reason.name === 'AbortError') {
+        if (timedOut && !quiet) setError('The scoring log took too long to load. Try again.');
+        return;
+      }
       if (!quiet) setError(reason instanceof Error ? reason.message : 'Could not load the scoring log.');
     } finally {
       clearTimeout(timeout);
