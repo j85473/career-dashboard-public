@@ -56,6 +56,27 @@ test('retry times include the Central date, never promise completion or retries 
   assert.equal(atsRetryLabel(null, observedAt), 'No retry time recorded');
 });
 
+test('service, bootstrap and unexpected HTML failures retain distinct explanations', () => {
+  assert.equal(summarizeAtsHoldReason('hireology temporarily unavailable: public career-page configuration is missing', ''), 'Career-page configuration unavailable; waiting to retry');
+  assert.equal(summarizeAtsHoldReason('workday temporarily unavailable: maintenance or service outage page', ''), 'Service maintenance or outage; waiting to retry');
+  assert.equal(summarizeAtsHoldReason('hireology temporarily unavailable: HTTP 502', ''), 'Temporary service failure; waiting to retry');
+  assert.equal(summarizeAtsHoldReason('workday board returned text/html instead of the expected payload format', ''), 'Feed returned a web page instead of job data; waiting to retry');
+});
+
+test('due acquisition failures remain visible beside future holds with their saved counts', () => {
+  const base = { provider: 'workday', unit: 'batches' as const, count: 5, items: 20,
+    reason: 'workday temporarily unavailable: HTTP 503', example: 'example.wd5::careers' };
+  const holds = groupAtsQueueHolds([
+    { ...base, stage: 'Acquisition', retryAt: new Date('2026-10-13T05:01:00Z'), lastRetryAt: new Date('2026-10-13T05:01:00Z') },
+    { ...base, stage: 'Acquisition due', retryAt: new Date('2026-10-12T19:00:00Z'), lastRetryAt: new Date('2026-10-12T19:00:00Z') },
+  ]);
+  assert.deepEqual(holds.map(hold => [hold.stage, hold.count, hold.items]), [['Acquisition due', 5, 20], ['Acquisition', 5, 20]]);
+  const html = renderToStaticMarkup(React.createElement(AtsQueuePanel, { snapshot: { ...queueFixture, holds } }));
+  assert.match(html, /Acquisition due/);
+  assert.match(html, /Eligible now/);
+  assert.match(html, /Temporary service failure/);
+});
+
 test('overdue failures remain visible separately from future retry holds', () => {
   const base = { provider: 'jazzhr', unit: 'candidates' as const, count: 4, items: 0,
     reason: 'Feed HTTP 404', example: 'old-board', lastRetryAt: new Date('2026-10-13T05:01:00Z') };

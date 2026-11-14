@@ -196,7 +196,13 @@ export function atsAcquisitionNote(detail: AtsAcquisitionDetail): string {
         return `new boards paused · finishing ${count(detail.unfinishedListings || 0)} unfinished listings · ${count(detail.stagingItems || 0)} downloaded records · continuation can still add pages`;
       }
       if (detail.admissionReason === 'staging') {
-        return `new boards paused early · ${count(detail.stagingItems || 0)} downloaded records · finishing acquired work before the safety limit · continuation can still add pages`;
+        const items = Math.floor((detail.stagingItemLimit || 0) / 2);
+        const bytes = Math.floor((detail.stagingByteLimit || 0) / 2);
+        const limits = [];
+        if ((detail.stagingItems || 0) >= items && items > 0) limits.push(`${count(items)} staged records`);
+        if ((detail.stagingBytes || 0) >= bytes && bytes > 0) limits.push(`${count(bytes)} bytes`);
+        const threshold = limits.join(' and ') || `${count(items)} staged records`;
+        return `new boards paused · ${count(detail.stagingItems || 0)} downloaded records · intake can resume below ${threshold} · finishing acquired work; continuation can still add pages`;
       }
       const budget = (detail.stagingBytes ?? 0) >= (detail.stagingByteLimit || Number.POSITIVE_INFINITY)
         ? `${count(detail.stagingBytes || 0)} / ${count(detail.stagingByteLimit || 0)} bytes`

@@ -37,10 +37,10 @@ export function AtsQueuePanel({ snapshot, unavailable = false }: {
         <div className="ats-queue-persistence">
           <span>Normalization &amp; persistence: <strong>{count(snapshot.persistenceDue)} runnable items</strong> · <strong>{count(snapshot.persistenceHeld)} held items</strong></span>
         </div>
-        <p className="ats-queue-help">Each row counts its own stage; do not add these counts together. Validation due retains failed candidates after their retry time passes. Times are Central and show earliest eligibility, not a promised attempt. Validation also waits for intake capacity and admission policy. Acquisition handoff is checked every five minutes.</p>
+        <p className="ats-queue-help">Each row counts its own stage; do not add these counts together. Validation due and Acquisition due retain failures after their retry time passes. Times are Central and show earliest eligibility, not a promised attempt. Due work also waits for worker and intake capacity and admission policy. Acquisition handoff is checked every five minutes.</p>
         <label className="ats-queue-filter">Show stage
           <select value={stage} onChange={event => setStage(event.target.value)}>
-            {['All stages', 'First collection', 'Validation due', 'Validation', 'Size review', 'Persistence', 'Acquisition', 'Provider', 'Common Crawl'].map(value => <option key={value}>{value}</option>)}
+            {['All stages', 'First collection', 'Validation due', 'Validation', 'Size review', 'Persistence', 'Acquisition due', 'Acquisition', 'Provider', 'Common Crawl'].map(value => <option key={value}>{value}</option>)}
           </select>
         </label>
         {visibleHolds.length === 0 ? <p>No held work in this view.</p> : (

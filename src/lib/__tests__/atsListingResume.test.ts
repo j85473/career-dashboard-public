@@ -15,6 +15,8 @@ import {
 import { prisma } from '../prisma';
 import { AtsBoardContentTypeError } from '../atsAcquisition';
 import { workdayPartialListingRetryAt } from '../atsAcquisitionDispatcherV2';
+import { temporaryListingRetryAt } from '../atsAcquisitionDispatcherV2';
+import { AtsTemporaryUnavailableError } from '../atsTemporaryFailure';
 
 type Dependencies = NonNullable<Parameters<typeof runAtsV2ListingQuantum>[2]>;
 type SavedPage = NonNullable<Awaited<ReturnType<Dependencies['readAtsV2ListingCheckpoint']>>['latestPage']> & {
@@ -94,6 +96,7 @@ function fixture(platform = 'greenhouse') {
     recordProviderFailure: async () => null,
     platformPauseRemainingMs: () => pauseMs,
     partialListingRetryAt: async (_claim, now) => new Date(now.getTime() + 15 * 60_000),
+    temporaryListingRetryAt: async (_claim, _error, now) => new Date(now.getTime() + 15 * 60_000),
   };
   return {
     claim, pages, requests, chunks, dependencies,
@@ -153,6 +156,64 @@ test('Workday HTML before any valid page stays a board failure', async () => {
   assert.equal(outcome.boardFailure, true);
   assert.equal(outcome.failureScope, 'board');
   assert.equal(f.pages.length, 0);
+});
+
+for (const platform of ['workday', 'hireology']) {
+  test(`${platform} outage before the first page remains pending and resumes without losing a checkpoint`, async () => {
+    const f = fixture(platform);
+    const healthyFetch = f.dependencies.fetchAtsBoardPage;
+    f.dependencies.fetchAtsBoardPage = async (_board, _offset, _signal, onStart, onResponse) => {
+      await onStart?.();
+      await onResponse?.({ status: 503, respondedAt: new Date() });
+      throw new AtsTemporaryUnavailableError(platform, 'maintenance or service outage page');
+    };
+    const failed = await f.turn();
+    assert.equal(failed.yieldReason, 'error');
+    assert.equal(failed.boardFailure, false);
+    assert.equal(failed.failureScope, 'provider');
+    assert.equal(f.pages.length, 0);
+    assert.ok(failed.nextAcquireAt);
+    f.dependencies.fetchAtsBoardPage = healthyFetch;
+    f.response(0, 0);
+    assert.equal((await f.turn()).yieldReason, 'listing_complete');
+    assert.equal(f.pages.length, 1);
+    assert.equal(f.pages[0].requestedOffset, 0);
+  });
+}
+
+test('a temporary outage after a saved page preserves the exact cursor and downloaded work', async () => {
+  const f = fixture('workday');
+  f.response(20, 100); f.chunkDuration(0);
+  await f.turn();
+  const saved = structuredClone(f.pages);
+  f.dependencies.fetchAtsBoardPage = async (_board, offset) => {
+    assert.equal(offset, 20);
+    throw new AtsTemporaryUnavailableError('workday', 'HTTP 502');
+  };
+  assert.equal((await f.turn()).boardFailure, false);
+  assert.deepEqual(f.pages, saved);
+  assert.equal(f.claim.listingOffset, 20);
+});
+
+test('temporary retries cap at one hour, reset on productive work and honor longer server waits', async () => {
+  const original = prisma.atsAcquisitionWorkReceipt.findMany;
+  const refusal = { error: 'workday temporarily unavailable: HTTP 503', yieldReason: 'error', itemsProgressed: 0 };
+  let receipts: typeof refusal[] = [];
+  prisma.atsAcquisitionWorkReceipt.findMany = (async () => receipts) as typeof original;
+  const now = new Date('2026-11-14T17:00:00Z');
+  const claim = fixture('workday').claim;
+  try {
+    for (const [prior, minutes] of [[0, 15], [1, 30], [2, 60]]) {
+      receipts = Array(prior).fill(refusal);
+      const retry = await temporaryListingRetryAt(claim, new AtsTemporaryUnavailableError('workday', 'HTTP 503'), now);
+      assert.ok(retry.getTime() > now.getTime() + (minutes - 1) * 60_000);
+      assert.ok(retry.getTime() <= now.getTime() + minutes * 60_000);
+    }
+    receipts = [{ ...refusal, itemsProgressed: 20 }];
+    assert.ok((await temporaryListingRetryAt(claim, refusal, now)).getTime() <= now.getTime() + 15 * 60_000);
+    const retryAt = new Date(now.getTime() + 2 * 3600_000);
+    assert.equal((await temporaryListingRetryAt(claim, new AtsTemporaryUnavailableError('workday', 'HTTP 503', retryAt), now)).getTime(), retryAt.getTime());
+  } finally { prisma.atsAcquisitionWorkReceipt.findMany = original; }
 });
 
 test('partial Workday retries escalate from receipts and reset after productive progress', async () => {

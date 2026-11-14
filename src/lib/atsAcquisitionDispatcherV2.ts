@@ -1,4 +1,5 @@
 import { workerDrainRequested } from './workerDeployment';
+import { atsTemporaryRetryDelayMs, isAtsTemporaryFailure } from './atsTemporaryFailure';
 import { atsRotationCohortWhere } from './atsRotationCohort';
 import { storageAllows } from './storagePressure';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
@@ -554,6 +555,21 @@ export async function workdayPartialListingRetryAt(claim: AtsLedgerClaim, now: D
   return new Date(now.getTime() + workdayPartialRetryDelayMs(failures));
 }
 
+export async function temporaryListingRetryAt(claim: AtsLedgerClaim, error: unknown, now: Date): Promise<Date> {
+  const recent = await prisma.atsAcquisitionWorkReceipt.findMany({
+    where: { batchId: claim.batchId, workType: { in: ['coverage_listing', 'listing_continuation'] }, finishedAt: { not: null } },
+    orderBy: { startedAt: 'desc' }, take: 2,
+    select: { error: true, yieldReason: true, itemsProgressed: true },
+  });
+  let failures = 0;
+  for (const receipt of recent) {
+    if (receipt.itemsProgressed > 0 || receipt.yieldReason !== 'error' || !receipt.error
+      || !isAtsTemporaryFailure(new Error(receipt.error))) break;
+    failures++;
+  }
+  return atsListingRetryAt(error, now, atsTemporaryRetryDelayMs(failures, `${claim.platform}:${claim.slug}`));
+}
+
 /** Process a bounded prefix under the same batch fence as its listing. The
  * catalogue stays incomplete, and partial segment tails remain unsealed. */
 export async function drainAtsV2ListingPrefix(claim: AtsLedgerClaim, signal: AbortSignal | undefined, deadline: number) {
@@ -587,6 +603,7 @@ const listingDependencies = {
   recordProviderFailure,
   platformPauseRemainingMs,
   partialListingRetryAt: workdayPartialListingRetryAt,
+  temporaryListingRetryAt,
   now: () => Date.now(),
 };
 
@@ -821,7 +838,9 @@ export async function runAtsV2ListingQuantum(
       const boardFailure = !partialContentRefusal && isAtsBoardLevelFailure(error);
       return {
         yieldReason: 'error',
-        nextAcquireAt: partialContentRefusal
+        nextAcquireAt: isAtsTemporaryFailure(error)
+          ? await dependencies.temporaryListingRetryAt(claim, error, new Date()).catch(() => atsListingRetryAt(error))
+          : partialContentRefusal
           ? await dependencies.partialListingRetryAt(claim, new Date()).catch(() => atsListingRetryAt(error))
           : boardScopedRefusal
           ? await boardScopedRateLimitRetryAt(claim).catch(() => atsListingRetryAt(error))

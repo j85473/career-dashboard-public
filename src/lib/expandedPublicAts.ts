@@ -1,6 +1,7 @@
 import { load } from 'cheerio';
 import { futureAtsCandidateUrl } from './atsDiscoveryBacklog';
 import { publishedEmployerName } from './publicAtsEmployer';
+import { AtsTemporaryUnavailableError } from './atsTemporaryFailure';
 
 export const EXPANDED_PUBLIC_ATS = ['cornerstone', 'hireology', 'polymer'] as const;
 export type ExpandedPublicAts = typeof EXPANDED_PUBLIC_ATS[number];
@@ -72,7 +73,14 @@ export function expandedConfig(platform: ExpandedPublicAts, slug: string, html: 
   expandedBoardUrl(platform, slug);
   if (landed && expandedBoardSlug(platform, landed) !== slug) throw Error('Public career page changed board identity');
   if (platform === 'polymer') return { company: '' };
-  const data = assignedJson(html, platform === 'cornerstone' ? 'csod\\.context' : 'startingData');
+  let data: Row;
+  try { data = assignedJson(html, platform === 'cornerstone' ? 'csod\\.context' : 'startingData'); }
+  catch (error) {
+    if (error instanceof Error && error.message === 'Public career-page configuration is missing') {
+      throw new AtsTemporaryUnavailableError(platform, 'public career-page configuration is missing');
+    }
+    throw error;
+  }
   const token = value(data[platform === 'cornerstone' ? 'token' : 'apiToken']);
   if (!/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) throw Error('Public anonymous read token is missing');
   let claims: Row;

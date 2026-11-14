@@ -1,10 +1,15 @@
 import { Prisma } from './prismaClient';
 import { prisma } from './prisma';
 import { firstCollectionHealth } from './atsFirstCollectionAdmission';
+import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import type { AtsQueueHold, AtsQueueSnapshot } from './atsQueueSnapshot';
 
 export function summarizeAtsHoldReason(error: string | null, fallback: string): string {
   if (!error) return fallback;
+  if (/public career-page configuration is missing/i.test(error)) return 'Career-page configuration unavailable; waiting to retry';
+  if (/temporarily unavailable:.*maintenance/i.test(error)) return 'Service maintenance or outage; waiting to retry';
+  if (/temporarily unavailable:|\bHTTP\s+(?:408|425|5\d\d)\b/i.test(error)) return 'Temporary service failure; waiting to retry';
+  if (/returned text\/html instead of the expected payload format/i.test(error)) return 'Feed returned a web page instead of job data; waiting to retry';
   if (/awaits a verified employer|no authoritative employer/i.test(error)) return 'Employer identity could not be verified';
   if (/ledger page .*changed after it was committed/i.test(error)) return 'Listing page changed after it was saved';
   if (/schema|posting identity|expected payload|no title/i.test(error)) return 'Response format or posting identity is invalid';
@@ -36,7 +41,7 @@ export function groupAtsQueueHolds(rows: HoldRow[]): AtsQueueHold[] {
       if (value.lastRetryAt && (!prior.lastRetryAt || value.lastRetryAt > prior.lastRetryAt)) prior.lastRetryAt = value.lastRetryAt;
     }
   }
-  const stageOrder = ['First collection', 'Validation due', 'Validation', 'Size review', 'Persistence', 'Acquisition', 'Provider', 'Common Crawl'];
+  const stageOrder = ['First collection', 'Validation due', 'Validation', 'Size review', 'Persistence', 'Acquisition due', 'Acquisition', 'Provider', 'Common Crawl'];
   return [...groups.values()].sort((a, b) => stageOrder.indexOf(a.stage) - stageOrder.indexOf(b.stage) || b.count - a.count || a.provider.localeCompare(b.provider));
 }
 
@@ -81,10 +86,13 @@ async function queryAtsQueueTelemetry(): Promise<AtsQueueSnapshot> {
         FROM "AtsCompany" WHERE "firstCollectionState" IN ('waiting','ready','admitted')
           AND ("firstCollectionHoldReason" IS NOT NULL OR "acquisitionEngine"='legacy' OR "nextCheckDate">${nowUtc})
         UNION ALL
-        SELECT 'Acquisition', platform, COALESCE("lastError",'Scheduled acquisition retry'), 'batches',
-          GREATEST("rawObservationCount"-"compactedOccurrenceCount"-"publishedItemCount",0)::bigint, "nextAcquireAt", slug
+        SELECT CASE WHEN "nextAcquireAt">${nowUtc} THEN 'Acquisition' ELSE 'Acquisition due' END,
+          platform, COALESCE("lastError",'Scheduled acquisition retry'), 'batches',
+          GREATEST("rawObservationCount"-"compactedOccurrenceCount"-"publishedItemCount",0)::bigint, COALESCE("nextAcquireAt",${nowUtc}), slug
         FROM "AtsIngestionBatch" WHERE "writerMode"='v2' AND status IN ('fetching','partial','synchronized','reset_draining')
-          AND "acquisitionPhase" IN ('listing','compaction','enrichment','sealing') AND "nextAcquireAt">${nowUtc}
+          AND "acquisitionPhase" IN ('listing','compaction','enrichment','sealing')
+          AND ("nextAcquireAt">${nowUtc} OR ("lastError" IS NOT NULL
+            AND platform NOT IN (${Prisma.join(NON_API_ATS_PLATFORMS)})))
         UNION ALL
         SELECT 'Persistence', b.platform,
           COALESCE(NULLIF(to_jsonb(s)->>'holdReason',''),

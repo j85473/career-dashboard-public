@@ -1,4 +1,5 @@
 import { ADDITIONAL_PUBLIC_ATS } from './additionalPublicAts';
+import { assertAtsServiceAvailable, AtsTemporaryUnavailableError, isAtsTemporaryFailure } from './atsTemporaryFailure';
 import { atsRotationCohortWhere } from './atsRotationCohort';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import { nextAtsProcessingContinuationAt } from './atsProcessingSchedule';
@@ -834,10 +835,12 @@ export function isAtsTimeoutError(error: unknown): boolean {
  * circuit would quietly park thousands of healthy boards for having been
  * unreachable through no fault of their own.
  *
- * A timeout, an HTTP error, or a wrong content type is the board itself
- * failing to answer, and that is what the failure schedule exists to escalate.
+ * Missing boards and unrecognized payloads still use the board failure
+ * schedule. Server outages, network failures and known maintenance pages do
+ * not establish that a board has closed, even on an unanswered first page.
  */
 export function isAtsBoardLevelFailure(error: unknown): boolean {
+  if (isAtsTemporaryFailure(error)) return false;
   if (error instanceof AtsFirstCollectionSizeError) return false;
   if (error instanceof RateLimitedError) return false;
   if (error instanceof AtsProviderBlockedError) return false;
@@ -862,6 +865,7 @@ export function isAtsBoardLevelFailure(error: unknown): boolean {
  * day -- and each of those six closed all 7,845 Workday boards for six hours.
  */
 export function isAtsProviderWideError(error: unknown, platform?: string): boolean {
+  if (isAtsTemporaryFailure(error)) return false;
   if (error instanceof AtsFirstCollectionSizeError) return false;
   // Checked before the message patterns, which would otherwise catch this on
   // the word `schema` and open the whole platform for one retired board.
@@ -923,6 +927,7 @@ export async function fetchAtsBoardPage(
       }, { requestedUrl: pageUrl, boardSlug: board.slug, onResponse: async received => {
         await onResponseReceived?.({ status: received.status, respondedAt: new Date() });
         if (received.status === 429) throw new RateLimitedError(board.platform);
+        await assertAtsServiceAvailable(board.platform, received);
         if (!received.ok) throw new AtsHttpError(received.status);
       } });
       const pageHtml = isFirstCollectionPlatform(board.platform) ? await readManagedBody(page) : await page.text();
@@ -949,6 +954,7 @@ export async function fetchAtsBoardPage(
       }, { requestedUrl: pageUrl, boardSlug: board.slug, onResponse: async (received) => {
         await onResponseReceived?.({ status: received.status, respondedAt: new Date() });
         if (received.status === 429) throw new RateLimitedError(board.platform);
+        await assertAtsServiceAvailable(board.platform, received);
         if (!received.ok) throw new AtsHttpError(received.status);
       } });
       eightfoldConfig = parseEightfoldConfig(await page.text(), eightfoldBoardIdentity(board.slug).domain);
@@ -994,6 +1000,7 @@ export async function fetchAtsBoardPage(
         throw new AtsBoardOffHostError(board.platform, new URL(received.url).host);
       }
       if (received.status === 429) throw new RateLimitedError(board.platform);
+      await assertAtsServiceAvailable(board.platform, received);
       if (!received.ok) {
         if ((board.platform === 'cornerstone' || board.platform === 'hireology') && [401, 403].includes(received.status)) publicAtsConfigs.delete(`${board.platform}:${board.slug}`);
         throw new AtsHttpError(received.status);
@@ -2267,6 +2274,9 @@ export async function acquireAtsBoardBatch(
     const message = error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000);
     const boardUpdate = internalControl
       ? { nextCheckDate: nextAtsInternalControlRetryAt(now, attempt.id) }
+      : isAtsTemporaryFailure(error)
+      ? { nextCheckDate: new Date(Math.max(now.getTime() + 15 * 60_000,
+          error instanceof AtsTemporaryUnavailableError ? error.retryAt?.getTime() || 0 : 0)) }
       : error instanceof AtsPlatformDeferredError
       ? {
           nextCheckDate: error.retryAt

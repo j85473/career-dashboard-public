@@ -24,7 +24,7 @@ test('acquisition explains unfinished-board holds before the hard item limit and
   assert.ok(detail?.kind === 'ats-acquisition');
   assert.equal(detail.stagingBlocked, false);
   assert.match(atsAcquisitionNote(detail), /finishing 32 unfinished listings.*640 downloaded records.*can still add pages/);
-  assert.match(atsAcquisitionNote({ ...detail, admissionReason: 'staging', stagingItems: 50_000 }), /paused early.*50,000 downloaded records.*before the safety limit/);
+  assert.match(atsAcquisitionNote({ ...detail, admissionReason: 'staging', stagingItems: 50_000 }), /new boards paused.*50,000 downloaded records.*resume below 50,000 staged records/);
   for (const state of ['working', 'waiting', 'done', 'blocked', 'stopped'] as const) {
     const note = atsAcquisitionNote({ ...detail, state, admissionReason: 'open' });
     assert.match(note, /640 downloaded records waiting/);
@@ -371,4 +371,12 @@ test('acquisition backlog holds survive comma formatted receipts and explain ite
   );
   assert.ok(below?.kind === 'ats-acquisition');
   assert.equal(below.stagingBlocked, false);
+});
+
+test('early intake holds state the actual resumption threshold instead of only the hard ceiling', () => {
+  const detail = parseAtsAcquisitionDetail('State draining · Boards 15276/16967 · Lanes 8/8 · Intake staging · Staging 64792/100000 · Bytes 305100246/1500000000');
+  assert.ok(detail?.kind === 'ats-acquisition');
+  assert.match(atsAcquisitionNote(detail), /intake can resume below 50,000 staged records/);
+  assert.match(atsAcquisitionNote({ ...detail, stagingItems: 500, stagingBytes: 800_000_000 }), /below 750,000,000 bytes/);
+  assert.match(atsAcquisitionNote({ ...detail, stagingBytes: 800_000_000 }), /below 50,000 staged records and 750,000,000 bytes/);
 });
