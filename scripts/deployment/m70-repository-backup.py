@@ -620,6 +620,7 @@ def main():
                          '--transform=s,^runtime-snapshot,data/runtime,', '-czf', '-',
                          '-C', str(APP), 'data', '-C', '/etc',
                          'career-dashboard/runtime.env', 'career-dashboard/acquisition-release.env',
+                         'career-dashboard/worker-releases', '-C', '/var/lib/career-dashboard', 'deployment-state',
                          '-C', temporary, 'runtime-snapshot']
                 producer, env = database_producer()
                 engine.backup(producer, files, env)

@@ -15,6 +15,7 @@ import {
   waitForPipelineDelay,
 } from '@/lib/pipelineState';
 import { supervisePipelineLoop } from '@/lib/pipelineLoopSupervisor';
+import { clearWorkerDrainLanes, initializeWorkerDrainLanes, setWorkerLaneDrained, workerDrainRequested } from './workerDeployment';
 import { readDurableIngestionState, writeDurableIngestionState } from '@/lib/ingestionState';
 import { reapAbandonedIngestionRuns } from '@/lib/ingestionRunReaper';
 import { buildTerminalJdRecoveryUpdate } from '@/lib/jdRecoveryPolicy';
@@ -119,6 +120,7 @@ import {
 } from '@/lib/atsAcquisition';
 
 let activePipelineRun: Promise<void> | null = null;
+export function pipelineRunIsActive() { return activePipelineRun !== null; }
 
 export async function stopPipelineProcess(): Promise<void> {
   const { abortActivePipeline } = await import('./pipelineState');
@@ -488,6 +490,7 @@ async function orchestratePipeline(releaseLock: () => Promise<void>) {
       await assertAtsV2AuthorityActive();
       await runAtsV2ContinuousPublisher({
         signal: ac.signal,
+        shouldDrain: workerDrainRequested,
         onError: (error) => recordWarning('ATS segment publisher', error),
       });
     };
@@ -1167,9 +1170,14 @@ async function orchestratePipeline(releaseLock: () => Promise<void>) {
     // Storage checks still make inner loops yield without claiming more work.
     // Their supervisors retain ownership and restart them when the hold clears;
     // only a real Stop or deployment quiesce permanently ends the lane.
-    const superviseLoop = (name: string, loopFn: () => Promise<void>) => supervisePipelineLoop(loopFn, {
+    initializeWorkerDrainLanes([]);
+    const superviseLoop = (name: string, loopFn: () => Promise<void>) => {
+      setWorkerLaneDrained(name, false);
+      return supervisePipelineLoop(loopFn, {
       signal: ac.signal,
       shouldStop: pipelineOperatorStopRequested,
+      shouldDrain: workerDrainRequested,
+      onDrainState: (drained) => setWorkerLaneDrained(name, drained),
       // A Stop can arrive through another route context or host. Propagate
       // the shared flag to loops that wait only on this run's local signal.
       onStopRequested: () => ac.abort(new Error('Shared pipeline stop requested.')),
@@ -1177,7 +1185,8 @@ async function orchestratePipeline(releaseLock: () => Promise<void>) {
       wait: waitForPipelineDelay,
       onError: (error, consecutiveFailures) => recordWarning(`${name} loop (restart ${consecutiveFailures})`, error),
       onStoragePauseChange: () => updateCombinedTicker(),
-    });
+      });
+    };
 
     /**
      * When acquisition runs on a remote host this process spawns no child, so
@@ -1289,16 +1298,19 @@ async function orchestratePipeline(releaseLock: () => Promise<void>) {
   } finally {
     ac.abort();
     clearInterval(stopObserver);
+    clearWorkerDrainLanes();
     stopLockHeartbeat();
     clearActiveAbortController();
     await releaseLock();
   }
 }
 
-export async function startPipeline(scheduledRequest: boolean) {
+export async function startPipeline(scheduledRequest: boolean, options: { resumeHandoff?: boolean } = {}) {
   try {
     const storage = readStoragePressure();
-    if (storage.backgroundPaused) return Response.json({ message: storage.message, paused: true, storage }, { status: 503 });
+    // A previously running owner must survive a storage hold across handoff.
+    // Its supervisors still wait on the unchanged storage admission checks.
+    if (storage.backgroundPaused && !options.resumeHandoff) return Response.json({ message: storage.message, paused: true, storage }, { status: 503 });
     if (!scheduledRequest) {
       // A manual start is the explicit resume, and it clears the expiry with it.
       await controlPrisma.pipelineState.upsert({

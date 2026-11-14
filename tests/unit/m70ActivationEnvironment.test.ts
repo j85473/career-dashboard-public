@@ -7,7 +7,7 @@ import test from 'node:test';
 
 const activation = readFileSync('scripts/deployment/activate-m70.sh', 'utf8');
 
-function preflight(alreadyBuilt: boolean, auditResult = 1, directoryPrefix = 'm70-activation-') {
+function preflight(alreadyBuilt: boolean, auditResult = 1, directoryPrefix = 'm70-activation-', interruptedRecovery = false) {
   const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), directoryPrefix)));
   try {
     const revision = 'a'.repeat(40);
@@ -16,6 +16,8 @@ function preflight(alreadyBuilt: boolean, auditResult = 1, directoryPrefix = 'm7
     const shared = path.join(root, 'shared');
     const config = path.join(root, 'config');
     const caller = path.join(root, 'caller');
+    const recoveredWeb = path.join(releases, 'b'.repeat(40));
+    const recoveredWorkers = path.join(releases, 'c'.repeat(40));
     for (const directory of [stage, `${stage}/scripts/deployment`, `${stage}/data`, `${shared}/data/runtime`, config, caller]) {
       mkdirSync(directory, { recursive: true });
     }
@@ -26,8 +28,24 @@ function preflight(alreadyBuilt: boolean, auditResult = 1, directoryPrefix = 'm7
     writeFileSync(`${caller}/.env`, 'DATABASE_URL=postgresql://build:build@127.0.0.1:1/build\n');
     if (alreadyBuilt) writeFileSync(`${stage}/.m70-build-complete`, '');
     symlinkSync(stage, path.join(root, 'app'));
+    if (interruptedRecovery) {
+      mkdirSync(recoveredWeb); mkdirSync(recoveredWorkers);
+      symlinkSync(stage, path.join(root, 'app-workers'));
+    }
     symlinkSync(path.resolve('node_modules'), `${stage}/node_modules`, 'dir');
     writeFileSync(`${stage}/scripts/with-env.mjs`, readFileSync('scripts/with-env.mjs'));
+    // Component selection is exercised separately. This fixture stops at the
+    // audit precheck and substitutes its read-only operating-system boundary.
+    writeFileSync(`${stage}/scripts/deployment/roll-worker-components.mjs`, `
+      import fs from 'node:fs';
+      if (process.argv[2] === 'recover' && ${interruptedRecovery}) {
+        fs.unlinkSync(${JSON.stringify(path.join(root, 'app'))});
+        fs.symlinkSync(${JSON.stringify(recoveredWeb)}, ${JSON.stringify(path.join(root, 'app'))});
+        fs.unlinkSync(${JSON.stringify(path.join(root, 'app-workers'))});
+        fs.symlinkSync(${JSON.stringify(recoveredWorkers)}, ${JSON.stringify(path.join(root, 'app-workers'))});
+      }
+      if (process.argv[2] === 'plan') console.log(JSON.stringify({mode:'coordinated'}));
+    `);
     writeFileSync(`${stage}/scripts/deployment/discovery-audit-resume-needed.cjs`, `
       const fs = require('node:fs');
       fs.writeFileSync(${JSON.stringify(`${root}/probe.json`)}, JSON.stringify({
@@ -51,6 +69,7 @@ function preflight(alreadyBuilt: boolean, auditResult = 1, directoryPrefix = 'm7
       python3() { :; }
       chown() { :; }
       rsync() { :; }
+      install() { mkdir -p "\${@: -1}"; }
       systemctl() { [[ $1 == is-active ]] && return 1; exit 99; }
       runuser() {
         shift 3
@@ -65,6 +84,8 @@ function preflight(alreadyBuilt: boolean, auditResult = 1, directoryPrefix = 'm7
       }
       ${prefix}
       echo "audit-resume=$DISCOVERY_AUDIT"
+      echo "previous-web=$OLD"
+      echo "previous-workers=$OLD_WORKERS"
     `;
     const result = spawnSync('bash', ['-c', script, 'activation-test', revision], {
       cwd: caller, encoding: 'utf8', env: {
@@ -80,6 +101,7 @@ function preflight(alreadyBuilt: boolean, auditResult = 1, directoryPrefix = 'm7
     return {
       ...result,
       expectedStage: realpathSync(stage),
+      recoveredWeb, recoveredWorkers,
       probe: JSON.parse(readFileSync(`${root}/probe.json`, 'utf8')) as { cwd: string; database: string },
       buildCalls: alreadyBuilt ? [] : readFileSync(`${root}/build-calls`, 'utf8').trim().split('\n'),
     };
@@ -87,6 +109,13 @@ function preflight(alreadyBuilt: boolean, auditResult = 1, directoryPrefix = 'm7
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+test('a retry captures rollback targets after recovering an interrupted component update', () => {
+  const result = preflight(true, 1, 'm70-interrupted-recovery-', true);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes(`previous-web=${result.recoveredWeb}\n`), result.stdout);
+  assert.ok(result.stdout.includes(`previous-workers=${result.recoveredWorkers}\n`), result.stdout);
+});
 
 for (const alreadyBuilt of [false, true]) {
   test(`${alreadyBuilt ? 'repeat' : 'fresh'} activation loads production settings before the audit precheck`, () => {

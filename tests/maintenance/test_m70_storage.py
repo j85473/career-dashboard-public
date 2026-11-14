@@ -108,6 +108,31 @@ class StorageTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.check_capacity(backup, ssd, extra_bytes=-1, disk_usage=usage)
 
+    def test_component_pins_and_recovery_journal_keep_older_worker_releases(self):
+        releases = [self.release(n) for n in range(1, 10)]
+        pins = self.root / 'pins'
+        pins.mkdir()
+        for name, index in [('pipeline', 0), ('acquisition', 1), ('acquisition.rollback', 2), ('public-http', 3)]:
+            (pins / name).symlink_to(releases[index])
+        shared = self.root / 'shared'
+        (shared / 'deployment-state').mkdir(parents=True)
+        (shared / 'deployment-state/component-deployment.json').write_text(
+            '{"old":"/opt/career-dashboard-releases/' + releases[4].name + '"}')
+        real_path = Path
+
+        def mapped_path(value):
+            if str(value) == '/opt/career-dashboard-worker-releases':
+                return pins
+            if str(value).startswith('/opt/career-dashboard') or str(value) == '/etc/career-dashboard':
+                return self.root / 'absent' / real_path(value).name
+            return real_path(value)
+
+        with patch.object(m, 'Path', side_effect=mapped_path), patch.object(m, 'RELEASES', self.root.resolve()), \
+                patch.object(m, 'SHARED', shared), patch.object(m, 'process_releases', return_value=set()):
+            protected = m.protected_releases([])
+        self.assertEqual(protected, {release.name for release in releases[:5]})
+        self.assertEqual(m.release_plan(self.root, protected, 200000), [releases[5]])
+
     def test_full_ssd_refuses_allocation_even_when_application_disk_has_room(self):
         backup = self.root / 'backups'
         ssd = self.root / 'ssd'

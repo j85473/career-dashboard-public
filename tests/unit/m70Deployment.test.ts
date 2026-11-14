@@ -59,7 +59,10 @@ test('a release proves quiescence and fails closed when deciding whether a migra
 });
 
 test('online recovery-point selection aborts on backup failure before changing live services', () => {
-  const backupBlock = activation.slice(activation.indexOf('BACKUP_REQUIRED=1\n'), activation.indexOf('# Only known-compatible UI releases'));
+  const backupStart = activation.indexOf('BACKUP_REQUIRED=1\n');
+  const backupEnd = activation.indexOf('install -d -o root -g root -m 700 "$SHARED/deployment-state"', backupStart);
+  assert.ok(backupStart >= 0 && backupEnd > backupStart, 'the online backup block ends before release state can change');
+  const backupBlock = activation.slice(backupStart, backupEnd);
   for (const scenario of [
     { status: 0, force: 0, existing: '', fail: 0, dump: false },
     { status: 1, force: 0, existing: '', fail: 0, dump: true },

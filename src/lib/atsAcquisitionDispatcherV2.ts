@@ -1,3 +1,4 @@
+import { workerDrainRequested } from './workerDeployment';
 import { atsRotationCohortWhere } from './atsRotationCohort';
 import { storageAllows } from './storagePressure';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
@@ -1149,12 +1150,13 @@ function waitForAbortableDelay(signal: AbortSignal, delayMs: number): Promise<vo
  */
 export async function runAtsV2ContinuousPublisher(input: {
   signal: AbortSignal;
+  shouldDrain?: () => boolean;
   idleDelayMs?: number;
   onProgress?: (progress: AtsV2PublisherProgress) => void;
   onError?: (error: unknown) => void;
 }): Promise<void> {
   const idleDelayMs = Math.max(100, Math.floor(input.idleDelayMs || 1_000));
-  while (!input.signal.aborted) {
+  while (!input.signal.aborted && !input.shouldDrain?.()) {
     try {
       if (!storageAllows('background')) {
         await waitForAbortableDelay(input.signal, 15_000);
@@ -1178,6 +1180,9 @@ export async function runAtsV2ContinuousPublisher(input: {
 
 export async function runAtsV2ContinuousDispatcher(input: {
   signal: AbortSignal;
+  shouldDrain?: () => boolean;
+  holdForDrain?: boolean;
+  onDrainState?: (workerIndex: number, drained: boolean) => void;
   totalSlots?: number;
   plan: () => Promise<AtsV2LanePlan>;
   lanePolicy?: 'balanced' | 'continuation-only';
@@ -1220,12 +1225,20 @@ export async function runAtsV2ContinuousDispatcher(input: {
   const workers = Array.from({ length: totalSlots }, async (_unused, workerIndex) => {
     while (!input.signal.aborted) {
       try {
+        if ((input.shouldDrain || workerDrainRequested)()) {
+          if (!input.holdForDrain) return;
+          input.onDrainState?.(workerIndex, true);
+          await waitForAbortableDelay(input.signal, 250);
+          continue;
+        }
+        input.onDrainState?.(workerIndex, false);
         if (!storageAllows('collection')) {
           await waitForAbortableDelay(input.signal, 15_000);
           continue;
         }
         await reconcileIfDue(workerIndex);
         const plan = await readPlan();
+        if ((input.shouldDrain || workerDrainRequested)()) continue;
         const continuationOnly = input.lanePolicy === 'continuation-only';
         const lane: AtsV2Lane = continuationOnly
           ? 'continuation'

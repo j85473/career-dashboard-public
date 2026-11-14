@@ -16,7 +16,9 @@ import {
   runAtsV2ContinuousDispatcher,
   type AtsV2LanePlan,
 } from '../../src/lib/atsAcquisitionDispatcherV2';
-import { pipelineStopRequested } from '../../src/lib/pipelineState';
+import { pipelineStopRequested, pipelineOperatorStopRequested } from '../../src/lib/pipelineState';
+import { initializeWorkerDrainLanes, setWorkerLaneDrained, workerDrainRequested,
+  workerLanesDrained, writeWorkerDeploymentStatus } from '../../src/lib/workerDeployment';
 import { prisma } from '../../src/lib/prisma';
 import { controlPrisma } from '../../src/lib/controlPrisma';
 
@@ -26,6 +28,12 @@ import { controlPrisma } from '../../src/lib/controlPrisma';
  * to end the process.
  */
 const controller = new AbortController();
+let initialized = false;
+let dispatching = false;
+let auxiliaryInFlight = false;
+const statusTimer = setInterval(() => {
+  if (initialized) writeWorkerDeploymentStatus(workerDrainRequested() && (!dispatching || (workerLanesDrained() && !auxiliaryInFlight)));
+}, 250);
 // Release B lets one Mac worker hold every global lane, so the clamp follows
 // the gate's 8-slot ceiling instead of the 4 lanes Release A left for the Pi.
 const requestedSlots = Math.max(1, Math.min(
@@ -40,11 +48,13 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 function wait(milliseconds: number): Promise<void> {
   if (controller.signal.aborted) return Promise.resolve();
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, milliseconds);
-    controller.signal.addEventListener('abort', () => {
+    const done = () => {
       clearTimeout(timer);
+      controller.signal.removeEventListener('abort', done);
       resolve();
-    }, { once: true });
+    };
+    const timer = setTimeout(done, milliseconds);
+    controller.signal.addEventListener('abort', done, { once: true });
   });
 }
 
@@ -120,6 +130,7 @@ async function promoteDrainedLegacyBoards(): Promise<void> {
 }
 
 async function runLeasedDispatcher(): Promise<void> {
+  initializeWorkerDrainLanes([]);
   const leases = await claimAtsWorkerSlots({
     workerKind: 'mac-continuation',
     count: requestedSlots,
@@ -135,7 +146,7 @@ async function runLeasedDispatcher(): Promise<void> {
   // A pause ends this dispatch session and releases its lanes, then main()
   // waits for the pipeline to resume. It must not end the process.
   const stopPoll = setInterval(() => {
-    void pipelineStopRequested().then((stopped) => {
+    void pipelineOperatorStopRequested().then((stopped) => {
       if (stopped && !leaseController.signal.aborted) {
         leaseController.abort(new Error('The authoritative Pi pipeline is paused.'));
       }
@@ -157,16 +168,21 @@ async function runLeasedDispatcher(): Promise<void> {
   }, ATS_WORKER_SLOT_HEARTBEAT_MS);
   let promotionInFlight: Promise<void> | null = null;
   const promotion = setInterval(() => {
-    if (promotionInFlight || signal.aborted) return;
+    if (promotionInFlight || signal.aborted || workerDrainRequested()) return;
+    auxiliaryInFlight = true;
     promotionInFlight = promoteDrainedLegacyBoards()
-      .finally(() => { promotionInFlight = null; });
+      .finally(() => { promotionInFlight = null; auxiliaryInFlight = false; });
   }, LEGACY_PROMOTION_INTERVAL_MS);
 
   try {
     console.log(`ATS remote worker claimed ${leases.length} global slot(s) (${CONTINUATION_ONLY ? 'continuation-only' : 'balanced'}).`);
     await promoteDrainedLegacyBoards();
+    initializeWorkerDrainLanes(Array.from({ length: leases.length }, (_, index) => String(index)));
     await runAtsV2ContinuousDispatcher({
       signal,
+      shouldDrain: workerDrainRequested,
+      holdForDrain: true,
+      onDrainState: (index, drained) => setWorkerLaneDrained(String(index), drained),
       totalSlots: leases.length,
       lanePolicy: CONTINUATION_ONLY ? 'continuation-only' : 'balanced',
       plan: async () => remotePlan(leases.length),
@@ -203,6 +219,7 @@ async function main(): Promise<void> {
     requireRemote: true,
   });
   if (!validation.valid) throw new Error(validation.reason);
+  initialized = true;
 
   // Every Pi deployment stops the pipeline service, and the operator's Stop
   // button does the same. Treating either as terminal used to end this process
@@ -210,6 +227,7 @@ async function main(): Promise<void> {
   // so acquisition stayed dead until the next login. Wait the pause out.
   let announcedPause = false;
   while (!controller.signal.aborted) {
+    if (workerDrainRequested()) { await wait(250); continue; }
     if (await pipelineStopRequested()) {
       if (!announcedPause) {
         announcedPause = true;
@@ -222,7 +240,8 @@ async function main(): Promise<void> {
       announcedPause = false;
       console.log('ATS remote worker resuming: the Pi pipeline is running again.');
     }
-    await runLeasedDispatcher();
+    dispatching = true;
+    try { await runLeasedDispatcher(); } finally { dispatching = false; }
   }
 }
 
@@ -232,5 +251,6 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
+    clearInterval(statusTimer);
     await Promise.allSettled([prisma.$disconnect(), controlPrisma.$disconnect()]);
   });

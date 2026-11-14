@@ -8,6 +8,8 @@ import {
 } from '@/lib/pipelineState';
 
 let activeManualRun: Promise<void> | null = null;
+let activeMode: 'local' | 'extraction' | null = null;
+export function manualPipelineMode() { return activeManualRun ? activeMode : null; }
 
 async function launchManualRun(release: () => Promise<void>, run: (signal: AbortSignal) => Promise<void>) {
   const controller = new AbortController();
@@ -52,6 +54,7 @@ export async function startLocalPipeline() {
     }
 
     // Run scoring in background
+    activeMode = 'local';
     await launchManualRun(releaseLock, async (signal) => {
       try {
         updatePipelineState({ stepProgress: 'Running local triage and heuristic scoring...' });
@@ -109,6 +112,7 @@ export async function startExtractionPipeline() {
     }
 
     // Run in background
+    activeMode = 'extraction';
     await launchManualRun(releaseLock, async (signal) => {
       try {
         let loopCount = 0;

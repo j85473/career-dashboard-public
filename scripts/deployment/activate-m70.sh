@@ -83,12 +83,6 @@ if [[ ! -f /etc/career-dashboard/production-enabled ]]; then
  echo "Built release $REV; production gate is absent, so no services were changed."
  exit 0
 fi
-OLD=$(readlink -f "$APP")
-[[ $OLD == /opt/career-dashboard-releases/* || $OLD == /opt/career-dashboard.rehearsal-* ]] || { echo 'Unexpected prior release'; exit 1; }
-OLD_WORKERS=$(readlink -f "$WORKERS" || true)
-HAD_WORKER_LINK=1
-if [[ ! -L $WORKERS ]]; then OLD_WORKERS=$OLD; HAD_WORKER_LINK=0; fi
-[[ $OLD_WORKERS == /opt/career-dashboard-releases/* || $OLD_WORKERS == /opt/career-dashboard.rehearsal-* ]] || { echo 'Unexpected prior worker release'; exit 1; }
 BACKUP_REQUIRED=1
 if (( FORCE_PREDEPLOY_BACKUP == 1 )); then
  echo 'A fresh pre-deployment database backup was explicitly requested.'
@@ -110,28 +104,37 @@ fi
 if (( BACKUP_REQUIRED == 1 )); then
  runuser -u career-dashboard -- node scripts/with-env.mjs node scripts/deployment/backup-postgres.mjs "$SHARED/backups/predeploy-$(date -u +%Y%m%dT%H%M%SZ).dump"
 fi
-# Only known-compatible UI releases take this path. API/shared code, units,
-# dependencies, evidence, migrations, maintenance and uncertain state retain
-# the complete coordinated activation below.
-# Compare without writing into the release: a retry can use the same directory
-# as the running workers, whose saved environment must remain the baseline.
-if [[ $MODE == normal && $BACKUP_REQUIRED == 0 && $FORCE_PREDEPLOY_BACKUP == 0 && -z $EXISTING_PREDEPLOY_BACKUP && $HAD_WORKER_LINK == 1 ]] \
- && node "$STAGE/scripts/deployment/worker-release-manifest.mjs" compatible "$STAGE" "$OLD_WORKERS" \
- && WORKER_ENVIRONMENT=$(node "$STAGE/scripts/deployment/worker-environment-fingerprint.mjs" /etc/career-dashboard) \
- && SAVED_WORKER_ENVIRONMENT=$(cat "$OLD_WORKERS/.worker-environment.sha256") \
- && [[ $WORKER_ENVIRONMENT == "$SAVED_WORKER_ENVIRONMENT" ]] \
- && cmp -s "$STAGE/scripts/deployment/m70/career-dashboard.service" /etc/systemd/system/career-dashboard.service \
- && systemctl is-active --quiet career-dashboard-pipeline.service; then
- WORKER_REV=$(cat "$OLD_WORKERS/.release-id")
- if runuser -u career-dashboard -- node --import tsx "$STAGE/scripts/deployment/check-pipeline-service.ts" "$WORKER_REV"; then
-  source "$STAGE/scripts/deployment/activate-web-only.sh"
-  activate_web_only
+# Compatible worker groups drain separately while their peers keep running.
+# Shared contracts, dependencies, evidence, migrations, maintenance and
+# uncertain state retain the complete coordinated activation below.
+install -d -o root -g root -m 700 "$SHARED/deployment-state"
+# Complete a previously interrupted component rollback before choosing another
+# release. Unknown recovery state refuses activation instead of stopping peers.
+runuser -u root -- node --import tsx "$STAGE/scripts/deployment/roll-worker-components.mjs" recover
+# Recovery may have restored both release links. Capture the resulting healthy
+# releases so a later failure cannot roll back to the interrupted candidate.
+OLD=$(readlink -f "$APP")
+[[ $OLD == /opt/career-dashboard-releases/* || $OLD == /opt/career-dashboard.rehearsal-* ]] || { echo 'Unexpected prior release'; exit 1; }
+OLD_WORKERS=$(readlink -f "$WORKERS" || true)
+HAD_WORKER_LINK=1
+if [[ ! -L $WORKERS ]]; then OLD_WORKERS=$OLD; HAD_WORKER_LINK=0; fi
+[[ $OLD_WORKERS == /opt/career-dashboard-releases/* || $OLD_WORKERS == /opt/career-dashboard.rehearsal-* ]] || { echo 'Unexpected prior worker release'; exit 1; }
+if [[ $MODE == normal && $BACKUP_REQUIRED == 0 && $FORCE_PREDEPLOY_BACKUP == 0 && -z $EXISTING_PREDEPLOY_BACKUP ]]; then
+ node --import tsx "$STAGE/scripts/deployment/roll-worker-components.mjs" plan "$STAGE" > "$SHARED/deployment-state/component-plan.json"
+ if node -e 'const p=require(process.argv[1]); process.exit(["web","rolling"].includes(p.mode) ? 0 : 1)' "$SHARED/deployment-state/component-plan.json"; then
+  node --import tsx "$STAGE/scripts/deployment/roll-worker-components.mjs" activate "$SHARED/deployment-state/component-plan.json" "$STAGE"
+  python3 "$STAGE/scripts/deployment/m70-storage.py" cleanup --apply --deploy-lock-held --protect-release "$OLD" \
+   || echo 'Release is healthy; obsolete-release cleanup needs attention.' >&2
   exit 0
  fi
 fi
 # Capture operator service ownership after the potentially long online backup.
 SCHEDULE=0; WATCHDOG=0; ACQUISITION=0; PRUNING=0; DISCOVERY=0; DISCOVERY_AUDIT=0; CANONICAL_RESOLVER=0; GUSTO=0; STATS_WARM=0; ROTATION_BALANCE=0; FIRST_COLLECTIONS=0; CANONICAL_API=0; CANONICAL_API_NEW=0; PUBLIC_BOARDS=0; PUBLIC_BOARDS_NEW=0; PUBLIC_HTTP=0; PUBLIC_HTTP_NEW=0; WEB_DISCOVERY=0; CRAWL_ARCHIVE=0
 PIPELINE=0; PIPELINE_NEW=0
+WORKER_RECOVERY=0; WORKER_RECOVERY_NEW=0
+[[ -f /etc/systemd/system/career-dashboard-worker-recovery.timer ]] || WORKER_RECOVERY_NEW=1
+systemctl is-active --quiet career-dashboard-worker-recovery.timer && WORKER_RECOVERY=1 || true
+if [[ $MODE == normal && $WORKER_RECOVERY_NEW == 1 ]]; then WORKER_RECOVERY=1; fi
 if [[ ! -f /etc/systemd/system/career-dashboard-pipeline.service ]]; then PIPELINE_NEW=1; fi
 systemctl is-active --quiet career-dashboard-pipeline.service && PIPELINE=1 || true
 if [[ $(systemctl show career-dashboard-pipeline.service --property=SubState --value 2>/dev/null || true) == auto-restart ]]; then PIPELINE=1; fi
@@ -182,9 +185,13 @@ fi
 [[ $MODE != maintenance ]] || WEB_DISCOVERY=0
 [[ $MODE != maintenance ]] || CRAWL_ARCHIVE=0
 [[ $MODE != maintenance ]] || PIPELINE=0
+[[ $MODE != maintenance ]] || WORKER_RECOVERY=0
 resume_discovery_audit() {
  (( DISCOVERY_AUDIT == 0 )) && return
- if runuser -u career-dashboard -- node "$STAGE/scripts/with-env.mjs" node "$STAGE/scripts/deployment/discovery-audit-resume-needed.cjs"; then
+ local audit_root=$APP
+ if [[ -L $WORKERS ]]; then audit_root=$WORKERS; fi
+ if [[ -L /opt/career-dashboard-worker-releases/platform ]]; then audit_root=/opt/career-dashboard-worker-releases/platform; fi
+ if (cd "$audit_root" && runuser -u career-dashboard -- node scripts/with-env.mjs node scripts/deployment/discovery-audit-resume-needed.cjs); then
   systemctl start career-dashboard-discovery-audit.service
   return
  else
@@ -219,15 +226,24 @@ restart_background() {
  (( FIRST_COLLECTIONS == 0 )) || systemctl start career-dashboard-first-collections.timer
  (( ROTATION_BALANCE == 0 )) || systemctl start career-dashboard-rotation-balance.timer
  (( CRAWL_ARCHIVE == 0 )) || systemctl start career-dashboard-crawl-archive.timer
+ (( WORKER_RECOVERY == 0 )) || systemctl start career-dashboard-worker-recovery.timer
  resume_discovery_audit
 }
 SWAPPED=0
 WORKERS_SWAPPED=0
 WORKER_ENV_CHANGED=0
+WORKER_PINS_SNAPSHOTTED=0
+node --import tsx "$STAGE/scripts/deployment/roll-worker-components.mjs" snapshot "$SHARED/deployment-state/full-worker-pins.previous.json"
+WORKER_PINS_SNAPSHOTTED=1
 recover() {
  trap - ERR
  echo 'Release failed; preserving the database and restoring prior application routing.' >&2
  if [[ -f /etc/systemd/system/career-dashboard-pipeline.service ]]; then systemctl stop career-dashboard-pipeline.service || true; fi
+ systemctl stop career-dashboard-worker-recovery.timer career-dashboard-worker-recovery.service 2>/dev/null || true
+ if (( ${WORKER_RECOVERY_NEW:-0} == 1 )); then
+  WORKER_RECOVERY=0
+  systemctl disable career-dashboard-worker-recovery.timer 2>/dev/null || true
+ fi
  systemctl stop career-dashboard-crawl-archive.timer career-dashboard-crawl-archive.service 2>/dev/null || true
  if [[ ! -f $OLD/scripts/deployment/m70/career-dashboard-crawl-archive.timer ]]; then
   CRAWL_ARCHIVE=0
@@ -287,6 +303,9 @@ recover() {
   if [[ -f $OLD/scripts/deployment/install-m70-maintenance.sh ]]; then
    bash "$OLD/scripts/deployment/install-m70-maintenance.sh" --install-only
   fi
+  if (( ${WORKER_PINS_SNAPSHOTTED:-0} == 1 )); then
+   node --import tsx "$STAGE/scripts/deployment/roll-worker-components.mjs" restore "$SHARED/deployment-state/full-worker-pins.previous.json"
+  fi
   systemctl daemon-reload
  fi
  systemctl start career-dashboard.service
@@ -294,6 +313,7 @@ recover() {
 }
 trap recover ERR
 systemctl stop career-dashboard-scheduler.timer career-dashboard-watchdog.timer
+systemctl stop career-dashboard-worker-recovery.timer 2>/dev/null || true
 # Owning backup.lock already proves no archive transaction remains in flight.
 systemctl stop career-dashboard-crawl-archive.timer career-dashboard-crawl-archive.service 2>/dev/null || true
 # Tolerated separately: units are installed further down, so on the first
@@ -349,6 +369,7 @@ WORKERS_SWAPPED=1
 ln -sfn "$STAGE" "$APP.next"; mv -Tf "$APP.next" "$APP"
 SWAPPED=1
 install -o root -g root -m 644 "$STAGE"/scripts/deployment/m70/* /etc/systemd/system/
+node --import tsx "$STAGE/scripts/deployment/roll-worker-components.mjs" install "$STAGE"
 install -o root -g root -m 755 "$STAGE/scripts/deployment/m70-backup.sh" /usr/local/sbin/career-m70-backup
 if [[ -f /etc/career-dashboard/backup-repository-enabled ]]; then
  bash "$STAGE/scripts/deployment/install-m70-repository-backup.sh" --backup-lock-held
@@ -371,6 +392,7 @@ curl -fsS --max-time 10 -D - -o /dev/null http://100.107.116.123:3000/api/stats 
  | grep -i '^x-career-stats-cache: hit' > /dev/null
 restart_background
 if [[ $MODE == normal ]]; then
+ if (( WORKER_RECOVERY_NEW == 1 )); then systemctl enable career-dashboard-worker-recovery.timer; fi
  if (( PIPELINE_NEW == 1 )); then systemctl enable career-dashboard-pipeline.service; fi
  systemctl enable --now career-dashboard-stats-warm.timer
  # Enable the separated API resolver on its first installation; later releases

@@ -129,7 +129,8 @@ tar --dereference \
   --transform='s,^runtime-snapshot,data/runtime,' \
   -czf "$DIR/m70-$STAMP.files.tar.gz.partial" \
   -C /opt/career-dashboard data \
-  -C /etc career-dashboard/runtime.env career-dashboard/acquisition-release.env \
+  -C /etc career-dashboard/runtime.env career-dashboard/acquisition-release.env career-dashboard/worker-releases \
+  -C /var/lib/career-dashboard deployment-state \
   -C "$SNAPSHOT" runtime-snapshot
 chmod 600 "$DIR/m70-$STAMP.files.tar.gz.partial"
 mv "$DIR/m70-$STAMP.files.tar.gz.partial" "$DIR/m70-$STAMP.files.tar.gz"

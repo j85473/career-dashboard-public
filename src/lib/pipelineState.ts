@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from './prismaClient';
 import { controlPrisma } from './controlPrisma';
 import { createLatestOnlyAsyncWriter } from './latestOnlyAsyncWriter';
+import { acquisitionCanContinueDuringHandoff, workerDrainRequested } from './workerDeployment';
 
 export type PipelineStateClient = Pick<PrismaClient, 'pipelineState'>;
 
@@ -106,8 +107,10 @@ export async function waitForPipelineDelay(milliseconds: number, signal: AbortSi
   if (signal.aborted || milliseconds <= 0) return;
   await new Promise<void>((resolve) => {
     const timer = setTimeout(done, milliseconds);
+    const drainPoll = setInterval(() => { if (workerDrainRequested()) done(); }, 1_000);
     function done() {
       clearTimeout(timer);
+      clearInterval(drainPoll);
       signal.removeEventListener('abort', done);
       resolve();
     }
@@ -400,7 +403,7 @@ export async function tryAcquirePipelineLock(
   };
 }
 
-let stopCheckCache: { at: number; running: boolean } | null = null;
+let stopCheckCache: { at: number; running: boolean; paused: boolean } | null = null;
 
 /**
  * Whether a stop has been requested, read from the shared row so a Stop pressed
@@ -412,6 +415,7 @@ export async function pipelineStopRequested(
   now: number = Date.now(),
 ): Promise<boolean> {
   if (!storageAllows('background')) return true;
+  if (workerDrainRequested()) return true;
   return pipelineOperatorStopRequested(client, now);
 }
 
@@ -420,14 +424,19 @@ export async function pipelineOperatorStopRequested(
   client: PipelineStateClient = controlPrisma,
   now: number = Date.now(),
 ): Promise<boolean> {
-  if (stopCheckCache && now - stopCheckCache.at < 3_000) return !stopCheckCache.running;
+  const stopped = (state: { running: boolean; paused: boolean }) => state.paused
+    || (!state.running && !acquisitionCanContinueDuringHandoff(now));
+  const refreshAfterHandoff = stopCheckCache && !stopCheckCache.running && !stopCheckCache.paused
+    && process.env.CAREER_WORKER_COMPONENT === 'acquisition' && !acquisitionCanContinueDuringHandoff(now);
+  if (stopCheckCache && now - stopCheckCache.at < 3_000 && !refreshAfterHandoff) return stopped(stopCheckCache);
   try {
     const row = await client.pipelineState.findUnique({
       where: { id: 'global' },
-      select: { isRunning: true },
+      select: { isRunning: true, schedulePaused: true, pausedUntil: true },
     });
-    stopCheckCache = { at: now, running: row?.isRunning !== false };
-    return !stopCheckCache.running;
+    stopCheckCache = { at: now, running: row?.isRunning !== false,
+      paused: row?.schedulePaused === true && !(row.pausedUntil && row.pausedUntil.getTime() <= now) };
+    return stopped(stopCheckCache);
   } catch {
     // A connection blip must not abort a multi-hour ingestion. A genuine
     // outage still ends the run: the heartbeat stops and the lock expires.

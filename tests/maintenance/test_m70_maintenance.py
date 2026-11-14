@@ -316,6 +316,22 @@ class CoordinationTests(unittest.TestCase):
                        if event[0] == 'start' and timer in event)
         self.assertLess(health, resumed)
 
+    def test_component_release_recovery_waits_through_maintenance_and_returns_after_health(self):
+        timer = 'career-dashboard-worker-recovery.timer'
+        self.fake.units.add(timer)
+        self.fake.loaded_units.add(timer)
+        self.fake.run()
+        self.assertIn(timer, json.loads(self.fake.pending.read_text())['background'])
+        self.assertNotIn(timer, self.fake.units)
+        self.assertIn('career-dashboard-worker-recovery.service', m.INVOCATIONS)
+        self.fake.events.clear()
+        self.fake.boot = 'after'
+        self.fake.required = False
+        self.fake.recover()
+        health = next(index for index, event in enumerate(self.fake.events) if event[0] == 'health')
+        resumed = next(index for index, event in enumerate(self.fake.events) if event[0] == 'start' and timer in event)
+        self.assertLess(health, resumed)
+
     def test_recovery_preserves_a_stopped_http_collection_timer(self):
         timer = 'career-dashboard-public-http.timer'
         self.fake.loaded_units.add(timer)

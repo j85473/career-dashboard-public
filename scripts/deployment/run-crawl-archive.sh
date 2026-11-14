@@ -5,5 +5,6 @@ set -euo pipefail
 # A timer retries after a busy lock; it must never compete for their reserve.
 exec 8>/var/lib/career-dashboard/backup.lock
 flock -n 8 || exit 0
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 exec runuser -u postgres -g career-dashboard -- /usr/local/bin/node --max-old-space-size=2048 \
-  /opt/career-dashboard-workers/scripts/deployment/crawl-disposal.mjs --apply
+  "$SCRIPT_DIR/crawl-disposal.mjs" --apply

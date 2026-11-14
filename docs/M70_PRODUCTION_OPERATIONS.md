@@ -366,6 +366,67 @@ the same through both web activation and web rollback. The local automated
 rehearsal exercises process replacement and rollback using bounded fake work;
 it is not production execution proof.
 
+### Worker-by-worker releases (phase two)
+
+The second phase installs a separate release pin and service environment for
+each worker group. The first deployment of phase two uses the full coordinated
+handoff to install its control protocol and baseline. Subsequent compatible
+changes update affected groups serially while unrelated groups keep running.
+
+The release manifest includes the actual source dependency graph for each
+group, including dynamic worker entrypoints and unit definitions. Pipeline,
+acquisition, public HTTP collection, the shared licensed-browser group,
+canonical API recovery, admission/balancing, watchdog and web discovery support
+selective updates. Shared browser services update together under their existing
+single-license lock. Long discovery audits, pruning, archive/storage and backup
+changes retain coordinated activation. Schema, dependencies, settings, scoring
+authority, shared ownership/payload contracts and unknown input changes also
+retain that path. Any new durable work format must change the protected
+coordination contract before allowing old and new workers to overlap.
+
+Pipeline and acquisition lanes finish their current bounded task, keep their
+leases heartbeating, and hold before claiming more work. The release switches
+their pin only after all lanes acknowledge that checkpoint and systemd confirms
+the old process stopped. Unchanged eight-slot capacity and existing lease fences
+remain authoritative. Timer-driven workers finish the current saved turn before
+their code changes. A timeout cancels the hold and leaves the original process
+able to continue; deployment does not kill the unfinished task or clear leases.
+
+The coordinator resumes an active full run with scheduled-start semantics, so a
+Stop pressed during the update takes precedence. Acquisition recognizes only
+the bounded, token-owned technical coordinator handoff; that marker never
+overrides an operator pause. Local Scoring and JD Extraction finish their
+original finite invocation and are not restarted with a fresh pass allowance.
+
+Pins and their rollback targets live under
+`/opt/career-dashboard-worker-releases/<group>`. Per-group environments are in
+`/etc/career-dashboard/worker-releases`. The legacy worker link and release
+environment continue to identify the coordinator for existing operator tools.
+Root-owned plans, baselines and recovery journals live in
+`/var/lib/career-dashboard/deployment-state`, outside worker-writable runtime
+state. Nightly recovery archives retain both the per-group configuration and
+deployment metadata. Release cleanup protects component and recovery targets,
+including intentionally stopped workers.
+
+A failed selective update rolls back only touched groups and web routing. A
+new worker that already started work must reach its checkpoint before rollback.
+Interrupted activation resumes the recorded rollback under the deployment
+and backup locks. A recovery timer checks after boot and each completed minute;
+it skips a live deployment or backup and respects automatic maintenance. It
+prevents a saved checkpoint hold from waiting indefinitely for another deploy.
+Unowned or unreadable handoff state refuses another activation. The
+coordinated path snapshots and restores all component pins independently. No
+application rollback restores an older database, resets crawl offsets, moves
+retry dates, or removes existing scores. Baseline selection is read-only, and a
+failed handoff restores the prior settings baseline.
+
+Local tests include process-level acquisition replacement with saved task IDs,
+a continuing coordinator PID and progress, canceled drains, operator Stop,
+manual pass boundaries, failed startup/health, mixed release pins and recovery
+after interruption. Production proof still requires the guarded phase-two
+bootstrap, followed by a compatible worker update while observing continuing
+peer progress and unchanged ownership/concurrency boundaries.
+
 ## Backups and recovery
 
 ### Deduplicated recovery points (October 28, 2026)

@@ -2,6 +2,8 @@ type PipelineLoopOptions = {
   signal: AbortSignal;
   /** Operator/deployment stop only; a temporary storage hold is not a stop. */
   shouldStop: () => Promise<boolean>;
+  shouldDrain?: () => boolean;
+  onDrainState?: (drained: boolean) => void;
   /** Notify the owning run so sibling loops receive the same stop signal. */
   onStopRequested?: () => void;
   canRun: () => boolean;
@@ -24,6 +26,12 @@ export async function supervisePipelineLoop(
   let storagePaused = false;
   while (!options.signal.aborted) {
     if (await shouldStop() || options.signal.aborted) return;
+    if (options.shouldDrain?.()) {
+      options.onDrainState?.(true);
+      await options.wait(250, options.signal);
+      continue;
+    }
+    options.onDrainState?.(false);
     if (!options.canRun()) {
       if (!storagePaused) {
         storagePaused = true;

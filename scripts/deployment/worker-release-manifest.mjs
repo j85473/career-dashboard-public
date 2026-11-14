@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { componentManifest } from './worker-component-manifest.mjs';
 
 // Fail closed: unknown files affect workers. UI files cannot change the API,
 // database, shared libraries, runtime evidence, packages or deployment units.
@@ -11,7 +12,7 @@ export function webOnlyPath(name) {
     || name.startsWith('public/')
     || (name.startsWith('src/app/') && !name.startsWith('src/app/api/'))
     || name.startsWith('tests/') || name.includes('/__tests__/')
-    || name.startsWith('.github/') || ['AGENTS.md', 'README.md', '.gitignore'].includes(name);
+    || name.startsWith('.github/') || ['AGENTS.md', 'README.md', '.gitignore', 'docs/M70_PRODUCTION_OPERATIONS.md'].includes(name);
 }
 
 export function workerInputsHash(tree) {
@@ -25,7 +26,7 @@ export function workerInputsHash(tree) {
 export function readManifest(directory) {
   const manifest = JSON.parse(readFileSync(resolve(directory, '.worker-release.json'), 'utf8'));
   const release = readFileSync(resolve(directory, '.release-id'), 'utf8').trim();
-  if (manifest.version !== 1 || manifest.release !== release || !/^[a-f0-9]{40}$/.test(release)
+  if (![1, 2].includes(manifest.version) || manifest.release !== release || !/^[a-f0-9]{40}$/.test(release)
     || !/^[a-f0-9]{64}$/.test(manifest.inputsHash)) throw new Error('Unverified worker manifest.');
   return manifest;
 }
@@ -36,7 +37,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       const release = process.argv[3];
       if (!/^[a-f0-9]{40}$/.test(release)) throw new Error('An exact committed release is required.');
       const tree = execFileSync('git', ['ls-tree', '-rz', '--full-tree', release], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-      console.log(JSON.stringify({ version: 1, release, inputsHash: workerInputsHash(tree) }));
+      console.log(JSON.stringify({ version: 2, release, inputsHash: workerInputsHash(tree),
+        workerGroups: componentManifest(tree, webOnlyPath) }));
     } else if (process.argv[2] === 'compatible') {
       const candidate = readManifest(process.argv[3]);
       const workers = readManifest(process.argv[4]);

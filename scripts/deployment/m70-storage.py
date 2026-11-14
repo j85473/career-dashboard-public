@@ -100,6 +100,20 @@ def protected_releases(extra):
         config = Path('/etc/career-dashboard') / name
         if config.exists():
             protected.update(re.findall(r'^ATS_WORKER_RELEASE_ID=([0-9a-f]{40})$', config.read_text(), re.M))
+    pins = Path('/opt/career-dashboard-worker-releases')
+    if pins.exists():
+        for alias in pins.iterdir():
+            if alias.is_symlink():
+                target = alias.resolve(strict=True)
+                if target.parent == RELEASES:
+                    protected.add(target.name)
+    # Root-owned recovery metadata retains both sides of an interrupted or
+    # most recent component handoff, including intentionally stopped workers.
+    state = SHARED / 'deployment-state'
+    for name in ('component-deployment.json', 'full-worker-pins.previous.json'):
+        record = state / name
+        if record.is_file():
+            protected.update(re.findall(r'/opt/career-dashboard-releases/([0-9a-f]{40})(?=/|["\s]|$)', record.read_text()))
     return protected
 
 

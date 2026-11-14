@@ -1,10 +1,10 @@
 import { request } from 'node:http';
 
-export const PIPELINE_CONTROL_PROTOCOL = 1;
+export const PIPELINE_CONTROL_PROTOCOL = 2;
 export const PIPELINE_CONTROL_SOCKET = '/var/lib/career-dashboard/data/runtime/pipeline-control.sock';
 
 export function requestPipelineService(
-  pathname: '/start' | '/abort' | '/health',
+  pathname: '/start' | '/resume' | '/abort' | '/health',
   body: Record<string, unknown> = {},
   socketPath = process.env.PIPELINE_CONTROL_SOCKET || PIPELINE_CONTROL_SOCKET,
   timeoutMs = 10_000,

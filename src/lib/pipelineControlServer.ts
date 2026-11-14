@@ -1,13 +1,15 @@
 import { createServer } from 'node:http';
 import { chmod, lstat, unlink } from 'node:fs/promises';
 import { PIPELINE_CONTROL_PROTOCOL, requestPipelineService } from './pipelineServiceClient';
+import { readWorkerHandoff, workerDeploymentBlocked } from './workerDeployment';
 
 /** Private same-user control channel; the worker never binds a TCP port. */
 export async function createPipelineControlServer(options: {
   socketPath: string;
   release: string;
-  start: (scheduled: boolean, mode: 'full' | 'local' | 'extraction') => Promise<Response>;
+  start: (scheduled: boolean, mode: 'full' | 'local' | 'extraction', resume: boolean) => Promise<Response>;
   abort: () => boolean;
+  workState?: () => { running: boolean; mode: 'full' | 'local' | 'extraction' | null; drained: boolean };
 }) {
   try {
     const existing = await lstat(options.socketPath);
@@ -33,10 +35,11 @@ export async function createPipelineControlServer(options: {
       if (closing) { reject(503, 'Pipeline service is stopping.'); return; }
       if (req.method === 'GET' && req.url === '/health') {
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ ok: true, protocol: PIPELINE_CONTROL_PROTOCOL, release: options.release, pid: process.pid }));
+        res.end(JSON.stringify({ ok: true, protocol: PIPELINE_CONTROL_PROTOCOL, release: options.release, pid: process.pid,
+          ...(options.workState?.() || {}) }));
         return;
       }
-      if (req.method !== 'POST' || !['/start', '/abort'].includes(req.url || '')) {
+      if (req.method !== 'POST' || !['/start', '/resume', '/abort'].includes(req.url || '')) {
         reject(404, 'Unknown pipeline control command.'); return;
       }
       let payload = '';
@@ -46,14 +49,21 @@ export async function createPipelineControlServer(options: {
       }
       const input: unknown = JSON.parse(payload || '{}');
       if (!input || typeof input !== 'object' || Array.isArray(input)) { reject(400, 'Invalid pipeline control command.'); return; }
-      const scheduled = (input as { scheduled?: unknown }).scheduled;
+      const scheduled = req.url === '/resume' ? true : (input as { scheduled?: unknown }).scheduled;
       const mode = (input as { mode?: unknown }).mode ?? 'full';
       if (req.url === '/start' && typeof scheduled !== 'boolean') { reject(400, 'Start requires a scheduled boolean.'); return; }
       if (typeof mode !== 'string' || !['full', 'local', 'extraction'].includes(mode) || (scheduled && mode !== 'full')) {
         reject(400, 'Invalid pipeline run mode.'); return;
       }
-      const result = req.url === '/start'
-        ? await options.start(scheduled as boolean, mode as 'full' | 'local' | 'extraction')
+      const handoff = req.url === '/resume' ? readWorkerHandoff('pipeline') : null;
+      const ownedResume = handoff !== null && handoff !== 'unreadable' && handoff.deadline > Date.now()
+        && handoff.resumeMode === 'full' && handoff.token === (input as { token?: unknown }).token;
+      if (req.url === '/resume' && !ownedResume) { reject(409, 'Resume does not own this handoff.'); return; }
+      if (req.url !== '/abort' && workerDeploymentBlocked() && !ownedResume) {
+        reject(503, 'The pipeline is updating. Please retry shortly.'); return;
+      }
+      const result = req.url === '/start' || req.url === '/resume'
+        ? await options.start(scheduled as boolean, mode as 'full' | 'local' | 'extraction', req.url === '/resume')
         : Response.json({ aborted: options.abort() });
       res.writeHead(result.status, { 'content-type': 'application/json' });
       res.end(await result.text());
