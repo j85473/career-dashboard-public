@@ -133,6 +133,77 @@ test('a compatible web update leaves an intentionally stopped coordinator stoppe
   } finally { f.cleanup(); }
 });
 
+const productionOverrides = [
+  ['career-dashboard-backup.service', '60-repository-backup.conf', `[Unit]
+StartLimitIntervalSec=8h
+[Service]
+ExecStart=
+ExecStart=/usr/local/sbin/career-m70-repository-backup
+TimeoutStartSec=3h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+`],
+  ...['career-dashboard-discovery.service', 'career-dashboard-discovery-audit.service'].flatMap((unit) => [
+    [unit, '90-direct-commoncrawl.conf', `[Service]
+EnvironmentFile=
+EnvironmentFile=/etc/career-dashboard/runtime.env
+EnvironmentFile=/etc/career-dashboard/acquisition-release.env
+EnvironmentFile=/etc/career-dashboard/discovery-source.env
+`],
+    [unit, '95-local-commoncrawl.conf', '[Service]\nEnvironmentFile=-/etc/career-dashboard/common-crawl-local.env\n'],
+  ]),
+];
+
+function installOverride(paths: ReturnType<typeof deploymentPaths>, unit: string, name: string, contents: string) {
+  const directory = path.join(paths.units, `${unit}.d`);
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, name), contents);
+}
+
+for (const changed of [[], ['acquisition']]) {
+  test(`reviewed production overrides allow a ${changed.length ? 'worker' : 'web'} update without restarting platform work`, async () => {
+    const f = fixture(changed);
+    try {
+      for (const [unit, name, contents] of productionOverrides) installOverride(f.paths, unit, name, '# Installed production setting\n' + contents);
+      const plan = planComponentActivation(f.candidate, environment, f.paths);
+      assert.equal(plan.mode, changed.length ? 'rolling' : 'web');
+      const r = runtime(f);
+      await r.engine.activate(plan, f.candidate);
+      assert.ok(!r.commands.some((line) => /(?:stop|start) career-dashboard-(?:discovery|backup)/.test(line)));
+      for (const [unit, name, contents] of productionOverrides) {
+        assert.equal(fs.readFileSync(path.join(f.paths.units, `${unit}.d`, name), 'utf8'), '# Installed production setting\n' + contents);
+      }
+    } finally { f.cleanup(); }
+  });
+}
+
+for (const suffix of ['service', 'timer']) {
+  test(`a modified maintenance ${suffix} override cannot authorize an independent update`, () => {
+    const f = fixture();
+    try {
+      const unit = `career-dashboard-scheduler.${suffix}`;
+      const contents = '[Unit]\nConditionPathExists=!/var/lib/m70-auto-maintenance/hold-background\n';
+      installOverride(f.paths, unit, '50-automatic-maintenance.conf', contents);
+      assert.equal(planComponentActivation(f.candidate, environment, f.paths).mode, 'rolling');
+      installOverride(f.paths, unit, '50-automatic-maintenance.conf', contents + '[Service]\nExecStart=/tmp/unreviewed-worker\n');
+      assert.equal(planComponentActivation(f.candidate, environment, f.paths).mode, 'coordinated');
+    } finally { f.cleanup(); }
+  });
+}
+
+test('changed or misplaced production overrides retain coordinated activation', () => {
+  const f = fixture();
+  try {
+    const [unit, name, contents] = productionOverrides[0];
+    installOverride(f.paths, unit, name, contents + 'Environment=UNREVIEWED=1\n');
+    assert.equal(planComponentActivation(f.candidate, environment, f.paths).mode, 'coordinated');
+    fs.rmSync(path.join(f.paths.units, `${unit}.d`, name));
+    installOverride(f.paths, 'career-dashboard-acquisition.service', name, contents);
+    assert.equal(planComponentActivation(f.candidate, environment, f.paths).mode, 'coordinated');
+  } finally { f.cleanup(); }
+});
+
 for (const component of ['pipeline', 'acquisition', 'public-http'] as const) {
   for (const failure of ['unreadable', 'unknown']) {
     test(`${failure} ${component} service state refuses handoff without changing its pin or stopping work`, async () => {

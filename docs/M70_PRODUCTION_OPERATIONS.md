@@ -384,6 +384,12 @@ authority, shared ownership/payload contracts and unknown input changes also
 retain that path. Any new durable work format must change the protected
 coordination contract before allowing old and new workers to overlap.
 
+The planner checks service and timer overrides by their contents and owning
+unit. The existing automatic-maintenance holds, repository-backup dispatcher,
+and direct/local Common Crawl settings are reviewed exceptions. Unknown or
+modified directives still require coordinated activation; recognizing these
+overrides does not rewrite them or change discovery/backup behavior.
+
 Pipeline and acquisition lanes finish their current bounded task, keep their
 leases heartbeating, and hold before claiming more work. The release switches
 their pin only after all lanes acknowledge that checkpoint and systemd confirms

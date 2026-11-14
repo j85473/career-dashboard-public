@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { WORKER_COMPONENTS, COMPONENT_PROTOCOL, deploymentPaths, renderWorkerUnit } from './worker-components.mjs';
 import { readManifest } from './worker-release-manifest.mjs';
+import { reviewedWorkerOverride } from './worker-unit-overrides.mjs';
 
 export function atomicWrite(filename, contents, mode = 0o600) {
   fs.mkdirSync(path.dirname(filename), { recursive: true });
@@ -118,10 +119,13 @@ export function planComponentActivation(directory, environmentHash, paths = depl
         || prior.workerGroups?.coordinationHash !== candidate.workerGroups.coordinationHash) return full('Coordination, schema, dependency or unclassified inputs changed.');
       if (readOptional(path.join(paths.config, 'worker-releases', `${name}.env`)) !== componentEnvironment(name, pin.release)) return full('Installed worker configuration differs from its pin.');
       for (const unit of component.units) {
-        const dropins = path.join(paths.units, `${unit}.service.d`);
-        if (fs.existsSync(dropins) && fs.readdirSync(dropins).some((name) => name !== '50-automatic-maintenance.conf')) return full('An unreviewed service override requires coordinated activation.');
         for (const suffix of ['service', 'timer']) {
           const filename = `${unit}.${suffix}`;
+          const dropins = path.join(paths.units, `${filename}.d`);
+          if (fs.existsSync(dropins) && fs.readdirSync(dropins).some((override) =>
+            !reviewedWorkerOverride(filename, override, readOptional(path.join(dropins, override))))) {
+            return full('An unreviewed service or timer override requires coordinated activation.');
+          }
           const source = readOptional(path.join(paths.releases, pin.release, 'scripts/deployment/m70', filename));
           const installed = readOptional(path.join(paths.units, filename));
           const candidateSource = readOptional(path.join(directory, 'scripts/deployment/m70', filename));
