@@ -65,7 +65,7 @@ type DuplicateMergeReview = {
 interface ExpandOverlayProps {
   job: JobListItem;
   onClose: () => void;
-  onStatusChange: (id: string, status: string, reason?: string) => void | Promise<void>;
+  onStatusChange: (id: string, status: string, reason?: string) => void | Partial<JobListItem> | Promise<void | Partial<JobListItem>>;
   onToggleTailoring?: (id: string, isStaged: boolean) => void;
   onJobUpdate?: (id: string, updates: Partial<JobListItem>) => void;
   onCompanySelect: (company: string) => void;
@@ -125,6 +125,7 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
   const [passReason, setPassReason] = useState('');
   const [passReasonType, setPassReasonType] = useState('Not interested');
   const [showPassInput, setShowPassInput] = useState(false);
+  const [isPromoting, setIsPromoting] = useState(false);
 
 
   const [isEditingJD, setIsEditingJD] = useState(false);
@@ -411,9 +412,15 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
     }
   };
 
-  const handlePromote = () => {
-    onStatusChange(job.id, 'promoted');
-    onClose();
+  const handlePromote = async () => {
+    if (isPromoting) return;
+    setIsPromoting(true);
+    try {
+      const updatedJob = await onStatusChange(job.id, 'promoted');
+      if (updatedJob) setJob(current => ({ ...current, ...updatedJob }));
+    } finally {
+      setIsPromoting(false);
+    }
   };
 
   const handleCopy = async (text: string, successMessage: string) => {
@@ -1334,9 +1341,9 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
 
           {/* Promote Button (Dismissed only) */}
           {job.status === 'dismissed' && !isCombinedCopy && (
-            <button className="expand-btn primary" onClick={handlePromote} style={{ height: '36px', padding: '0 16px', background: 'var(--accent)', borderColor: 'var(--accent)', color: '#fff' }}>
-              <CheckCircle size={16} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
-              Promote to Inbox
+            <button className="expand-btn primary" onClick={handlePromote} disabled={isPromoting} style={{ height: '36px', padding: '0 16px', background: 'var(--accent)', borderColor: 'var(--accent)', color: '#fff' }}>
+              {isPromoting ? <Loader2 size={16} className="animate-spin" style={{ verticalAlign: 'middle', marginRight: '6px' }} /> : <CheckCircle size={16} style={{ verticalAlign: 'middle', marginRight: '6px' }} />}
+              {isPromoting ? 'Promoting…' : 'Promote to Inbox'}
             </button>
           )}
 

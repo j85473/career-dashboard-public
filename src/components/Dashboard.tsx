@@ -583,6 +583,7 @@ export default function Dashboard() {
         }));
         window.dispatchEvent(new CustomEvent('jobStatusChanged', { detail: { id, status: actualStatus } }));
       }
+      return { ...updatedJob, status: actualStatus };
     } catch (error) {
       console.error('Failed to update status', error);
       await showAlert(error instanceof Error ? error.message : 'Failed to update the job.');
