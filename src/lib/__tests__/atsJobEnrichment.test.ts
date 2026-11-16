@@ -356,6 +356,42 @@ function createHarness(input: HarnessInput = {}): Harness {
   };
 }
 
+test('Workday uses bounded native HTTP for full details within the existing request fence and budgets', async () => {
+  const harness = createHarness({ body: {
+    hiringOrganization: { name: 'Acme Systems' },
+    jobPostingInfo: { jobDescription: '<p>Own partner accounts.</p>', location: 'Minneapolis, MN' },
+  } });
+  harness.dependencies.fetch = async () => { throw new Error('Workday details used the wrong HTTP client'); };
+  const job = { title: 'Account Manager', externalPath: '/job/REQ-1' };
+  const original = structuredClone(job);
+  const enriched = await enrichAtsListingJob({ platform: 'workday', slug: 'acme.wd5::Careers', job,
+    requestTimeoutMs: 1000, ...harness.inputCallbacks }, harness.dependencies);
+  const marker = readAtsJobEnrichmentMarker(enriched)!;
+  assert.equal(marker.status, 'enriched');
+  assert.equal(marker.company, 'Acme Systems');
+  assert.equal(marker.description, '<p>Own partner accounts.</p>');
+  assert.equal(marker.location, 'Minneapolis, MN');
+  assert.deepEqual(harness.urls, ['https://acme.wd5.myworkdayjobs.com/wday/cxs/acme/Careers/job/REQ-1']);
+  assert.deepEqual(harness.reservations, ['ATS-workday', 'ATS-workday Details']);
+  assert.equal(harness.started, 1);
+  assert.equal(harness.responded.length, 1);
+  assert.deepEqual(job, original);
+});
+
+test('a Workday detail 429 still defers the saved posting without a second transport attempt', async () => {
+  const harness = createHarness({ status: 429, body: 'Request limit reached' });
+  harness.dependencies.fetch = async () => { throw new Error('A refusal must not trigger an alternate client'); };
+  const job = { title: 'Account Manager', externalPath: '/job/REQ-1' };
+  await assert.rejects(enrichAtsListingJob({ platform: 'workday', slug: 'acme.wd5::Careers', job,
+    requestTimeoutMs: 1000, ...harness.inputCallbacks }, harness.dependencies),
+  (error: unknown) => error instanceof TestAtsPlatformDeferredError
+    && error.retryAt?.toISOString() === '2026-08-27T17:01:00.000Z');
+  assert.equal(harness.urls.length, 1);
+  assert.equal(harness.started, 1);
+  assert.deepEqual(harness.successes, []);
+  assert.equal(readAtsJobEnrichmentMarker(job), null);
+});
+
 test('marker validation is versioned and read rejects malformed reserved payloads', () => {
   const marker = {
     version: ATS_JOB_ENRICHMENT_VERSION,
@@ -1170,7 +1206,7 @@ for (const fixture of jobScopedDetailCases) {
 test('a failed JSON response body still records a transport failure for shared detail protection', async () => {
   const harness = createHarness();
   const bodyError = new TypeError('detail response connection terminated');
-  harness.dependencies.fetch = async () => new Response(new ReadableStream({
+  harness.dependencies.safeExternalFetch = async () => new Response(new ReadableStream({
     start(controller) { controller.error(bodyError); },
   }));
   const result = await enrichAtsListingJob({ platform: 'workday', slug: 'acme.wd5::Careers',

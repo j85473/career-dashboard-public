@@ -1,4 +1,5 @@
 import { atsRateLimitIsBoardScoped } from './atsUtils';
+import { fetchAtsJson } from './atsJsonTransport';
 import { withAtsRetryReason, type AtsRetryCode, type AtsRetryReason } from './atsRetryReason';
 import type { AtsJobEnrichmentDependencies, EnrichAtsListingJobInput } from './atsJobEnrichment';
 
@@ -118,7 +119,9 @@ export function createAtsDetailRequestSession(input: EnrichAtsListingJobInput,
           const init: RequestInit = { signal: networkSignal, headers: options.transport === 'fetch'
             ? { Accept: 'application/json' }
             : { 'User-Agent': dependencies.jsonLdFetchUserAgent, Accept: 'application/json,text/html' } };
-          return await (options.transport === 'fetch' ? dependencies.fetch : dependencies.safeExternalFetch)(url, init);
+          return await (options.transport === 'fetch'
+            ? fetchAtsJson(platform, url, init, dependencies)
+            : dependencies.safeExternalFetch(url, init));
         } catch (error) {
           if (!vendorRequest && !isAbortError(error)) throw new AtsDetailResponseError('Linked employer website unavailable', error, 'network_failure');
           throw error instanceof Error && !isAbortError(error)

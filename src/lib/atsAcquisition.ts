@@ -11,6 +11,7 @@ import { recoverPublishedAtsBoardEmployer } from './atsEmployerRecovery';
 import { buildPublicAtsBoardRequest, isPublicAtsPlatform, parsePublicAtsListing, publicAtsPageSize, publicAtsBoardUrl, parsePublicAtsConfig, teamtailorHasMore, publicAtsNeedsConfig, type PublicAtsConfig } from './publicAtsBoards';
 import { eightfoldBoardIdentity, eightfoldCareersUrl, eightfoldSearchUrl, parseEightfoldConfig, parseEightfoldListing } from './eightfoldBoard';
 import { safeExternalFetch } from './safeExternalFetch';
+import { fetchAtsJson } from './atsJsonTransport';
 import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 
@@ -970,7 +971,7 @@ export async function fetchAtsBoardPage(
     await reserveAtsRequest(source);
     await onRequestStarted?.();
     try {
-      return await fetch(request.url, { ...request.init, signal: requestSignal(signal) });
+      return await fetchAtsJson(board.platform, request.url, { ...request.init, signal: requestSignal(signal) });
     } catch (error) {
       if (board.platform !== 'comeet') throw error;
       const sanitized = new Error('Comeet public career feed request failed');

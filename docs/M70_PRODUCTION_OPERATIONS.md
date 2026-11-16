@@ -920,6 +920,23 @@ verified in the audit; `--apply` adds missing seeds without reviving retired
 boards or changing existing board schedules. Normal expansion comes from the
 Athena/Common Crawl candidate queue.
 
+### Workday JSON transport (November 16, 2026)
+
+Workday listing and detail JSON requests use the existing bounded native HTTP
+client, also used by public Workday posting recovery. Production probes returned
+valid listings, pagination and full descriptions through that client while the
+built-in fetch client received HTTP 429 challenge HTML from the same endpoints.
+The exact vendor-side rule remains unknown; this is a client-sensitive refusal,
+not evidence that every Workday employer is unavailable.
+
+Acquisition, detail enrichment and the legacy ingestion path use one transport
+selection rule. Other providers retain their current clients. Workday requests
+remain inside the existing budget, concurrency, response-validation and cooldown
+guards; a 429 is returned to those guards without trying another client. The
+native client retains public-address validation, TLS verification, redirect
+checks, cancellation and bounded compressed/decompressed response sizes. Saved
+cursors, downloaded postings, board schedules and existing scores are preserved.
+
 ### ATS Crawling lane
 
 Gusto and the fourteen public-board families appear together in the **ATS

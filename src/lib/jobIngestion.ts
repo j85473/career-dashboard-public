@@ -1,4 +1,5 @@
 import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
+import { fetchAtsJson } from './atsJsonTransport';
 import { readLinkedInEasyApply } from './atsDisplay';
 import { smartRecruitersPostingCompany } from './smartRecruitersCompany';
 import { readAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
@@ -5478,7 +5479,7 @@ export async function ingestJobs(
                 where: { slug_platform: { slug: board.slug, platform: board.platform } },
                 data: { lastAttemptedAt: new Date() },
               });
-              return fetch(apiUrl, fetchOptions);
+              return fetchAtsJson(board.platform, apiUrl, fetchOptions);
             });
             throwIfAtsInterrupted();
             if (res.status === 429) {
@@ -5558,7 +5559,7 @@ export async function ingestJobs(
                 await waitForPlatformSlot(board.platform, atsTurnSignal);
                 throwIfAtsInterrupted();
                 await reserveSourceRequest(boardSource);
-                const pageResponse = await fetch(
+                const pageResponse = await fetchAtsJson(board.platform,
                   `https://${company}.myworkdayjobs.com/wday/cxs/${companyWithoutWd}/${tenant}/jobs`,
                   {
                     method: 'POST',
@@ -5742,7 +5743,7 @@ export async function ingestJobs(
                 const res = await fetchAtsPlatformResponse(board.platform, atsTurnSignal, async () => {
                   throwIfAtsInterrupted();
                   await reserveSourceRequest(detailSource);
-                  return fetch(singleJobUrl, {
+                  return fetchAtsJson(board.platform, singleJobUrl, {
                     headers: { "Accept": "application/json" },
                     signal: atsRequestSignal(10_000),
                   });
