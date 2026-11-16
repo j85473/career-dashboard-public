@@ -38,7 +38,7 @@ test('all API continuation selection branches exclude old Gusto batches', async 
       findFirst: async (input: { where: Prisma.AtsIngestionBatchWhereInput }) => { reads.push(input); return null; },
     },
   } as unknown as Pick<Prisma.TransactionClient, 'atsIngestionBatch'>;
-  assert.equal(await claimNextAtsV2Continuation({ client }), null);
+  assert.equal(await claimNextAtsV2Continuation({ client, pausedPlatforms: [] }), null);
   // Cohort priority can add reads; every selection branch must retain the exclusion.
   assert.ok(reads.length >= 4);
   for (const read of reads) assert.deepEqual(read.where.platform, { notIn: NON_API_ATS_PLATFORMS });

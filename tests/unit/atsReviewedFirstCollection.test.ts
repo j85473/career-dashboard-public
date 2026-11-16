@@ -108,10 +108,14 @@ test('the reviewed queue receives the next coverage turn before ordinary rotatio
   prisma.$queryRaw = (async () => [{ items: BigInt(0), bytes: BigInt(0), persistence: BigInt(1500), totalPersistence: BigInt(1500), gate: 'open' }]) as typeof prisma.$queryRaw;
   prisma.atsFirstCollectionPolicy.findUnique = (async ({ where }: { where: { id: string } }) =>
     where.id === REVIEWED_FIRST_COLLECTION_POLICY_ID ? reviewed : ordinary) as unknown as typeof prisma.atsFirstCollectionPolicy.findUnique;
-  prisma.atsCompany.findFirst = (async () => ready) as typeof prisma.atsCompany.findFirst;
+  prisma.atsCompany.findFirst = (async (input) => {
+    assert.ok(JSON.stringify(input?.where?.AND).includes('"notIn"'));
+    assert.ok(JSON.stringify(input?.where?.AND).includes('"workday"'), 'reviewed admission must retain the cooldown');
+    return ready;
+  }) as typeof prisma.atsCompany.findFirst;
   prisma.atsCompany.count = (async () => 0) as typeof prisma.atsCompany.count;
   prisma.atsCompany.findMany = (async () => { throw new Error('ordinary lookup must follow the reviewed turn'); }) as typeof prisma.atsCompany.findMany;
-  try { assert.deepEqual(await selectNextAtsV2CoverageBoard(), ready); }
+  try { assert.deepEqual(await selectNextAtsV2CoverageBoard(new Date(), false, ['workday']), ready); }
   finally {
     prisma.$queryRaw = original.query; prisma.atsFirstCollectionPolicy.findUnique = original.policy;
     prisma.atsCompany.findFirst = original.first; prisma.atsCompany.count = original.count; prisma.atsCompany.findMany = original.many;

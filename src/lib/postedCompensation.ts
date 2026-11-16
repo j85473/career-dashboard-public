@@ -1,5 +1,6 @@
 /** Extract explicitly stated compensation with its pay period, independently of scoring. */
 const PAY_MARKER = /\b(?:base\s+(?:pay|salary|compensation)(?:\s+range)?|base(?=\s*(?::|=|\bis\b|\$))|(?:annual(?:ized)?\s+)?salary(?:\s+range)?|(?:annual(?:ized)?\s+)?pay\s+range)\b/gi;
+const ROLE_PAY_MARKER = /\b(?:this|the)\s+(?:position|role|job)\s+pays\b/gi;
 const AMOUNT = String.raw`(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?(?:[ \t]*[kK])?`;
 const AMOUNT_END = String.raw`(?![\dkK]|[,\.]\d)`;
 const ANNUAL_SUFFIX = String.raw`(?:\s*(?:/\s*(?:yr|year)|per\s+(?:year|annum)|annually))?`;
@@ -147,12 +148,18 @@ function referencedSalaryTotal(text: string): string | undefined {
  * adjacent OTE/bonus band. Conflicting bands fail closed; no annualization.
  */
 export function extractPostedBaseCompensation(description: string | null | undefined): string | null {
+  return extractLabeledCompensation(description, false);
+}
+
+/** Role-pay statements belong in the display, but do not establish base pay. */
+function extractLabeledCompensation(description: string | null | undefined, includeRolePay: boolean): string | null {
   const text = compensationText(description);
   if (!text) return null;
   if (CONDITIONAL_PERIOD.test(text)) return null;
   const amounts = payCandidates(text);
 
-  const markers = [...text.matchAll(PAY_MARKER)];
+  const markers = [...text.matchAll(PAY_MARKER), ...(includeRolePay ? text.matchAll(ROLE_PAY_MARKER) : [])]
+    .sort((a, b) => a.index - b.index);
   const candidates = new Map<string, boolean>();
   const variableValues = new Set<string>();
   const genericKeys = new Map<string, string>();
@@ -170,6 +177,10 @@ export function extractPostedBaseCompensation(description: string | null | undef
     const suffix = after.match(/^\s*(?:USD\s*)?(?:(?:annual|annualized)\s+)?(base(?:\s+(?:salary|pay|compensation))?|salary)\b/i);
     if (!marker && !suffix) continue;
     const bridge = marker ? text.slice(marker.index + marker[0].length, amount.index) : '';
+    const rolePay = !!marker && /\bpays$/i.test(marker[0]);
+    // Require the amount immediately after "this position pays" so a later
+    // bonus, customer budget or benefit cannot inherit that statement.
+    if (rolePay && bridge.trim()) continue;
     // A later table row can inherit its salary heading. Counting its band
     // prevents choosing the first city/level when the posting lists several.
     // Fixed amounts cannot inherit across another value, and no amount can
@@ -198,12 +209,18 @@ export function extractPostedBaseCompensation(description: string | null | undef
     // Do not turn a floor/ceiling or an incompletely parsed band into a fixed salary.
     if (high === undefined && (/\b(?:up to|at least|minimum|maximum|approximately|around|about)\b/i.test(ownPrefix)
       || /\b(?:up to|at least|from|minimum|maximum|approximately|around|about|between)\b/i.test(bridge)
-      || /^\s*(?:[-–—]|to\b|and\s+\$|or\s+\$|\+(?!\s*(?:variable|commission|bonus|incentive)\b))/i.test(after))) continue;
+      || /^\s*(?:[-–—]|to\b|and\s+\$|or\s+\$)/i.test(after)
+      || (!rolePay && /^\s*\+(?!\s*(?:variable|commission|bonus|incentive)\b)/i.test(after)))) continue;
 
     const lowLabel = displayAmount(amount.low, low);
     const highLabel = high === undefined ? null : displayAmount(amount.high!, high);
     if (!lowLabel || (high !== undefined && !highLabel)) continue;
-    const label = high === undefined ? `$${lowLabel} base` : `$${lowLabel}–$${highLabel} base`;
+    const band = high === undefined ? `$${lowLabel}` : `$${lowLabel}–$${highLabel}`;
+    // "Pays $110,000 plus" does not specify base, total, or a pay period.
+    // Preserve the qualification without inventing any of those labels.
+    const label = rolePay
+      ? band + (/^\s*(?:plus\b|\+)/i.test(after) ? ' plus' : '')
+      : `${band} base`;
     candidates.set(label, (candidates.get(label) || false) || directBase);
     // Remember a duplicated generic "Salary Range" that the same posting
     // explicitly identifies as OTE elsewhere, so it cannot override base pay.
@@ -219,8 +236,8 @@ export function extractPostedBaseCompensation(description: string | null | undef
 export function extractPostedCompensation(description: string | null | undefined): string | null {
   const text = compensationText(description);
   if (CONDITIONAL_PERIOD.test(text)) return conditionalPeriodCompensation(text);
-  const base = extractPostedBaseCompensation(description);
-  const allMarkers = [...text.matchAll(TOTAL_MARKER), ...text.matchAll(PAY_MARKER)];
+  const base = extractLabeledCompensation(description, true);
+  const allMarkers = [...text.matchAll(TOTAL_MARKER), ...text.matchAll(PAY_MARKER), ...text.matchAll(ROLE_PAY_MARKER)];
   // "Pay Range" inside "Total Target Cash Pay Range" belongs to that
   // complete label; the shorter nested match must not change its meaning.
   const markers = allMarkers.filter(entry => !allMarkers.some(other => other.index < entry.index

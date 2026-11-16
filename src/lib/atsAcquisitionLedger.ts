@@ -38,6 +38,7 @@ import { evaluateAtsAcquisitionPressure } from './atsAcquisitionPressure';
 import { atsListingAdmissionReservationSql, atsSegmentPersistenceCapacitySql } from './atsAdmissionCapacity';
 import { atsPersistenceAllocation } from './atsPersistenceAllocation';
 import { atsEmployerVerificationHoldWhere, isAtsEmployerVerificationHold, type AtsEmployerRetryMode } from './atsEmployerRetry';
+import { atsListingPauseWhere, pausedAtsListingPlatforms, readAtsListingPauses } from './atsListingPause';
 export { ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK, ATS_LEDGER_STAGING_BYTE_HIGH_WATERMARK } from './atsAcquisitionPressure';
 
 type JsonObject = Record<string, unknown>;
@@ -563,18 +564,20 @@ export async function claimNextAtsV2Continuation(input: {
   client?: Pick<Prisma.TransactionClient, 'atsIngestionBatch'>;
   listingConcurrencyLimit?: number;
   drainOnly?: boolean;
+  pausedPlatforms?: readonly string[];
 } = {}): Promise<AtsLedgerClaim | null> {
   if (!storageAllows('collection')) return null;
   const client = input.client || prisma;
   const now = input.now || new Date();
   const owner = input.owner || `${os.hostname()}:${process.pid}`;
+  const pausedPlatforms = input.pausedPlatforms ?? pausedAtsListingPlatforms(await readAtsListingPauses(now), now);
   const eligible: Prisma.AtsIngestionBatchWhereInput = {
     writerMode: 'v2',
     platform: { notIn: NON_API_ATS_PLATFORMS },
     status: { in: ['fetching', 'partial', 'synchronized', 'reset_draining'] },
     acquisitionPhase: { in: [...ATS_V2_ACQUISITION_PHASES] },
     OR: [{ nextAcquireAt: null }, { nextAcquireAt: { lte: now } }],
-    AND: [{
+    AND: [atsListingPauseWhere(pausedPlatforms), {
       OR: [
         { acquisitionClaimToken: null },
         { acquisitionLeaseExpiresAt: { lte: now } },
@@ -639,7 +642,7 @@ export async function claimNextAtsV2Continuation(input: {
     });
     // A full producer allowance must not leave idle workers repeatedly asking
     // for the same starved listing. They immediately offer the slot to drain.
-    return listing || claimNextAtsV2Continuation({ ...input, now, owner, drainOnly: true });
+    return listing || claimNextAtsV2Continuation({ ...input, now, owner, pausedPlatforms, drainOnly: true });
   }
   return claimAtsContinuationCandidate({ atsIngestionBatch: client.atsIngestionBatch,
     atsAcquisitionWorkReceipt: prisma.atsAcquisitionWorkReceipt }, candidate, now, owner);

@@ -60,6 +60,7 @@ import {
 import { assertAtsV2AuthorityActive } from './atsAcquisitionCompatibility';
 import { ATS_COHORT_PRESSURE_LISTING_CONCURRENCY, ATS_PRESSURE_LISTING_CONCURRENCY } from './atsContinuationCapacity';
 import { createAtsLanePlanReader } from './atsLanePlanCache';
+import { pausedAtsListingPlatforms, readAtsListingPauses } from './atsListingPause';
 import { prisma } from './prisma';
 import { RateLimitedError, platformPauseRemainingMs } from './jobIngestion';
 import { atsRateLimitIsBoardScoped } from './atsUtils';
@@ -388,9 +389,14 @@ export function orderAtsV2ContinuationCandidates<T extends AtsV2ContinuationCand
   return selected;
 }
 
-export async function selectNextAtsV2CoverageBoard(now = new Date(), cohortOnly = false): Promise<AtsBoardForAcquisition | null> {
+export async function selectNextAtsV2CoverageBoard(now = new Date(), cohortOnly = false,
+  pausedPlatforms?: readonly string[],
+): Promise<AtsBoardForAcquisition | null> {
   const today = rotationDayFor(now);
-  const reviewed = await nextReviewedFirstCollectionBoard(prisma, now, cohortOnly ? atsRotationCohortWhere(today) : {});
+  const paused = pausedPlatforms ?? pausedAtsListingPlatforms(await readAtsListingPauses(now), now);
+  const platform = { notIn: [...NON_API_ATS_PLATFORMS, ...paused] };
+  const reviewed = await nextReviewedFirstCollectionBoard(prisma, now,
+    { ...(cohortOnly ? atsRotationCohortWhere(today) : {}), platform });
   if (reviewed) return reviewed;
   const sizeAware = await atsDistributedArchitectureActive();
   const tiers: Prisma.AtsCompanyWhereInput[] = [
@@ -421,7 +427,7 @@ export async function selectNextAtsV2CoverageBoard(now = new Date(), cohortOnly 
       where: {
         ...tier,
         AND: [firstCollectionWhere],
-        platform: { notIn: NON_API_ATS_PLATFORMS },
+        platform,
         ingestionBatches: {
           none: { status: { in: ['fetching', 'partial', 'synchronized'] } },
         },
@@ -458,11 +464,11 @@ export async function selectNextAtsV2CoverageBoard(now = new Date(), cohortOnly 
   return null;
 }
 
-export async function claimNextAtsV2Coverage(now = new Date()): Promise<AtsLedgerClaim | null> {
+export async function claimNextAtsV2Coverage(now = new Date(), pausedPlatforms?: readonly string[]): Promise<AtsLedgerClaim | null> {
   if (!await atsNewBoardAdmissionsAllowed()) return null;
   const staging = await atsV2StagingSnapshot(prisma, now);
   if (staging.admissionBlocked && !staging.cohortAdmissionAllowed) return null;
-  const board = await selectNextAtsV2CoverageBoard(now, staging.admissionBlocked);
+  const board = await selectNextAtsV2CoverageBoard(now, staging.admissionBlocked, pausedPlatforms);
   if (!board) return null;
   return admitAtsV2Board({ slug: board.slug, platform: board.platform, now });
 }
@@ -579,7 +585,8 @@ export async function drainAtsV2ListingPrefix(claim: AtsLedgerClaim, signal: Abo
   await resolveNextAtsV2ObservationChunk({ claim, allowListingPrefix: true });
   check();
   if (Date.now() < until) await terminalizeAtsV2NoNetworkItems({ claim, allowListingPrefix: true });
-  for (let n = 0; n < ATS_LEDGER_DETAIL_REQUEST_BUDGET && Date.now() < until; n++) {
+  for (let n = 0; n < ATS_LEDGER_DETAIL_REQUEST_BUDGET && Date.now() < until
+    && platformPauseRemainingMs(claim.platform) === 0; n++) {
     check();
     const result = await enrichNextAtsV2DetailItem({ claim, signal, allowListingPrefix: true,
       requestTimeoutMs: Math.max(1, Math.min(10_000, until - Date.now())) });
@@ -1221,6 +1228,7 @@ export async function runAtsV2ContinuousDispatcher(input: {
   // Coverage still reads current staging before admission; continuation claims
   // retain live lease/retry checks and the atomic cap whenever it is enabled.
   const readPlan = createAtsLanePlanReader(input.plan);
+  const readPauses = createAtsLanePlanReader(() => readAtsListingPauses());
   const reconcileAndRepair = async () => {
     await reconcileExpiredAtsV2Work();
     const schedule = await repairStaggeredAtsRotationSchedule();
@@ -1257,22 +1265,25 @@ export async function runAtsV2ContinuousDispatcher(input: {
         }
         await reconcileIfDue(workerIndex);
         const plan = await readPlan();
+        // Reuse durable reads briefly, but merge local throttles on every turn.
+        // A newly refused request must stop claims immediately, not after cache expiry.
+        const pausedPlatforms = pausedAtsListingPlatforms(await readPauses());
         if ((input.shouldDrain || workerDrainRequested)()) continue;
         const continuationOnly = input.lanePolicy === 'continuation-only';
         const lane: AtsV2Lane = continuationOnly
           ? 'continuation'
           : workerIndex < plan.coverageSlots ? 'coverage' : 'continuation';
         let claim = lane === 'coverage'
-          ? await claimNextAtsV2Coverage()
-          : await claimNextAtsV2Continuation({ listingConcurrencyLimit: plan.listingConcurrencyLimit });
+          ? await claimNextAtsV2Coverage(new Date(), pausedPlatforms)
+          : await claimNextAtsV2Continuation({ listingConcurrencyLimit: plan.listingConcurrencyLimit, pausedPlatforms });
         let effectiveLane = lane;
         const mayBorrowOtherLane = !continuationOnly
           && (lane === 'coverage' || plan.coverageSlots > 0);
         if (!claim && mayBorrowOtherLane) {
           effectiveLane = lane === 'coverage' ? 'continuation' : 'coverage';
           claim = effectiveLane === 'coverage'
-            ? await claimNextAtsV2Coverage()
-            : await claimNextAtsV2Continuation({ listingConcurrencyLimit: plan.listingConcurrencyLimit });
+            ? await claimNextAtsV2Coverage(new Date(), pausedPlatforms)
+            : await claimNextAtsV2Continuation({ listingConcurrencyLimit: plan.listingConcurrencyLimit, pausedPlatforms });
         }
         if (!claim) {
           await delay();

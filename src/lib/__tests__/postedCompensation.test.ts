@@ -4,6 +4,44 @@ import test from 'node:test';
 import { extractPostedBaseCompensation, extractPostedCompensation } from '../postedCompensation';
 import { derivePostingFacts } from '../postingFacts';
 
+test('displays the Potters pay statement with its plus qualification without inferring base pay', () => {
+  const description = 'This position pays $110,000.00 plus and requires up to 50% travel\n'
+    + 'Potters Industries is the leading U.S. manufacturer of glass beads.';
+  assert.equal(extractPostedCompensation(description), '$110,000.00 plus');
+  assert.deepEqual(derivePostingFacts(description), {
+    postedCompensation: '$110,000.00 plus',
+    postedTravel: 'up to 50%',
+  });
+  assert.equal(extractPostedBaseCompensation(description), null);
+  assert.equal(extractPostedCompensation(description.replace('\n', '<p>')), '$110,000.00 plus');
+});
+
+test('reads direct role-pay amounts and ranges while preserving open-ended pay', () => {
+  for (const [description, expected] of [
+    ['This role pays $110,000+', '$110,000 plus'],
+    ['The job pays USD 110000 plus bonus.', '$110,000 plus'],
+    ['The position pays $110,000.', '$110,000'],
+    ['This role pays $110,000-$130,000 per year.', '$110,000–$130,000'],
+    ['This role pays $110,000 including commission.', '$110,000 total compensation'],
+    ['This role pays $110,000 OTE.', '$110,000 total target compensation'],
+  ]) assert.equal(extractPostedCompensation(description), expected, description);
+});
+
+test('role-pay wording retains currency, period, variable-pay and conflict safeguards', () => {
+  for (const description of [
+    'This position pays $110,000 CAD plus.',
+    'This role pays CAD$110,000 plus.',
+    'This position pays $20,000 per month.',
+    'This role pays $35 per hour plus benefits.',
+    'This role pays $1,000 plus.',
+    'This role pays $130,000-$110,000.',
+    'This role pays $110,000 - negotiable.',
+    'This position pays competitively. Signing bonus: $110,000.',
+    'This role pays $110,000. The role pays $130,000 in California.',
+    'Customers pay $110,000 for the service.',
+  ]) assert.equal(extractPostedCompensation(description), null, description);
+});
+
 test('retains the Jones Stephens/Ferguson range with its conditional monthly/hourly units', () => {
   const statement = 'Estimated Ranges displayed are Monthly for Salaried roles OR Hourly for all other roles.';
   const description = 'Pay Range:\n-\nActual pay rate may vary depending upon location. '

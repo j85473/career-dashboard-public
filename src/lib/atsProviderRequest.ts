@@ -39,6 +39,10 @@ export function platformPauseRemainingMs(platform: string, now: number = Date.no
   return Math.max(0, (platformPausedUntil.get(platform) || 0) - now);
 }
 
+export function pausedAtsPlatforms(now: number = Date.now()): string[] {
+  return [...platformPausedUntil].filter(([, until]) => until > now).map(([platform]) => platform);
+}
+
 export class IngestionInterruptedError extends Error {
   constructor(message: string) {
     super(message);
