@@ -469,7 +469,9 @@ test('real worker replacement preserves completed task IDs while a separate coor
   let acquisition: ChildProcess | null = launch(acquisitionCode, A, 'acquisition');
   try {
     await poll(async () => { try { return (await requestPipelineService('/health', {}, socket)).status === 200; } catch { return false; } });
-    await poll(() => fs.existsSync(path.join(drainDirectory, 'acquisition.status.json')) && fs.existsSync(jobs));
+    // The health socket can be ready before the coordinator's first timer tick.
+    await poll(() => fs.existsSync(progress)
+      && fs.existsSync(path.join(drainDirectory, 'acquisition.status.json')) && fs.existsSync(jobs));
     const before = JSON.parse(fs.readFileSync(jobs, 'utf8'));
     const coordinatorBefore = JSON.parse(fs.readFileSync(progress, 'utf8'));
     const oldAcquisitionPid = acquisition.pid;
