@@ -807,6 +807,27 @@ model AtsIngestionSegment {
 
 /// Singleton capability gate checked by compatible acquisition workers. The
 /// database triggers remain the final protection from a pre-v2 binary.
+/// Bounded scheduling metadata only. Existing crawl evidence and retry clocks
+/// remain authoritative; worker restarts do not erase service accounting.
+model AtsSchedulerState {
+  resource  String   @id
+  state     Json     @default("{}")
+  updatedAt DateTime @updatedAt
+}
+
+/// At most the existing public capacity allowance may be reserved across the
+/// HTTP groups and licensed browser. Tokens fence expiry and late releases.
+model AtsPublicCapacityLease {
+  resource       String   @id
+  token          String   @unique
+  jobs           Int
+  leaseExpiresAt DateTime
+  requestedAt    DateTime?
+  updatedAt      DateTime @updatedAt
+
+  @@index([leaseExpiresAt])
+}
+
 model AtsAcquisitionRuntimeGate {
   id                              String    @id @default("global")
   minimumWriterVersion            Int       @default(1)

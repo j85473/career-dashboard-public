@@ -6,7 +6,7 @@ When staging exceeds its existing item or byte watermark, the runtime plan now e
 
 A worker denied a producer slot immediately looks for drain work. Existing in-flight listing requests complete normally; the limit governs new claims and does not cancel or restart work. A continued listing claim that advances into compaction or enrichment naturally releases producer capacity. No worker slots, provider request budgets, staging thresholds, retry delays, existing jobs, scores, or saved observations are changed.
 
-Listing may use spare capacity when there are no unfinished batches in the drain phases. This prevents a backlog made entirely of incomplete listing traversals from deadlocking. If drain work exists but is delayed by a provider retry, the producer cap remains active; unused capacity is not an excuse to grow that backlog without a bound.
+Existing listings may use spare worker capacity when there is no runnable unclaimed drain work and retained volume remains below both admission thresholds. A full unfinished-listing allowance still limits new collections, but does not prevent existing listings from borrowing idle workers. Future-held drain work remains charged to retained volume. Ready drain work or volume pressure stops further loans without interrupting owned turns. The November 16 policy and durable service guarantees are described in [ATS capacity and service scheduling](ATS_CAPACITY_SCHEDULING.md).
 
 The October 10 cohort-fairness repair gives today's active cohort a separate
 32-listing allowance while older unfinished listings exceed the global allowance.
@@ -40,7 +40,7 @@ inventory separately, and identifies intake that is limited to today's cohort.
 Below unfinished-listing and staging pressure, the existing elastic coverage
 planner and listing starvation pacing remain in force. Both balanced and continuation-only distributed workers carry the pressure rule. The Mac installation's release checks include the new capacity helper so an older helper cannot silently accompany a newer dispatcher.
 
-Continuation selection also follows the existing cohort rule within each phase: today's eligible active boards first, other active cohorts second, then recovery boards. Eligibility and retry conditions remain part of every query. This does not bypass a listing/enrichment dependency or a provider backoff.
+Continuation selection now shares elapsed service among eligible first-collection, current-cohort, older-active, and recovery classes. Preference within a class cannot bypass a long-waiting catalogue indefinitely. Eligibility and retry conditions remain part of every query. This does not bypass a listing/enrichment dependency or a provider backoff.
 
 Focused tests exercise eight concurrent producer attempts, delayed drain inventory, idle-capacity lending when only listing remains, expired leases, cohort priority, and retained eligibility guards. The live read-only selection-plan check completed in about 12 milliseconds. Actual queue-growth and throughput effects must be measured after deployment; these tests and snapshots do not establish a production improvement.
 

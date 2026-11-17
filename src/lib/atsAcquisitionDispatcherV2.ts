@@ -1,9 +1,8 @@
 import { workerDrainRequested } from './workerDeployment';
 import { atsTemporaryRetryDelayMs, isAtsTemporaryFailure } from './atsTemporaryFailure';
-import { atsRotationCohortWhere } from './atsRotationCohort';
 import { storageAllows } from './storagePressure';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
-import { firstCollectionSelectionWhere, nextReviewedFirstCollectionBoard } from './atsFirstCollectionAdmission';
+import { firstCollectionSelection } from './atsFirstCollectionAdmission';
 import { Prisma, type AtsCompany } from './prismaClient';
 
 import {
@@ -62,6 +61,8 @@ import { ATS_COHORT_PRESSURE_LISTING_CONCURRENCY, ATS_PRESSURE_LISTING_CONCURREN
 import { createAtsLanePlanReader } from './atsLanePlanCache';
 import { pausedAtsListingPlatforms, readAtsListingPauses } from './atsListingPause';
 import { prisma } from './prisma';
+import { reserveAtsServiceTurn, finishAtsServiceTurn } from './atsServiceScheduling';
+import { atsCoverageEligibilityWhere, atsContinuationEligibilityWhere, atsCoverageServiceWhere, ATS_API_SERVICE_CLASSES, ATS_DRAIN_PHASES } from './atsSchedulingEligibility';
 import { RateLimitedError, platformPauseRemainingMs } from './jobIngestion';
 import { atsRateLimitIsBoardScoped } from './atsUtils';
 import {
@@ -266,9 +267,13 @@ export type AtsV2LanePlan = {
   continuationSlots: number;
   requiredByNow: number;
   coverageDebt: number;
-  projectedContacts: number;
+  projectedContacts: number | null;
   reason: string;
   listingConcurrencyLimit?: number;
+  coverageEligible?: number;
+  listingEligible?: number;
+  drainEligible?: number;
+  continuationEligible?: number;
 };
 
 export function planAtsV2LaneReservation(input: {
@@ -293,10 +298,11 @@ export function planAtsV2LaneReservation(input: {
   // cohort, overdue active boards, and then due recovery boards.
   const requiredByNow = target;
   const coverageDebt = Math.max(0, requiredByNow - Math.max(0, input.confirmedContacts));
-  const quantumMs = Math.max(1, input.observedCoverageQuantumMs || 15_000);
+  const quantumMs = input.observedCoverageQuantumMs && input.observedCoverageQuantumMs > 0 ? input.observedCoverageQuantumMs : null;
   const remainingDayMs = Math.max(0, input.remainingDayMs || (1 - elapsed) * 86_400_000);
-  const nominalCoverageCapacity = Math.floor(remainingDayMs / quantumMs);
-  const projectedContacts = Math.max(0, input.confirmedContacts) + nominalCoverageCapacity * 2;
+  // Do not turn an unmeasured default quantum into a completion forecast.
+  const projectedContacts = quantumMs === null ? null
+    : Math.max(0, input.confirmedContacts) + Math.floor(remainingDayMs / quantumMs) * 2;
 
   if (input.coverageEligible <= 0 && input.continuationEligible <= 0) {
     return {
@@ -389,88 +395,49 @@ export function orderAtsV2ContinuationCandidates<T extends AtsV2ContinuationCand
   return selected;
 }
 
-export async function selectNextAtsV2CoverageBoard(now = new Date(), cohortOnly = false,
-  pausedPlatforms?: readonly string[],
-): Promise<AtsBoardForAcquisition | null> {
-  const today = rotationDayFor(now);
+async function atsV2CoverageHeads(now: Date, cohortOnly: boolean, pausedPlatforms?: readonly string[]) {
   const paused = pausedPlatforms ?? pausedAtsListingPlatforms(await readAtsListingPauses(now), now);
-  const platform = { notIn: [...NON_API_ATS_PLATFORMS, ...paused] };
-  const reviewed = await nextReviewedFirstCollectionBoard(prisma, now,
-    { ...(cohortOnly ? atsRotationCohortWhere(today) : {}), platform });
-  if (reviewed) return reviewed;
+  const eligibility = atsCoverageEligibilityWhere(now, paused, {}, cohortOnly);
+  const { where: first, reviewed } = await firstCollectionSelection(prisma, now, eligibility);
+  const base = atsCoverageEligibilityWhere(now, paused, first, cohortOnly);
   const sizeAware = await atsDistributedArchitectureActive();
-  const tiers: Prisma.AtsCompanyWhereInput[] = [
-    {
-      acquisitionEngine: 'v2',
-      status: { in: [...ATS_ROTATION_STATUSES] },
-      nextCheckDate: { lte: now },
-      ...atsRotationCohortWhere(today),
-    },
-    {
-      acquisitionEngine: 'v2',
-      status: { in: [...ATS_ROTATION_STATUSES] },
-      nextCheckDate: { lte: now },
-      NOT: atsRotationCohortWhere(today),
-    },
-    {
-      acquisitionEngine: 'v2',
-      status: { in: [...ATS_RECOVERY_STATUSES] },
-      nextCheckDate: { lte: now },
-    },
-  ];
-  const firstCollectionWhere = await firstCollectionSelectionWhere(prisma, now);
-  for (const tier of cohortOnly ? tiers.slice(0, 1) : tiers) {
-    // Bound the candidate pool by age first, then apply the size advantage in
-    // memory. A full overdue day promotes one size tier, so this never becomes
-    // a permanent small-board barrier.
-    const candidates = await prisma.atsCompany.findMany({
-      where: {
-        ...tier,
-        AND: [firstCollectionWhere],
-        platform,
-        ingestionBatches: {
-          none: { status: { in: ['fetching', 'partial', 'synchronized'] } },
-        },
-      },
-      orderBy: sizeAware
-        ? [
-            { nextCheckDate: 'asc' },
-            { lastAttemptedAt: { sort: 'asc', nulls: 'first' } },
-            { platform: 'asc' },
-            { slug: 'asc' },
-          ]
-        : [
-            { lastAttemptedAt: { sort: 'asc', nulls: 'first' } },
-            { nextCheckDate: 'asc' },
-            { platform: 'asc' },
-            { slug: 'asc' },
-          ],
-      take: 1_000,
-      select: {
-        slug: true,
-        platform: true,
-        status: true,
-        failCount: true,
-        retryCount: true,
-        checkDay: true,
-        jobsFound: true,
-        nextCheckDate: true,
-        lastAttemptedAt: true,
-      },
+  const heads = await Promise.all(ATS_API_SERVICE_CLASSES.map(async (key, priority) => {
+    const candidates = key === 'first' && reviewed ? [reviewed] : await prisma.atsCompany.findMany({
+      where: { AND: [base, atsCoverageServiceWhere(key, now)] },
+      orderBy: [{ nextCheckDate: 'asc' }, { lastAttemptedAt: { sort: 'asc', nulls: 'first' } }, { platform: 'asc' }, { slug: 'asc' }],
+      take: 1000,
+      select: { slug: true, platform: true, status: true, failCount: true, retryCount: true,
+        checkDay: true, jobsFound: true, nextCheckDate: true, lastAttemptedAt: true },
     });
     const board = sizeAware ? orderAtsCoverageCandidates(candidates, now)[0] : candidates[0];
-    if (board) return board;
-  }
-  return null;
+    return board ? { key, priority, readySince: board.nextCheckDate.getTime(), board } : null;
+  }));
+  return heads.filter((head): head is NonNullable<typeof head> => head !== null);
+}
+
+/** Preview only. Dispatch reserves a durable service opportunity before claim. */
+export async function selectNextAtsV2CoverageBoard(now = new Date(), cohortOnly = false,
+  pausedPlatforms?: readonly string[]): Promise<AtsBoardForAcquisition | null> {
+  return (await atsV2CoverageHeads(now, cohortOnly, pausedPlatforms))[0]?.board || null;
 }
 
 export async function claimNextAtsV2Coverage(now = new Date(), pausedPlatforms?: readonly string[]): Promise<AtsLedgerClaim | null> {
   if (!await atsNewBoardAdmissionsAllowed()) return null;
   const staging = await atsV2StagingSnapshot(prisma, now);
   if (staging.admissionBlocked && !staging.cohortAdmissionAllowed) return null;
-  const board = await selectNextAtsV2CoverageBoard(now, staging.admissionBlocked, pausedPlatforms);
-  if (!board) return null;
-  return admitAtsV2Board({ slug: board.slug, platform: board.platform, now });
+  const heads = await atsV2CoverageHeads(now, staging.admissionBlocked, pausedPlatforms);
+  const turn = await reserveAtsServiceTurn('api-coverage', heads, { now });
+  if (!turn) return null;
+  try {
+    const board = heads.find(head => head.key === turn.key)!.board;
+    const claim = await admitAtsV2Board({ slug: board.slug, platform: board.platform, now });
+    if (claim) return { ...claim, serviceTurn: turn };
+    await finishAtsServiceTurn(turn, false);
+    return null;
+  } catch (error) {
+    await finishAtsServiceTurn(turn, false);
+    throw error;
+  }
 }
 
 function isPaginated(platform: string): boolean {
@@ -1051,6 +1018,11 @@ async function recoveryAwareRetryAt(
 export const ATS_V2_CLAIM_HEARTBEAT_MS = Math.max(15_000, Math.floor(ATS_LEDGER_WORK_LEASE_MS / 3));
 
 export async function runAtsV2Claim(claim: AtsLedgerClaim, signal?: AbortSignal): Promise<void> {
+  try { await runAtsV2ClaimWork(claim, signal); }
+  finally { if (claim.serviceTurn) await finishAtsServiceTurn(claim.serviceTurn); }
+}
+
+async function runAtsV2ClaimWork(claim: AtsLedgerClaim, signal?: AbortSignal): Promise<void> {
   let outcome: {
     yieldReason: string;
     nextAcquireAt?: Date;
@@ -1305,77 +1277,50 @@ export async function runAtsV2ContinuousDispatcher(input: {
   await Promise.allSettled(workers);
 }
 
-export async function atsV2ShadowLanePlan(now = new Date()): Promise<AtsV2LanePlan & {
-  coverageEligible: number;
-  continuationEligible: number;
-  drainEligible: number;
+export async function atsV2ShadowLanePlan(now = new Date(), cohortOnly = false): Promise<AtsV2LanePlan & {
+  coverageEligible: number; continuationEligible: number; listingEligible: number; drainEligible: number;
 }> {
-  const [row] = await prisma.$queryRaw<Array<{
-    confirmedContacts: bigint | number | string;
-    coverageEligible: bigint | number | string;
-    continuationEligible: bigint | number | string;
-    drainEligible: bigint | number | string;
-    elapsedFraction: number | string;
-    remainingDayMs: bigint | number | string;
-  }>>`
-    WITH chicago_day AS (
-      SELECT
-        (CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date AS local_day,
-        ((CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date::timestamp AT TIME ZONE 'America/Chicago') AS day_start,
-        ((((CURRENT_TIMESTAMP AT TIME ZONE 'America/Chicago')::date + 1)::timestamp) AT TIME ZONE 'America/Chicago') AS day_end
-    )
-    SELECT
-      (SELECT COUNT(*) FROM "AtsEndpointDailyContactReceipt" contact, chicago_day day
-        WHERE contact."localDay" = day.local_day
-          AND contact.platform NOT IN (${Prisma.join(NON_API_ATS_PLATFORMS)})
-          AND contact."contactKind" = 'new_cycle_listing') AS "confirmedContacts",
-      (SELECT COUNT(*) FROM "AtsCompany" board
-        WHERE board."acquisitionEngine" = 'v2'
-          AND board.platform NOT IN (${Prisma.join(NON_API_ATS_PLATFORMS)})
-          AND board.status IN ('active', 'parked', 'blacklisted')
-          AND board."nextCheckDate" <= ${now}) AS "coverageEligible",
-      (SELECT COUNT(*) FROM "AtsIngestionBatch" batch
-        WHERE batch."writerMode" = 'v2'
-          AND batch.platform NOT IN (${Prisma.join(NON_API_ATS_PLATFORMS)})
-          AND batch.status IN ('fetching', 'partial', 'synchronized', 'reset_draining')
-          AND batch."acquisitionPhase" IN ('listing', 'compaction', 'enrichment', 'sealing')
-          AND (batch."nextAcquireAt" IS NULL OR batch."nextAcquireAt" <= ${now})) AS "continuationEligible",
-      (SELECT COUNT(*) FROM "AtsIngestionBatch" batch
-        WHERE batch."writerMode" = 'v2'
-          AND batch.platform NOT IN (${Prisma.join(NON_API_ATS_PLATFORMS)})
-          AND batch.status IN ('fetching', 'partial', 'synchronized', 'reset_draining')
-          AND batch."acquisitionPhase" IN ('compaction', 'enrichment', 'sealing')
-          AND (batch."nextAcquireAt" IS NULL OR batch."nextAcquireAt" <= ${now})) AS "drainEligible",
-      GREATEST(0, LEAST(1,
-        EXTRACT(EPOCH FROM (${now} - day.day_start))
-        / NULLIF(EXTRACT(EPOCH FROM (day.day_end - day.day_start)), 0)
-      )) AS "elapsedFraction",
-      GREATEST(0, EXTRACT(EPOCH FROM (day.day_end - ${now})) * 1000)::bigint AS "remainingDayMs"
-    FROM chicago_day day
-  `;
-  const coverageEligible = Number(row?.coverageEligible || 0);
-  const continuationEligible = Number(row?.continuationEligible || 0);
-  const drainEligible = Number(row?.drainEligible || 0);
-  return {
-    drainEligible,
-    ...planAtsV2LaneReservation({
-      confirmedContacts: Number(row?.confirmedContacts || 0),
-      elapsedDayFraction: Number(row?.elapsedFraction || 0),
-      remainingDayMs: Number(row?.remainingDayMs || 0),
-      coverageEligible,
-      continuationEligible,
-    }),
-    coverageEligible,
-    continuationEligible,
-  };
+  const paused = pausedAtsListingPlatforms(await readAtsListingPauses(now), now);
+  const eligibility = atsCoverageEligibilityWhere(now, paused, {}, cohortOnly);
+  const { where: first } = await firstCollectionSelection(prisma, now, eligibility, false);
+  const coverageWhere = atsCoverageEligibilityWhere(now, paused, first, cohortOnly);
+  const continuationWhere = atsContinuationEligibilityWhere(now, paused);
+  const day = atsRotationDayWindow(now);
+  const [coverageCount, listingEligible, drainEligible, confirmedContacts, gate] = await Promise.all([
+    prisma.atsCompany.count({ where: coverageWhere }),
+    prisma.atsIngestionBatch.count({ where: { AND: [continuationWhere, { acquisitionPhase: 'listing' }] } }),
+    prisma.atsIngestionBatch.count({ where: { AND: [continuationWhere, { acquisitionPhase: { in: [...ATS_DRAIN_PHASES] } }] } }),
+    prisma.atsEndpointDailyContactReceipt.count({ where: {
+      localDay: new Date(now.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }) + 'T00:00:00Z'),
+      platform: { notIn: NON_API_ATS_PLATFORMS }, contactKind: 'new_cycle_listing',
+    } }),
+    prisma.atsAcquisitionRuntimeGate.findUnique({ where: { id: 'global' }, select: { admissionState: true, admissionResumeAt: true } }),
+  ]);
+  const coverageEligible = gate?.admissionState === 'open'
+    || gate?.admissionState === 'draining' && gate.admissionResumeAt && gate.admissionResumeAt <= now ? coverageCount : 0;
+  const continuationEligible = listingEligible + drainEligible;
+  return { ...planAtsV2LaneReservation({ confirmedContacts,
+    elapsedDayFraction: Math.max(0, Math.min(1, (now.getTime() - day.startsAt.getTime()) / (day.endsAt.getTime() - day.startsAt.getTime()))),
+    remainingDayMs: Math.max(0, day.endsAt.getTime() - now.getTime()), coverageEligible, continuationEligible,
+  }), coverageEligible, continuationEligible, listingEligible, drainEligible };
 }
 
 export async function atsV2RuntimeLanePlan(
   totalSlots = ATS_ACQUISITION_V2_SLOT_COUNT,
   now = new Date(),
 ): Promise<AtsV2LanePlan> {
-  const shadow = await atsV2ShadowLanePlan(now);
-  const slots = Math.max(1, Math.min(ATS_ACQUISITION_CONCURRENCY, Math.floor(totalSlots)));
+  const staging = await atsV2StagingSnapshot(prisma, now);
+  const shadow = await atsV2ShadowLanePlan(now, staging.admissionBlocked);
+  return planAtsV2RuntimeCapacity(shadow, staging, totalSlots);
+}
+
+export function planAtsV2RuntimeCapacity(
+  shadow: AtsV2LanePlan & { coverageEligible: number; continuationEligible: number; drainEligible: number },
+  staging: Awaited<ReturnType<typeof atsV2StagingSnapshot>>, totalSlots: number,
+): AtsV2LanePlan {
+  // Explicit slots come from the durable capacity leases (or the gate for
+  // diagnostics), not the web process's lower development default.
+  const slots = Math.max(1, Math.min(8, Math.floor(totalSlots)));
   // Coverage cannot admit anything while staging is over its own high
   // watermark, and every slot pointed at it would idle-poll and then borrow
   // continuation anyway. Say so in the plan instead of discovering it per
@@ -1383,8 +1328,7 @@ export async function atsV2RuntimeLanePlan(
   // acquired work to occupy the lane. Under unfinished-listing pressure,
   // today's active cohort may spend its own bounded allowance below the
   // volume admission thresholds; new and continuing listings share two slots.
-  const staging = await atsV2StagingSnapshot(prisma, now);
-  const drainSaturated = shadow.continuationEligible >= slots;
+  const drainSaturated = shadow.drainEligible >= slots;
   if (staging.admissionBlocked) {
     const coverageSlots = staging.cohortAdmissionAllowed && shadow.coverageEligible > 0
       ? Math.min(1, slots - 1) : 0;

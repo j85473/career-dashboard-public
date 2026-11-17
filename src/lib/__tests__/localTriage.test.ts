@@ -289,6 +289,35 @@ test('explicit US or Minnesota availability still keeps a multi-country posting 
   ]) assert.equal(locationTriageVerdict(location).pass, true, location);
 });
 
+test('translated country restrictions cannot use the ambiguous remote exception', () => {
+  for (const location of [
+    'Remote (Dänemark); -, -, Dänemark',
+    'Remote (Da\u0308nemark)',
+    'Remote (Schweden)', 'Remote (Norwegen)', 'Remote (Danmark)',
+    'Remote (Allemagne)', 'Remote (Países Bajos)', 'Remote (Polska)',
+    'Remote (Україна)',
+    'Denmark; Remote', 'Chile; Remote', 'Dänemark; Unknown',
+    'Remote; Schweden; Norwegen; 2 Locations',
+  ]) {
+    const verdict = locationTriageVerdict(location);
+    assert.equal(verdict.pass, false, `${location}: ${verdict.reason}`);
+    assert.match(verdict.reason, /outside the searched geographies/i);
+  }
+});
+
+test('country recognition preserves explicit US availability and ambiguous US address names', () => {
+  for (const location of [
+    'Dänemark; Remote - United States',
+    'Remote (Schweden); Minneapolis, MN',
+    'Norwegen; Minnesota', 'Chile; Remote - US',
+    'Dänemark; Remote (Vereinigte Staaten)',
+    'Schweden; États-Unis', 'Norwegen; Remote (Estados Unidos)',
+    'New Jersey; Remote', 'Georgia; Remote',
+    'Jordan, MN; Remote', 'Chad, Texas; Remote',
+    'Remote • Sales - BOSTONtec', 'Remote: Commercial Accounts',
+  ]) assert.equal(locationTriageVerdict(location).pass, true, location);
+});
+
 test('provider remote spelling variants remain in scope', () => {
   for (const location of ['Remote-United-States', 'Remotely based']) {
     assert.equal(locationTriageVerdict(location).pass, true, location);

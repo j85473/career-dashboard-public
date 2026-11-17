@@ -302,23 +302,47 @@ function isUnresolvedFieldLocation(option: string): boolean {
   return new RegExp(`^(?:${arrangement}(?:\\s*[-,]?\\s*(?:${scope}|US|USA|United States))?|${scope}(?:\\s*[, -]?\\s*(?:US|USA|United States))?(?:\\s*[, -]?\\s*${arrangement})?)$`, 'i').test(value);
 }
 
-// An unknown label can be a department, but it can also be a country missing
-// from the older geography vocabulary. Use the runtime's full country names
-// before applying the new ambiguity exception; preserve the US as in scope.
-function foreignCountryPattern(): RegExp {
-  const regions = new Intl.DisplayNames(['en'], { type: 'region' });
+// Country labels can keep the publisher's language even on an English job
+// page (Softgarden publishes "Dänemark" in its structured remote requirements).
+// Read the runtime's country vocabulary in the supported publisher languages,
+// rather than adding one country spelling each time a posting slips through.
+function countryNamePatterns(): { foreign: RegExp; us: RegExp } {
+  const displays = ['en', 'de', 'fr', 'es', 'it', 'nl', 'pt', 'da', 'sv', 'nb', 'fi', 'pl', 'cs', 'tr', 'uk']
+    .map(locale => new Intl.DisplayNames([locale], { type: 'region' }));
   const names = new Set<string>();
+  const usNames = new Set<string>();
   for (const first of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
     for (const second of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
       const code = first + second;
-      const name = regions.of(code);
-      if (code !== 'US' && name && name !== code) names.add(name);
+      for (const display of displays) {
+        const name = display.of(code);
+        if (code === 'US') {
+          if (name) usNames.add(name);
+          continue;
+        }
+        // These country names are also US state/address vocabulary. They
+        // need more evidence than the name alone to override a remote option.
+        if (name && name !== code && !/^(?:Georgia|Jersey)$/i.test(name)) names.add(name);
+      }
     }
   }
-  const alternatives = [...names].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-  return new RegExp(`(?:^|[^\\p{L}])(?:${alternatives})(?=$|[^\\p{L}])`, 'iu');
+  const pattern = (values: Set<string>) => {
+    const alternatives = [...values].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    return new RegExp(`(?<![\\p{L}])(?:${alternatives})(?![\\p{L}])`, 'iu');
+  };
+  return { foreign: pattern(names), us: pattern(usNames) };
 }
-const FOREIGN_COUNTRY_NAME = foreignCountryPattern();
+const { foreign: FOREIGN_COUNTRY_NAME, us: US_COUNTRY_NAME } = countryNamePatterns();
+const US_CITY_STATE_SUFFIX = new RegExp(`,\\s*${US_STATE_LOCATION_PATTERN}(?:\\s*[, -]\\s*(?:US|USA|United States))?$`, 'i');
+
+function hasForeignCountryName(option: string): boolean {
+  const value = normalizeLocationOption(option);
+  // A US city can share a country name: "Jordan, MN" and "Chad, Texas".
+  // Keep a published city/state address domestic; separate country options
+  // are still checked independently.
+  if (US_CITY_STATE_SUFFIX.test(value)) return false;
+  return FOREIGN_COUNTRY_NAME.test(value);
+}
 
 /** Department/employer text around "Remote" is not a required work base. */
 function isUnresolvedRemoteLocation(option: string): boolean {
@@ -328,7 +352,7 @@ function isUnresolvedRemoteLocation(option: string): boolean {
   // ambiguity exception, including state abbreviations after provider labels.
   if (containsNonlocalGeography(value)
     || isExplicitInternationalLocationOption(value)
-    || FOREIGN_COUNTRY_NAME.test(value)
+    || hasForeignCountryName(value)
     || new RegExp(`\\b${US_STATE_LOCATION_PATTERN}\\b`).test(value)
     || new RegExp(`\\b${US_STATE_LOCATION_PATTERN}(?:\\s+only)?$`, 'i').test(value)
     || /\b(?:CAN|GBR|FRA|DEU|NLD|AUS|NZL|IND|MEX|BRA)\b/i.test(value)
@@ -362,19 +386,23 @@ export function locationTriageVerdict(
   // explicitly foreign site. They carry no US evidence. A concrete Minnesota
   // option (handled above) or an explicit US-wide option still legitimately
   // keeps a multi-country requisition in scope.
-  const hasExplicitInternational = options.some(isExplicitInternationalLocationOption);
-  const hasExplicitUSScope = options.some((option) => (
-    isGeneralRemoteOption(option) && /\b(?:u\.?s\.?a?|united[- ]states)\b/i.test(option)
-  ) || /^(?:u\.?s\.?a?|united states(?: of america)?)$/i.test(option.trim()));
+  const hasExplicitInternational = options.some(option =>
+    isExplicitInternationalLocationOption(option) || hasForeignCountryName(option));
+  const hasExplicitUSScope = options.some((option) => {
+    const normalized = normalizeLocationOption(option).replace(US_COUNTRY_NAME, 'United States');
+    return (isGeneralRemoteOption(normalized) && /\b(?:u\.?s\.?a?|united[- ]states)\b/i.test(normalized))
+      || /^(?:u\.?s\.?a?|united states(?: of america)?)$/i.test(normalized);
+  });
   if (!hasConcreteLocal && hasExplicitInternational && !hasExplicitUSScope) {
     return { pass: false, reason: `Location outside the searched geographies (${value.slice(0, 80)})` };
   }
+  if (hasExplicitUSScope) return PASS;
   if (GLOBAL_SCOPE.test(value)) return { pass: true, reason: 'Worldwide availability; retain for eligibility review' };
   if (options.some(hasMinnesotaCoverageOption)) return { pass: true, reason: 'Coverage list includes Minnesota; retain for work-base review' };
   if (options.some(acceptableLocationOption)) return PASS;
   if (controls.allowAmbiguousRemote !== false
     && !hasExplicitInternational
-    && !FOREIGN_COUNTRY_NAME.test(value)
+    && !options.some(hasForeignCountryName)
     && !hasResidencyRequirement(value)
     && !hasAssignedTerritoryResidencyRequirement(value)
     && !hasRegularPresenceRequirement(value, true)

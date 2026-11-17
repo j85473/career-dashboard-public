@@ -1,8 +1,10 @@
 import 'dotenv/config';
 
-import { publicCrawlCapacity } from '../src/lib/publicCrawlCapacity';
+import { publicCrawlCapacity, reservePublicCrawlTurn, heartbeatPublicCrawlTurn, releasePublicCrawlTurn, type PublicCrawlTurn } from '../src/lib/publicCrawlCapacity';
+import { reserveCrawlBoardService } from '../src/lib/crawlTimeBudget';
+import { finishAtsServiceTurn } from '../src/lib/atsServiceScheduling';
 import { browserPauseActive } from '../src/lib/browserAtsWorker';
-import { nextCrawlBoard, nextCrawlRefreshAt } from '../src/lib/atsCrawlingSchedule';
+import { readCrawlQueueHeads, nextCrawlRefreshAt } from '../src/lib/atsCrawlingSchedule';
 import { prisma } from '../src/lib/prisma';
 import { checkpointIngestionTask, claimDueIngestionTask, completeIngestionTask, type ClaimedIngestionTask } from '../src/lib/ingestionControl';
 import { GUSTO_BOARD_COLLECTION_TASK_DEFINITION } from '../src/lib/ingestionTaskCatalog';
@@ -35,10 +37,19 @@ function limitFromArguments(args: string[]): number {
   return value;
 }
 
-async function runGustoSweep(
+async function runGustoSweep(limit: number, claim: ClaimedIngestionTask,
+  counters: ReturnType<typeof emptyExternalIngestionCounters>): Promise<number> {
+  const capacity = await reservePublicCrawlTurn('public-browser');
+  if (!capacity) return 0;
+  try { return await runGustoSweepWork(limit, claim, counters, capacity); }
+  finally { await releasePublicCrawlTurn(capacity); }
+}
+
+async function runGustoSweepWork(
   limit: number,
   claim: ClaimedIngestionTask,
   counters: ReturnType<typeof emptyExternalIngestionCounters>,
+  capacity: PublicCrawlTurn,
 ): Promise<number> {
   const profileDirectory = process.env.CLOAKBROWSER_PROFILE_DIR;
   if (!profileDirectory) throw new Error('CLOAKBROWSER_PROFILE_DIR is required');
@@ -47,14 +58,15 @@ async function runGustoSweep(
   const check = async () => {
     if (Date.now() - lastSafetyCheck < 2000) return;
     const state = await prisma.pipelineState.findUnique({ where: { id: 'global' }, select: { schedulePaused: true, pausedUntil: true } });
-    if (browserPauseActive(state) || !(await publicCrawlCapacity(prisma)).healthy) throw Error('Waiting for operator pause or ingestion capacity');
+    if (browserPauseActive(state) || !await heartbeatPublicCrawlTurn(capacity) || !(await publicCrawlCapacity(prisma)).healthy) throw Error('Waiting for operator pause or ingestion capacity');
     lastSafetyCheck = Date.now();
   };
   // Respect operator intent before consuming the shared browser session.
   try { await check(); } catch { return 0; }
   const deadline = Date.now() + 3 * 60_000;
-  let candidate = await nextCrawlBoard(['gusto'], 0, true, undefined, claim.task.id);
-  if (!candidate) { console.log('[Gusto] No browser board sweep is due.'); return 0; }
+  const next = () => readCrawlQueueHeads(['gusto'], undefined, claim.task.id);
+  let heads = await next();
+  if (!heads.length) { console.log('[Gusto] No browser board sweep is due.'); return 0; }
 
   const { launchPersistentContext } = await import('cloakbrowser');
   const context = await launchPersistentContext({
@@ -67,14 +79,20 @@ async function runGustoSweep(
   });
   let swept = 0;
   let failed = 0;
+  let handled = 0;
   try {
     const page = context.pages()[0] || await context.newPage();
-    for (let turn = 0; candidate && turn < limit && Date.now() < deadline; turn++, candidate = await nextCrawlBoard(['gusto'], turn, turn < Math.max(1, Math.floor(limit / 10)), undefined, claim.task.id)) {
-      const board = candidate;
+    for (let turn = 0; heads.length && turn < limit && Date.now() < deadline; turn++, heads = await next()) {
+      const selection = await reserveCrawlBoardService('public-browser', heads);
+      if (!selection) break;
+      const { board, serviceTurn: service } = selection;
+      let serviceWorked = false;
+      try {
       try { await check(); } catch { break; }
       if (!await checkpointIngestionTask({ taskId: claim.task.id, leaseToken: claim.leaseToken, counters })) {
         throw new Error('Gusto board collection task lost its lease.');
       }
+      serviceWorked = true;
       const url = gustoBoardUrl(board.slug);
       if (!url) {
         console.error(`[Gusto] Invalid stored board identity: ${board.slug}`);
@@ -135,12 +153,15 @@ async function runGustoSweep(
             select: { slug: true },
           });
           if (!stillActive) throw new Error('Board was retired during the sweep');
+          if (handled >= 50) throw new Error('Bounded Gusto turn finished; retain remaining postings');
+          handled++;
           counters.requests = (counters.requests || 0) + 1;
           const postingResponse = await page.goto(posting.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
           if (!postingResponse?.ok()) throw new Error(`Posting returned HTTP ${postingResponse?.status() ?? 'no response'}`);
           const detail = await readRenderedGustoPage(page,
             (html) => parseGustoPostingHtml(html, posting.url, board.slug), 'Posting');
           if (!detail || detail.id !== posting.id) throw new Error(`Posting ${posting.id} did not render a matching Gusto description`);
+          await check();
           const outcome = await ingestExternalJob({
             title: detail.title,
             company: detail.company,
@@ -201,6 +222,7 @@ async function runGustoSweep(
         });
         console.error(`[Gusto] Retaining ${board.slug} for retry: ${message}`);
       }
+      } finally { await finishAtsServiceTurn(service, serviceWorked); }
     }
   } finally {
     await context.close().catch(() => {});

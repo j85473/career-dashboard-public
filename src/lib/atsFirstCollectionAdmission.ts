@@ -159,26 +159,35 @@ export async function nextReviewedFirstCollectionBoard(client: Client, now = new
 }
 
 /** Filter before the candidate limit so held boards cannot hide established work. */
-export async function firstCollectionSelectionWhere(client: Client, now = new Date()): Promise<Prisma.AtsCompanyWhereInput> {
+export async function firstCollectionSelectionWhere(client: Client, now = new Date(), reconcile = true): Promise<Prisma.AtsCompanyWhereInput> {
+  return (await firstCollectionSelection(client, now, {}, reconcile)).where;
+}
+
+/** Choose reviewed work inside the same eligibility scope as its caller. A
+ * paused, held or out-of-cohort board must not whitelist itself ahead of a
+ * different reviewed board that can actually run. */
+export async function firstCollectionSelection(client: Client, now = new Date(),
+  eligibility: Prisma.AtsCompanyWhereInput = {}, reconcile = true) {
   const established: Prisma.AtsCompanyWhereInput = { OR: [
     { platform: { notIn: [...FIRST_COLLECTION_PLATFORMS] } }, { firstCollectionState: 'established' },
   ] };
-  await reconcileFirstCollectionCompletion(client);
+  if (reconcile) await reconcileFirstCollectionCompletion(client);
   const policy = await client.atsFirstCollectionPolicy.findUnique({ where: { id: FIRST_COLLECTION_POLICY_ID } });
-  if (!policy || policy.mode === 'held') return established;
+  if (!policy || policy.mode === 'held') return { where: established, reviewed: null };
   const reviewedBoards = (await reviewedCollectionPolicies(client)).flatMap(policy => reviewedFirstCollectionWhere(policy));
   const choices = [...(established.OR || [])];
-  const nextReviewed = await nextReviewedFirstCollectionBoard(client, now);
+  const nextReviewed = await nextReviewedFirstCollectionBoard(client, now, eligibility);
   if (nextReviewed) choices.push({ platform: nextReviewed.platform, slug: nextReviewed.slug, firstCollectionState: 'ready' });
   const counts = await firstCollectionCounts(client, now, policy.mode === 'capacity');
-  if (!firstCollectionAllowance({ ...policy, ...counts, now })) return { OR: choices };
+  if (!firstCollectionAllowance({ ...policy, ...counts, now })) return { where: { OR: choices }, reviewed: nextReviewed };
   const pilotBoards = Array.isArray(policy.pilotBoards) ? policy.pilotBoards.filter((x): x is string => typeof x === 'string') : [];
   const pilots = pilotBoards.map(value => { const split = value.indexOf('::'); return { platform: value.slice(0, split), slug: value.slice(split + 2) }; });
-  return { OR: [...choices, {
+  const where: Prisma.AtsCompanyWhereInput = { OR: [...choices, {
     platform: { in: [...FIRST_COLLECTION_PLATFORMS] }, firstCollectionState: 'ready',
     ...(reviewedBoards.length ? { NOT: { OR: reviewedBoards } } : {}),
     ...(policy.mode === 'pilot' ? { OR: pilots.length ? pilots : [{ slug: '__no_pilot__' }] } : {}),
   }] };
+  return { where, reviewed: nextReviewed };
 }
 
 export async function firstCollectionHealth(client: Pick<Client, '$queryRaw'>, reserveJobs = 250, reserveBytes = 5242880, now = new Date(), persistenceWatermark: 'low' | 'high' = 'low') {

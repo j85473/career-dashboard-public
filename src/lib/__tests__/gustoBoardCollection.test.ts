@@ -41,7 +41,10 @@ test('all API continuation selection branches exclude old Gusto batches', async 
   assert.equal(await claimNextAtsV2Continuation({ client, pausedPlatforms: [] }), null);
   // Cohort priority can add reads; every selection branch must retain the exclusion.
   assert.ok(reads.length >= 4);
-  for (const read of reads) assert.deepEqual(read.where.platform, { notIn: NON_API_ATS_PLATFORMS });
+  for (const read of reads) {
+    const base = read.where.platform ? read.where : (read.where.AND as Prisma.AtsIngestionBatchWhereInput[])[0];
+    assert.deepEqual(base.platform, { notIn: NON_API_ATS_PLATFORMS });
+  }
 });
 
 test('routing refuses envelopes with acquired data or live work', () => {

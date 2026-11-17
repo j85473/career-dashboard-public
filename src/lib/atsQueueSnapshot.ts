@@ -12,6 +12,7 @@ export type AtsQueueHold = {
   example: string | null;
 };
 export type AtsQueueSnapshot = {
+  capacity?: Awaited<ReturnType<typeof import('./atsCapacityTelemetry').readAtsCapacityTelemetry>>;
   observedAt: string;
   mode: string;
   admissionNote: string;

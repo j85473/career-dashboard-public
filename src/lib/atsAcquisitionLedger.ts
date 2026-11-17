@@ -4,6 +4,8 @@ import { resolveAtsItemRaw } from './atsRawEvidence';
 import { atsRetryColumns, readAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
 import { retainedAtsDetailRetryAt } from './atsDetailRetryPolicy';
 import { storageAllows } from './storagePressure';
+import { reserveAtsServiceTurn, finishAtsServiceTurn, ATS_SERVICE_MAX_WAIT_MS, type AtsServiceTurn } from './atsServiceScheduling';
+import { atsContinuationEligibilityWhere, atsContinuationServiceWhere, ATS_API_SERVICE_CLASSES, ATS_DRAIN_PHASES } from './atsSchedulingEligibility';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import { nextAtsProcessingContinuationAt } from './atsProcessingSchedule';
 import { reserveFirstCollection } from './atsFirstCollectionAdmission';
@@ -31,14 +33,14 @@ import { withProviderTransactionRetry } from './ingestionControl';
 import type { IngestionCounters } from './ingestionControl';
 import { ATS_ACQUISITION_WRITER_VERSION } from './atsAcquisitionCompatibility';
 import { prisma } from './prisma';
-import { atsRotationCohortWhere, atsRotationCohortSql } from './atsRotationCohort';
+import { atsRotationCohortSql } from './atsRotationCohort';
 import { isAtsBoardInRotationCohort, nextAtsBoardCheckDateForBoard, apiRotationDayFor as rotationDayFor } from './atsRotation';
 import { ATS_COHORT_PRESSURE_LISTING_CONCURRENCY, withAtsListingCapacity } from './atsContinuationCapacity';
 import { evaluateAtsAcquisitionPressure } from './atsAcquisitionPressure';
 import { atsListingAdmissionReservationSql, atsSegmentPersistenceCapacitySql } from './atsAdmissionCapacity';
 import { atsPersistenceAllocation } from './atsPersistenceAllocation';
 import { atsEmployerVerificationHoldWhere, isAtsEmployerVerificationHold, type AtsEmployerRetryMode } from './atsEmployerRetry';
-import { atsListingPauseWhere, pausedAtsListingPlatforms, readAtsListingPauses } from './atsListingPause';
+import { pausedAtsListingPlatforms, readAtsListingPauses } from './atsListingPause';
 export { ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK, ATS_LEDGER_STAGING_BYTE_HIGH_WATERMARK } from './atsAcquisitionPressure';
 
 type JsonObject = Record<string, unknown>;
@@ -202,6 +204,7 @@ export class AtsLedgerDivergentPageError extends Error {
 }
 
 export type AtsLedgerClaim = {
+  serviceTurn?: AtsServiceTurn;
   batchId: string;
   slug: string;
   platform: string;
@@ -361,9 +364,10 @@ export async function admitAtsV2Board(input: {
       const pressure = await atsV2StagingSnapshot(transaction, now);
       const board = await transaction.atsCompany.findUnique({
         where: { slug_platform: { slug: input.slug, platform: input.platform } },
-        select: { acquisitionEngine: true, nextCheckDate: true, status: true, checkDay: true },
+        select: { acquisitionEngine: true, nextCheckDate: true, status: true, checkDay: true, firstCollectionHoldReason: true },
       });
-      if (!board || board.acquisitionEngine !== 'v2' || board.nextCheckDate > now) return null;
+      if (!board || board.acquisitionEngine !== 'v2' || board.nextCheckDate > now || board.firstCollectionHoldReason
+        || !['active', 'parked', 'blacklisted'].includes(board.status)) return null;
       if (pressure.admissionBlocked && !(pressure.cohortAdmissionAllowed
         && board.status === 'active' && isAtsBoardInRotationCohort({ ...board, ...input }, rotationDayFor(now)))) return null;
       const gate = await transaction.atsAcquisitionRuntimeGate.findUnique({
@@ -498,16 +502,7 @@ function workTypeForPhase(phase: string, listingOffset: number): string {
  * at all, and staging kept climbing against its own admission watermark. Drain
  * work is offered first so the lane empties before it ingests.
  */
-export const ATS_V2_DRAIN_PHASES = [
-  'compaction',
-  'enrichment',
-  'sealing',
-] as const;
-
-const ATS_V2_ACQUISITION_PHASES = [
-  'listing',
-  ...ATS_V2_DRAIN_PHASES,
-] as const;
+export const ATS_V2_DRAIN_PHASES = ATS_DRAIN_PHASES;
 
 /**
  * How long a listing batch may sit unserved before it outranks drain work.
@@ -571,25 +566,24 @@ export async function claimNextAtsV2Continuation(input: {
   const now = input.now || new Date();
   const owner = input.owner || `${os.hostname()}:${process.pid}`;
   const pausedPlatforms = input.pausedPlatforms ?? pausedAtsListingPlatforms(await readAtsListingPauses(now), now);
-  const eligible: Prisma.AtsIngestionBatchWhereInput = {
-    writerMode: 'v2',
-    platform: { notIn: NON_API_ATS_PLATFORMS },
-    status: { in: ['fetching', 'partial', 'synchronized', 'reset_draining'] },
-    acquisitionPhase: { in: [...ATS_V2_ACQUISITION_PHASES] },
-    OR: [{ nextAcquireAt: null }, { nextAcquireAt: { lte: now } }],
-    AND: [atsListingPauseWhere(pausedPlatforms), {
-      OR: [
-        { acquisitionClaimToken: null },
-        { acquisitionLeaseExpiresAt: { lte: now } },
-      ],
-    }],
-  };
+  const eligible = atsContinuationEligibilityWhere(now, pausedPlatforms);
   const orderBy: Prisma.AtsIngestionBatchOrderByWithRelationInput[] = [
     { lastServedAt: { sort: 'asc', nulls: 'first' } },
     { nextAcquireAt: { sort: 'asc', nulls: 'first' } },
     { createdAt: 'asc' },
   ];
-  const findCandidate = (where: Prisma.AtsIngestionBatchWhereInput) => findAtsContinuationCandidate(client, where, orderBy, now, input.listingConcurrencyLimit !== undefined);
+  const findCandidate = async (where: Prisma.AtsIngestionBatchWhereInput) => {
+    const heads = (await Promise.all(ATS_API_SERVICE_CLASSES.map(async (key, priority) => {
+      const candidate = await findAtsContinuationCandidate(client,
+        { AND: [where, atsContinuationServiceWhere(key, now)] }, orderBy, now,
+        input.listingConcurrencyLimit !== undefined && where.acquisitionPhase === 'listing');
+      return candidate ? { key, priority, readySince: Math.max(candidate.lastServedAt?.getTime() || 0,
+        candidate.nextAcquireAt?.getTime() || 0) || now.getTime(), candidate } : null;
+    }))).filter((head): head is NonNullable<typeof head> => head !== null);
+    const turn = await reserveAtsServiceTurn(where.acquisitionPhase === 'listing' ? 'api-listing' : 'api-drain',
+      heads, { now });
+    return turn ? { ...heads.find(head => head.key === turn.key)!.candidate, serviceTurn: turn } : null;
+  };
   // A listing batch ignored past the starvation floor outranks drain work. A
   // batch that has never been served has a null lastServedAt and qualifies at
   // once, which is what lets a fresh board start listing at all while a steady
@@ -631,21 +625,26 @@ export async function claimNextAtsV2Continuation(input: {
   })) || await findCandidate({
       ...eligible,
       acquisitionPhase: { in: [...ATS_V2_DRAIN_PHASES] },
-  }) || (input.drainOnly ? null : await findCandidate(eligible));
+  }) || (input.drainOnly ? null : await findCandidate({ ...eligible, acquisitionPhase: 'listing' }));
   if (!candidate) return null;
 
-  if (candidate.acquisitionPhase === 'listing' && input.listingConcurrencyLimit !== undefined) {
-    const listing = await runListingClaimTransaction(async (transaction) => {
-      await transaction.$executeRaw`SET LOCAL lock_timeout = '3s'`;
-      return withAtsListingCapacity(transaction, now, input.listingConcurrencyLimit!,
-        () => claimAtsContinuationCandidate(transaction, candidate, now, owner));
-    });
-    // A full producer allowance must not leave idle workers repeatedly asking
-    // for the same starved listing. They immediately offer the slot to drain.
-    return listing || claimNextAtsV2Continuation({ ...input, now, owner, pausedPlatforms, drainOnly: true });
+  try {
+    const claim = candidate.acquisitionPhase === 'listing' && input.listingConcurrencyLimit !== undefined
+      ? await runListingClaimTransaction(async transaction => {
+        await transaction.$executeRaw`SET LOCAL lock_timeout = '3s'`;
+        return withAtsListingCapacity(transaction, now, input.listingConcurrencyLimit!,
+          () => claimAtsContinuationCandidate(transaction, candidate, now, owner), { existingListing: true });
+      })
+      : await claimAtsContinuationCandidate({ atsIngestionBatch: client.atsIngestionBatch,
+        atsAcquisitionWorkReceipt: prisma.atsAcquisitionWorkReceipt }, candidate, now, owner);
+    if (claim) return { ...claim, serviceTurn: candidate.serviceTurn };
+    await finishAtsServiceTurn(candidate.serviceTurn, false);
+    return candidate.acquisitionPhase === 'listing' && input.listingConcurrencyLimit !== undefined
+      ? claimNextAtsV2Continuation({ ...input, now, owner, pausedPlatforms, drainOnly: true }) : null;
+  } catch (error) {
+    await finishAtsServiceTurn(candidate.serviceTurn, false);
+    throw error;
   }
-  return claimAtsContinuationCandidate({ atsIngestionBatch: client.atsIngestionBatch,
-    atsAcquisitionWorkReceipt: prisma.atsAcquisitionWorkReceipt }, candidate, now, owner);
 }
 
 /** Match continuation cohort priority to new-board coverage within each phase. */
@@ -656,43 +655,23 @@ export async function findAtsContinuationCandidate(
   now: Date,
   pressured = false,
 ) {
-  const select = { id: true, acquisitionPhase: true };
-  if (pressured && where.acquisitionPhase === 'listing') {
-    // Bound the candidate sample and retain every retry/lease predicate.
-    // Small remaining catalogues release their staged work soonest. Unknown
-    // totals retain ordinary fairness rather than masquerading as nearly done.
+  const select = { id: true, acquisitionPhase: true, lastServedAt: true, nextAcquireAt: true };
+  const oldest = await client.atsIngestionBatch.findFirst({ where, orderBy, select });
+  if (!oldest || oldest.lastServedAt === null || oldest.lastServedAt <= new Date(now.getTime() - ATS_SERVICE_MAX_WAIT_MS)) return oldest;
+  if (pressured) {
+    // A finishing preference can use a bounded turn, never bypass an older
+    // eligible catalogue indefinitely. Unknown totals keep age ordering.
     const candidates = await client.atsIngestionBatch.findMany({
-      where: { ...where, AND: [
-        ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
-        { listingOffset: { gt: 0 }, latestObservedTotal: { gt: 0 }, lastError: null },
-      ] }, orderBy, take: 64,
-      select: { ...select, listingOffset: true, latestObservedTotal: true, lastServedAt: true },
+      where: { AND: [where, { acquisitionPhase: 'listing', listingOffset: { gt: 0 },
+        latestObservedTotal: { gt: 0 }, lastError: null }] }, orderBy, take: 64,
+      select: { ...select, listingOffset: true, latestObservedTotal: true },
     });
     const nearest = candidates.filter(c => c.latestObservedTotal !== null && c.latestObservedTotal >= c.listingOffset)
       .sort((a, b) => (a.latestObservedTotal! - a.listingOffset) - (b.latestObservedTotal! - b.listingOffset)
         || (a.lastServedAt?.getTime() || 0) - (b.lastServedAt?.getTime() || 0))[0];
-    if (nearest) return { id: nearest.id, acquisitionPhase: nearest.acquisitionPhase };
+    if (nearest) return nearest;
   }
-  const today = await client.atsIngestionBatch.findFirst({
-    where: { ...where, board: { status: 'active', ...atsRotationCohortWhere(rotationDayFor(now)) } }, orderBy, select,
-  });
-  if (today) return today;
-  // Keep a recently productive traversal moving toward its end. Retry/lease
-  // guards from `where` still apply; a failed or held board cannot monopolize
-  // this preference. Oldest-service ordering remains the fallback.
-  if (where.acquisitionPhase === 'listing') {
-    const continuing = await client.atsIngestionBatch.findFirst({
-      where: { ...where, AND: [
-        ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
-        { listingOffset: { gt: 0 }, lastError: null,
-        lastServedAt: { gte: new Date(now.getTime() - 5 * 60_000) } }] },
-      orderBy: [{ lastServedAt: 'desc' }, { createdAt: 'asc' }], select,
-    });
-    if (continuing) return continuing;
-  }
-  return await client.atsIngestionBatch.findFirst({
-    where: { ...where, board: { status: 'active' } }, orderBy, select,
-  }) || await client.atsIngestionBatch.findFirst({ where, orderBy, select });
+  return oldest;
 }
 
 async function claimAtsContinuationCandidate(

@@ -1,4 +1,5 @@
 import { Prisma } from './prismaClient';
+import { readAtsCapacityTelemetry } from './atsCapacityTelemetry';
 import { prisma } from './prisma';
 import { firstCollectionHealth } from './atsFirstCollectionAdmission';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
@@ -130,6 +131,7 @@ async function queryAtsQueueTelemetry(): Promise<AtsQueueSnapshot> {
     : `${policy.mode} admission · daily limit ${policy.dailyBoardLimit}`;
   const n = (key: string) => Number(counts?.[key] || 0);
   return { observedAt: now.toISOString(), mode: policy?.mode || 'held', admissionNote,
+    capacity: await readAtsCapacityTelemetry(now),
     validationDue: n('validationDue'), validationHeld: n('validationHeld'), sizeReview: n('sizeReview'),
     ready: n('ready'), awaitingHandoff: n('awaitingHandoff'), collecting: n('collecting'),
     persistenceDue: n('persistenceDue') + n('legacyPersistenceDue'), persistenceHeld: n('persistenceHeld') + n('legacyPersistenceHeld'), holds: groupAtsQueueHolds(rows) };

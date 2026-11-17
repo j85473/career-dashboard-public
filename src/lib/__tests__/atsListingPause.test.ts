@@ -38,7 +38,8 @@ test('all continuation priorities retain pause, retry and lease guards without e
     reads.length = 0;
     assert.equal(await claimNextAtsV2Continuation({ client, now,
       listingConcurrencyLimit, pausedPlatforms: ['workday'] }), null);
-    const selections = reads.filter(where => 'status' in where);
+    const nodes = (where: Prisma.AtsIngestionBatchWhereInput): Prisma.AtsIngestionBatchWhereInput[] => [where, ...(Array.isArray(where.AND) ? where.AND.flatMap(nodes) : [])];
+    const selections = reads.flatMap(nodes).filter(where => 'status' in where);
     assert.ok(selections.length >= 4);
     for (const where of selections) {
       assert.deepEqual(where.OR, [{ nextAcquireAt: null }, { nextAcquireAt: { lte: now } }]);
@@ -65,9 +66,9 @@ test('assigned, overdue and recovery coverage all skip paused platforms before t
     reads.push(input!.where!); return [];
   }) as typeof prisma.atsCompany.findMany;
   assert.equal(await selectNextAtsV2CoverageBoard(new Date(), false, ['workday']), null);
-  assert.equal(reads.length, 3);
+  assert.equal(reads.length, 4);
   for (const where of reads) {
-    const platform = where.platform as Prisma.StringFilter;
+    const platform = (where.AND as Prisma.AtsCompanyWhereInput[])[0].platform as Prisma.StringFilter;
     assert.ok((platform.notIn as string[]).includes('workday'));
     assert.ok(!(platform.notIn as string[]).includes('greenhouse'));
   }

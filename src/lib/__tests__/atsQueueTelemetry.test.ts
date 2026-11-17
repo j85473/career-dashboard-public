@@ -31,6 +31,21 @@ test('held persistence cannot cause acquisition to be stuck; genuinely due work 
   assert.equal(deriveAtsAcquisitionState({ ...finished, globalReadyNow: 1, lastContactAt: new Date(observedAt) }, new Date(observedAt)), 'working');
 });
 
+test('capacity details distinguish eligible turns, actual work and bounded persistence charges', () => {
+  const html = renderToStaticMarkup(React.createElement(AtsQueuePanel, { snapshot: {
+    ...queueFixture, persistenceDue: 19000, capacity: {
+      observedAt, newCollectionsReady: 0, listingTurnsReady: 2754, processingTurnsReady: 2,
+      workingBatches: 3, persistenceCapacityJobs: 100, publicReservedJobs: 50,
+      policyReason: 'coverage_idle_loan', listingConcurrencyLimit: null,
+      resources: [{ resource: 'api-listing', classes: [{ key: 'recovery', serviceMs: 120000,
+        turns: 5, lastSelectedAt: observedAt, activeTurns: 0 }] }],
+    },
+  } }));
+  for (const text of ['New collections ready', 'Saved listing turns ready', 'Processing turns ready',
+    'Batches being worked', 'Persistence charged to capacity', '100', '19,000', 'Recovery', 'Recorded service minutes']) assert.ok(html.includes(text), text);
+  assert.doesNotMatch(html, /api-listing|coverage_idle_loan/);
+});
+
 test('grouped holds preserve every stage count, remaining item and retry range', () => {
   const base = { stage: 'Acquisition' as const, provider: 'oracle', unit: 'batches' as const, count: BigInt(1), items: BigInt(43),
     retryAt: new Date('2026-10-13T05:01:00Z'), lastRetryAt: new Date('2026-10-13T05:01:00Z'), example: 'board-a' };

@@ -1,6 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { crawlTimeOrder } from './crawlTimeBudget';
-import { nextCrawlBoard, nextCrawlRefreshAt } from './atsCrawlingSchedule';
+import { reserveCrawlBoardService } from './crawlTimeBudget';
+import { finishAtsServiceTurn } from './atsServiceScheduling';
+import { readCrawlQueueHeads, nextCrawlRefreshAt } from './atsCrawlingSchedule';
 import { prisma } from './prisma';
 import { Prisma } from './prismaClient';
 import type { BrowserContext } from 'playwright-core';
@@ -8,7 +9,7 @@ import { publicAtsWorkerPlatforms, browserAtsBoardFromUrl, type BrowserAtsPlatfo
 import { browserAtsTaskDefinition } from './ingestionTaskCatalog';
 import { claimDueIngestionTask, checkpointIngestionTask, completeIngestionTask, type ClaimedIngestionTask } from './ingestionControl';
 import { countExternalIngestionOutcome, emptyExternalIngestionCounters, externalJobAlreadyObserved, ingestExternalJob, persistExternalIngestionSourceRun } from './jobIngestion';
-import { publicCrawlCapacity } from './publicCrawlCapacity';
+import { publicCrawlCapacity, reservePublicCrawlTurn, heartbeatPublicCrawlTurn, releasePublicCrawlTurn, type PublicCrawlTurn } from './publicCrawlCapacity';
 import { BrowserAtsReader } from './browserAtsReader';
 import { AdpPublicReader } from './adpPublicReader';
 import { BrowserPostingEvidenceError, browserPostingSourceId, type BrowserPostingLink } from './browserAtsPosting';
@@ -68,6 +69,7 @@ export async function runBrowserAtsWorker(options: {
     if (options.browserAllowed === false && platforms.some(platform => !publicAtsWorkerPlatforms(true).includes(platform)))
         throw Error('HTTP-only collection cannot claim boards that may require a browser');
     const lane = options.browserAllowed === false ? 'http' : 'browser';
+    const resource = lane === 'browser' ? 'public-browser' : platforms.length === 1 && platforms[0] === 'adp' ? 'public-http-adp' : 'public-http-shared';
     const deadline = Date.now() + (options.budgetMs ?? 6 * 60000);
     let stopped = false;
     const stop = () => { stopped = true; };
@@ -77,20 +79,28 @@ export async function runBrowserAtsWorker(options: {
     const maxTurns = options.maxProviders ?? 10000;
     const spent = { first: 0, refresh: 0, continuation: 0, retry: 0 };
     const unavailablePlatforms = new Set<BrowserAtsPlatform>();
-    const cycleStart = Math.floor(Date.now() / 60000) % 10;
     try {
         while (!stopped && Date.now() < deadline && visited < maxTurns) {
-            const selected = await nextCrawlBoard(platforms.filter(p => !unavailablePlatforms.has(p)), cycleStart + visited, spent.retry < (options.budgetMs ?? 6 * 60000) * 0.1, options.boards, undefined, prisma, lane, crawlTimeOrder(spent));
-            if (!selected) break;
+            const heads = await readCrawlQueueHeads(platforms.filter(p => !unavailablePlatforms.has(p)), options.boards, undefined, prisma, lane);
+            const selection = await reserveCrawlBoardService(resource, heads);
+            if (!selection) break;
+            const { board: selected, serviceTurn } = selection;
             const platform = selected.platform as BrowserAtsPlatform;
             const definition = browserAtsTaskDefinition(platform);
-            const claim = await claimDueIngestionTask(definition.spec);
-            if (!claim) { unavailablePlatforms.add(platform); visited++; continue; }
+            let claim: ClaimedIngestionTask | null;
+            try { claim = await claimDueIngestionTask(definition.spec); }
+            catch (error) { await finishAtsServiceTurn(serviceTurn, false); throw error; }
+            if (!claim) {
+                await finishAtsServiceTurn(serviceTurn, false);
+                unavailablePlatforms.add(platform); visited++; continue;
+            }
             const laneCursor = crawlLaneCheckpoint(claim.task.cursor, lane, claim.task.lastStartedAt || new Date());
             visited++;
             const turnStartedAt = Date.now();
             const boardDeadline = Math.min(deadline, Date.now() + 60000);
             let lastSafetyCheck = 0;
+            let publicTurn: PublicCrawlTurn | null = null;
+            let serviceWorked = false;
             const counters = emptyExternalIngestionCounters();
             const cost = { listingMs: 0, detailMs: 0, ingestionMs: 0, httpListings: 0, httpDetails: 0, browserListings: 0, browserDetails: 0, knownBeforeDetail: 0, titleRejectedBeforeDetail: 0 };
             const timed = async <T>(key: 'listingMs' | 'detailMs' | 'ingestionMs', action: () => Promise<T>): Promise<T> => {
@@ -120,6 +130,8 @@ export async function runBrowserAtsWorker(options: {
                     if (!allowed)
                         throw new BrowserSweepDeferred('Board was retired; collection stopped without changing its records');
                 }
+                if (!publicTurn || !await heartbeatPublicCrawlTurn(publicTurn))
+                    throw new BrowserSweepDeferred('Public collection capacity lease is no longer owned');
                 if (!await browserCollectionAllowed(platform, board?.slug))
                     throw new BrowserSweepDeferred('Waiting for operator pause or ingestion capacity');
                 lastSafetyCheck = Date.now();
@@ -142,6 +154,13 @@ export async function runBrowserAtsWorker(options: {
             const readListing = () => timed('listingMs', () => transportReader.listing());
             const readDetail = (link: BrowserPostingLink) => timed('detailMs', () => transportReader.detail(link));
             try {
+                try {
+                    publicTurn = await reservePublicCrawlTurn(resource);
+                    if (!publicTurn) throw new BrowserSweepDeferred('Waiting for operator pause or ingestion capacity');
+                } catch (error) {
+                    stopped = true;
+                    throw error instanceof BrowserSweepDeferred ? error : new BrowserSweepDeferred('Scheduling capacity could not be verified');
+                }
                 // A weekly reservation can commit between selection and the
                 // task claim. The lease now fences that planner; re-read the
                 // due date and weekday before starting any board work.
@@ -150,6 +169,7 @@ export async function runBrowserAtsWorker(options: {
                     select: { slug: true, platform: true, checkDay: true, failCount: true, lastSynchronizedAt: true },
                 });
                 if (!board) throw new BrowserSweepDeferred('Board received a future slot before claim; preserving its current schedule');
+                serviceWorked = true;
                 if (browserAtsBoardFromUrl(platform, board.slug) !== board.slug)
                     throw Error('Stored public-board identity failed validation');
                 await check();
@@ -280,6 +300,7 @@ export async function runBrowserAtsWorker(options: {
                 }
             }
             finally {
+              try {
                 spent[selected.queue] += Math.max(1, Date.now() - turnStartedAt);
                 if (reader)
                     await reader.close();
@@ -294,6 +315,13 @@ export async function runBrowserAtsWorker(options: {
                 if (owned)
                     await completeIngestionTask({ taskId: claim.task.id, taskKey: claim.task.taskKey, leaseToken: claim.leaseToken, status, counters, cadenceMs: 0, retryDelayMs: definition.intervalMs, continuationDelayMs: 0, jitterMaxMs: 0, watermarkAt: complete ? new Date() : undefined, error: errorMessage });
                 console.log(JSON.stringify({ queue: selected.queue, platform, board: board?.slug, page: progress?.page, processed: progress?.seen.length || 0, complete, deferred, inserted: counters.inserted, duplicates: counters.duplicates, filtered: counters.filtered, error: errorMessage }));
+              } finally {
+                const settled = await Promise.allSettled([
+                    ...(publicTurn ? [releasePublicCrawlTurn(publicTurn)] : []),
+                    finishAtsServiceTurn(serviceTurn, serviceWorked),
+                ]);
+                if (settled.some(result => result.status === 'rejected')) console.warn('Public scheduling accounting could not be settled; bounded reservations will expire.');
+              }
             }
             // Bound same-group board starts even when public responses are very fast.
             if (lane === 'http' && !stopped) await delay(Math.max(0, 500 - (Date.now() - turnStartedAt)));

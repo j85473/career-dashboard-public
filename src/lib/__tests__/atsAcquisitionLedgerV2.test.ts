@@ -22,6 +22,7 @@ import {
 } from '../atsAcquisitionDispatcherV2';
 import {
   ATS_LEDGER_WORK_LEASE_MS,
+  ATS_V2_DRAIN_PHASES,
   ATS_V2_LISTING_STARVATION_MS,
   ATS_V2_LISTING_STARVATION_SERVE_MS,
   atsLedgerHash,
@@ -207,17 +208,15 @@ test('the daily coverage goal does not cap eligible catch-up and recovery work',
   assert.equal(spareCapacity.reason, 'continuation_idle_loan');
 });
 
-test('v2 coverage spends excess capacity in assigned, overdue, recovery order', () => {
+test('coverage and continuation use shared eligible-work definitions and durable service opportunities', () => {
   const dispatcher = source('src/lib/atsAcquisitionDispatcherV2.ts');
-  const selection = dispatcher.slice(
-    dispatcher.indexOf('export async function selectNextAtsV2CoverageBoard'),
-    dispatcher.indexOf('export async function claimNextAtsV2Coverage'),
-  );
-  const assigned = selection.indexOf('...atsRotationCohortWhere(today)');
-  const overdue = selection.indexOf('NOT: atsRotationCohortWhere(today)');
-  const recovery = selection.indexOf('ATS_RECOVERY_STATUSES');
-  assert.ok(assigned > 0 && overdue > assigned && recovery > overdue);
+  const ledger = source('src/lib/atsAcquisitionLedger.ts');
+  assert.match(dispatcher, /atsCoverageEligibilityWhere/);
+  assert.match(dispatcher, /reserveAtsServiceTurn\('api-coverage'/);
+  assert.match(ledger, /atsContinuationEligibilityWhere\(now, pausedPlatforms\)/);
+  assert.match(ledger, /atsContinuationServiceWhere\(key, now\)/);
 });
+
 
 test('the dispatcher releases only harmless same-day schedule drift', () => {
   const dispatcher = source('src/lib/atsAcquisitionDispatcherV2.ts');
@@ -257,7 +256,7 @@ test('idle lanes lend capacity without freezing eligible work', () => {
       continuationSlots: 4,
       requiredByNow: 21_000,
       coverageDebt: 21_000,
-      projectedContacts: 5_760,
+      projectedContacts: null,
       reason: 'coverage_idle_loan',
     },
   );
@@ -506,23 +505,10 @@ test('sealing is reachable only once every item is terminal', () => {
   assert.doesNotMatch(ledger, /acquisitionPhase: complete \? 'synchronized' : 'sealing'/);
 });
 
-test('the continuation lane drains acquired work before it ingests more listings', () => {
-  const ledger = source('src/lib/atsAcquisitionLedger.ts');
-  assert.match(ledger, /export const ATS_V2_DRAIN_PHASES = \[/);
-  for (const phase of ['compaction', 'enrichment', 'sealing']) {
-    assert.match(ledger, new RegExp(`ATS_V2_DRAIN_PHASES = \\[[^\\]]*'${phase}'`));
-  }
-  for (const phase of ['synchronized', 'publishing']) {
-    assert.doesNotMatch(ledger, new RegExp(`ATS_V2_DRAIN_PHASES = \\[[^\\]]*'${phase}'`));
-  }
-  // Listing is the only continuation phase that adds staging pressure, so it
-  // must never appear in the drain set and must only be reached by fallback.
-  assert.doesNotMatch(ledger, /ATS_V2_DRAIN_PHASES = \[[^\]]*'listing'/);
-  assert.match(
-    ledger,
-    /acquisitionPhase: \{ in: \[\.\.\.ATS_V2_DRAIN_PHASES\] \},\s*\}\) \|\| \(input\.drainOnly \? null : await findCandidate\(eligible\)\)/,
-  );
+test('the continuation drain phases exclude listing, publishing and completed work', () => {
+  assert.deepEqual(ATS_V2_DRAIN_PHASES, ['compaction', 'enrichment', 'sealing']);
 });
+
 
 test('early processed segments cannot finalize a board with later enrichment remaining', () => {
   const earlySegments = finalizationSnapshot({
@@ -681,13 +667,13 @@ test('coverage yields its slots whenever acquired work is waiting', () => {
   // Coverage is the only lane that adds staging pressure, so a blocked staging
   // area gives it nothing and a saturated drain queue holds it to one slot.
   assert.match(dispatcher, /const staging = await atsV2StagingSnapshot\(prisma, now\);/);
-  assert.match(dispatcher, /const drainSaturated = shadow\.continuationEligible >= slots;/);
+  assert.match(dispatcher, /const drainSaturated = shadow\.drainEligible >= slots;/);
   assert.match(dispatcher, /staging\.cohortAdmissionAllowed && shadow\.coverageEligible > 0/);
   assert.match(dispatcher, /coverageSlots > 0 \? 'cohort_balanced' : 'finishing_listings'/);
   assert.match(dispatcher, /Math\.min\(ATS_V2_COVERAGE_SLOTS_WHILE_DRAINING, slots - 1\)/);
   assert.match(dispatcher, /ATS_V2_COVERAGE_SLOTS_WHILE_DRAINING = 1;/);
   // Drain depth must exclude the one continuation phase that ingests.
-  assert.match(dispatcher, /batch\."acquisitionPhase" IN \('compaction', 'enrichment', 'sealing'\)[\s\S]*?AS "drainEligible"/);
+  assert.match(dispatcher, /acquisitionPhase: \{ in: \[\.\.\.ATS_DRAIN_PHASES\] \}/);
 });
 
 test('ledger writes retry a serialization failure instead of failing the quantum', () => {
@@ -705,7 +691,7 @@ test('ledger writes retry a serialization failure instead of failing the quantum
   assert.equal(direct.length, 0);
   const wrapped = ledger.match(/runLedgerTransaction\(async \(transaction\)/g) || [];
   assert.equal(wrapped.length, 15);
-  assert.equal((ledger.match(/runListingClaimTransaction\(async \(transaction\)/g) || []).length, 2);
+  assert.equal((ledger.match(/runListingClaimTransaction\(async \(?transaction\)?/g) || []).length, 2);
 });
 
 test('a lost admission race stays a lost race rather than becoming a retry', () => {
@@ -1129,7 +1115,7 @@ test('listing retains its starvation floor and pressure adds a shared producer l
   // Listing must still be reachable when drain is empty, or this trades the
   // 2026-09-02 failure back for the one the floor was written to prevent.
   const fallback = claim.slice(claim.indexOf('acquisitionPhase: { in: [...ATS_V2_DRAIN_PHASES] }'));
-  assert.match(fallback, /findCandidate\(eligible\)/);
+  assert.match(fallback, /findCandidate\(\{ \.\.\.eligible, acquisitionPhase: 'listing' \}\)/);
   assert.match(fallback, /drainOnly: true/);
 });
 

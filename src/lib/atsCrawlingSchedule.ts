@@ -17,6 +17,7 @@ export type CrawlProviderHead = CrawlBoard & {
   readyBoards?: number;
   averageTurnMs?: number | null;
   providerCursor?: unknown;
+  readyQueues?: CrawlQueue[];
 };
 export const CRAWL_PROVIDER_MAX_WAIT_MS = 15 * 60_000;
 
@@ -44,7 +45,24 @@ export function selectFairCrawlBoard(heads: readonly CrawlProviderHead[], now = 
   })[0] || null;
 }
 export async function nextCrawlBoard(platforms: readonly string[], turn: number, allowRetry: boolean, boards?: readonly string[], ownedTaskId?: string, client: Pick<PrismaClient, '$queryRaw'> = prisma, lane: PublicCrawlLane = 'all', preferredQueues?: readonly CrawlQueue[]): Promise<CrawlProviderHead | null> {
-  if (!platforms.length || boards && !boards.length) return null;
+  const rows = await readCrawlHeads(platforms, turn, allowRetry, boards, ownedTaskId, client, lane, preferredQueues);
+  const order = preferredQueues?.filter(q => allowRetry || q !== 'retry');
+  const preferred = order?.find(queue => rows.some(row => row.queue === queue));
+  return selectFairCrawlBoard(preferred ? rows.filter(row => row.queue === preferred) : rows);
+}
+
+/** Retain one eligible board per provider and queue, so durable service can
+ * choose from actual demand before any queue's board is discarded. */
+export async function readCrawlQueueHeads(platforms: readonly string[], boards?: readonly string[], ownedTaskId?: string,
+  client: Pick<PrismaClient, '$queryRaw'> = prisma, lane: PublicCrawlLane = 'all'): Promise<CrawlProviderHead[]> {
+  return readCrawlHeads(platforms, 0, true, boards, ownedTaskId, client, lane,
+    ['first', 'refresh', 'continuation', 'retry'], true);
+}
+
+async function readCrawlHeads(platforms: readonly string[], turn: number, allowRetry: boolean, boards: readonly string[] | undefined,
+  ownedTaskId: string | undefined, client: Pick<PrismaClient, '$queryRaw'>, lane: PublicCrawlLane,
+  preferredQueues?: readonly CrawlQueue[], perQueue = false): Promise<CrawlProviderHead[]> {
+  if (!platforms.length || boards && !boards.length) return [];
   const order = preferredQueues ? preferredQueues.filter(q => allowRetry || q !== 'retry') : crawlQueueOrder(turn, allowRetry);
   const rows = await client.$queryRaw<CrawlProviderHead[]>(Prisma.sql`
     -- Compute queue/ownership once. Inlining this CTE repeats the progress and
@@ -79,7 +97,7 @@ export async function nextCrawlBoard(platforms: readonly string[], turn: number,
         AND ${publicCrawlLaneSql(lane)}
         ${boards ? Prisma.sql`AND board.slug IN (${Prisma.join([...boards])})` : Prisma.empty}
     ), ranked AS (
-      SELECT *,COUNT(*) OVER (PARTITION BY platform)::int AS "readyBoards",ROW_NUMBER() OVER (PARTITION BY platform ORDER BY
+      SELECT *,COUNT(*) OVER (PARTITION BY platform)::int AS "readyBoards",ROW_NUMBER() OVER (PARTITION BY platform${perQueue ? Prisma.sql`,queue` : Prisma.empty} ORDER BY
         ${preferredQueues ? Prisma.sql`array_position(ARRAY[${Prisma.join(order)}]::text[],queue)` : Prisma.sql`CASE WHEN queue=preferred_queue THEN 0 ELSE array_position(ARRAY['continuation','refresh','first','retry']::text[],queue) END`},
         "nextCheckDate","lastAttemptedAt" NULLS FIRST,slug) AS board_rank
       FROM candidates WHERE queue IN (${Prisma.join(order)})
@@ -93,13 +111,12 @@ export async function nextCrawlBoard(platforms: readonly string[], turn: number,
           ORDER BY run."createdAt" DESC LIMIT 32) recent
         WHERE recent.lane IS NULL OR ${lane}='all' OR recent.lane=${lane}
       )`} AS "averageTurnMs"
+    ,(SELECT ARRAY_AGG(DISTINCT queue) FROM candidates WHERE queue IN (${Prisma.join(order)})) AS "readyQueues"
     FROM ranked WHERE board_rank=1
   `);
-  const preferred = preferredQueues && order.find(queue => rows.some(row => row.queue === queue));
-  const eligibleRows = preferred ? rows.filter(row => row.queue === preferred) : rows;
-  return selectFairCrawlBoard(eligibleRows.map(row => lane !== 'all' && PUBLIC_ATS_HTTP_FIRST_PLATFORMS.includes(row.platform as BrowserAtsPlatform)
+  return rows.map(row => lane !== 'all' && PUBLIC_ATS_HTTP_FIRST_PLATFORMS.includes(row.platform as BrowserAtsPlatform)
     ? { ...row, providerLastStartedAt: crawlLaneStart(row.providerCursor, lane) }
-    : row));
+    : row);
 }
 
 /** Deterministic Chicago day/hour slots, evaluated as instants to handle DST. */

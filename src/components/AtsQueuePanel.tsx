@@ -28,6 +28,40 @@ export function AtsQueuePanel({ snapshot, unavailable = false }: {
         <div><dt>Awaiting handoff</dt><dd>{count(snapshot.awaitingHandoff)}</dd></div>
         <div><dt>Unfinished collections</dt><dd>{count(snapshot.collecting)}</dd></div>
       </dl>
+      {snapshot.capacity && <details className="ats-queue-holds">
+        <summary>Capacity and actual work</summary>
+        <dl className="ats-queue-metrics">
+          <div><dt>New collections ready</dt><dd>{count(snapshot.capacity.newCollectionsReady)}</dd></div>
+          <div><dt>Saved listing turns ready</dt><dd>{count(snapshot.capacity.listingTurnsReady)}</dd></div>
+          <div><dt>Processing turns ready</dt><dd>{count(snapshot.capacity.processingTurnsReady)}</dd></div>
+          <div><dt>Batches being worked</dt><dd>{count(snapshot.capacity.workingBatches)}</dd></div>
+          <div><dt>Persistence charged to capacity</dt><dd>{count(snapshot.capacity.persistenceCapacityJobs)} jobs</dd></div>
+          <div><dt>Public collection reservations</dt><dd>{count(snapshot.capacity.publicReservedJobs)} jobs</dd></div>
+        </dl>
+        <p className="ats-queue-help">{({
+          idle: 'No acquisition work is eligible at this observation.',
+          draining: 'Processing demand is using reserved capacity while saved listings keep a bounded opportunity.',
+          staging_blocked: 'Retained collection volume is holding new intake while saved work finishes.',
+          cohort_balanced: 'Older unfinished listings limit intake; the current cohort retains its bounded allowance.',
+          finishing_listings: 'New intake is waiting for unfinished listings to release capacity.',
+          coverage_idle_loan: 'Saved work can borrow unused new-collection capacity.',
+          continuation_idle_loan: 'New collections can borrow unused processing capacity.',
+          coverage_target_remaining: 'Eligible new collections and saved work are sharing capacity.',
+          coverage_goal_met: 'The contact target is met; eligible work continues using spare capacity.',
+        } as Record<string, string>)[snapshot.capacity.policyReason] || 'Eligible work is sharing the available collection capacity.'}</p>
+        <p className="ats-queue-help">Ready counts exclude future retries and live claims. Retained postings remain visible in the hold details. A worker capacity lease does not mean that worker is processing a batch.</p>
+        {snapshot.capacity.resources.length > 0 && <div className="ats-queue-table-scroll"><table className="ats-queue-table">
+          <thead><tr><th>Work pool</th><th>Queue</th><th>Recorded service minutes</th><th>Turns</th><th>Last opportunity</th></tr></thead>
+          <tbody>{snapshot.capacity.resources.flatMap(resource => resource.classes.map(c => <tr key={`${resource.resource}:${c.key}`}>
+            <td>{({ 'api-coverage': 'API new collections', 'api-listing': 'API saved listings', 'api-drain': 'API processing',
+              'public-browser': 'Public browser', 'public-http-adp': 'ADP over HTTP', 'public-http-shared': 'Other public HTTP' } as Record<string, string>)[resource.resource] || 'Other collection'}</td>
+            <td>{({ first: 'First collections', current: 'Current cohort', overdue: 'Older active work', recovery: 'Recovery',
+              refresh: 'Refresh', continuation: 'Saved progress', retry: 'Retry' } as Record<string, string>)[c.key] || c.key}</td>
+            <td>{(c.serviceMs / 60000).toLocaleString('en-US', { maximumFractionDigits: 1 })}</td><td>{count(c.turns)}</td>
+            <td>{c.lastSelectedAt ? new Date(c.lastSelectedAt).toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Not served yet'}</td>
+          </tr>))}</tbody>
+        </table></div>}
+      </details>}
       <details className="ats-queue-holds">
         <summary>
           <span>Hold &amp; retry details · {count(snapshot.holds.length)} groups</span>

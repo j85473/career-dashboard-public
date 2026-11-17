@@ -290,10 +290,10 @@ body {
 }
 
 .card-identity { display: flex; flex-direction: column; gap: 3px; }
-.card-company-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; min-width: 0; }
-.card-company-identity { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.card-company-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px 12px; min-width: 0; }
+.card-company-identity { display: flex; flex: 1; align-items: flex-start; gap: 8px; min-width: 0; max-width: 100%; }
 .card-company { min-width: 0; overflow-wrap: anywhere; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
-.card-status-date { flex: 0 0 auto; max-width: 100%; font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.card-status-date { flex: 0 0 auto; max-width: 55%; text-align: right; font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
 .company-mark {
   width: 18px;
   height: 18px;

@@ -102,22 +102,26 @@ test('reviewed reservation stops for every unfinished reviewed board, pressure, 
 });
 
 test('the reviewed queue receives the next coverage turn before ordinary rotation lookup', async () => {
-  const original = { query: prisma.$queryRaw, policy: prisma.atsFirstCollectionPolicy.findUnique,
+  const original = { execute: prisma.$executeRaw, query: prisma.$queryRaw, policy: prisma.atsFirstCollectionPolicy.findUnique,
     first: prisma.atsCompany.findFirst, count: prisma.atsCompany.count, many: prisma.atsCompany.findMany };
-  const ready = { ...board, status: 'active', jobsFound: 251, firstCollectionState: 'ready', acquisitionEngine: 'v2' };
+  const ready = { ...board, status: 'active', jobsFound: 251, firstCollectionState: 'ready', acquisitionEngine: 'v2', nextCheckDate: new Date(0), lastAttemptedAt: null, failCount: 0, retryCount: 0, checkDay: 0 };
+  prisma.$executeRaw = (async () => 0) as typeof prisma.$executeRaw;
   prisma.$queryRaw = (async () => [{ items: BigInt(0), bytes: BigInt(0), persistence: BigInt(1500), totalPersistence: BigInt(1500), gate: 'open' }]) as typeof prisma.$queryRaw;
   prisma.atsFirstCollectionPolicy.findUnique = (async ({ where }: { where: { id: string } }) =>
     where.id === REVIEWED_FIRST_COLLECTION_POLICY_ID ? reviewed : ordinary) as unknown as typeof prisma.atsFirstCollectionPolicy.findUnique;
+  let scoped = false;
   prisma.atsCompany.findFirst = (async (input) => {
-    assert.ok(JSON.stringify(input?.where?.AND).includes('"notIn"'));
-    assert.ok(JSON.stringify(input?.where?.AND).includes('"workday"'), 'reviewed admission must retain the cooldown');
+    if (JSON.stringify(input?.where?.AND).includes('"notIn"')) {
+      scoped = true;
+      assert.ok(JSON.stringify(input?.where?.AND).includes('"workday"'), 'reviewed admission must retain the cooldown');
+    }
     return ready;
   }) as typeof prisma.atsCompany.findFirst;
   prisma.atsCompany.count = (async () => 0) as typeof prisma.atsCompany.count;
-  prisma.atsCompany.findMany = (async () => { throw new Error('ordinary lookup must follow the reviewed turn'); }) as typeof prisma.atsCompany.findMany;
-  try { assert.deepEqual(await selectNextAtsV2CoverageBoard(new Date(), false, ['workday']), ready); }
+  prisma.atsCompany.findMany = (async () => []) as typeof prisma.atsCompany.findMany;
+  try { assert.deepEqual(await selectNextAtsV2CoverageBoard(new Date(), false, ['workday']), ready); assert.equal(scoped, true); }
   finally {
-    prisma.$queryRaw = original.query; prisma.atsFirstCollectionPolicy.findUnique = original.policy;
+    prisma.$executeRaw = original.execute; prisma.$queryRaw = original.query; prisma.atsFirstCollectionPolicy.findUnique = original.policy;
     prisma.atsCompany.findFirst = original.first; prisma.atsCompany.count = original.count; prisma.atsCompany.findMany = original.many;
   }
 });

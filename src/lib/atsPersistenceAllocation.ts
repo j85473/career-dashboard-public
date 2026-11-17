@@ -1,5 +1,5 @@
-/** Two public collectors can write concurrently: HTTP and the shared browser
- * lane (including Gusto). Keep their bounded turns inside the existing ceiling. */
+/** Two reserved public turns can write concurrently. The HTTP groups and the
+ * licensed browser compete atomically for this unchanged allowance. */
 export const ATS_PUBLIC_TURN_JOBS = 50;
 export const ATS_PUBLIC_CAPACITY_RESERVE = ATS_PUBLIC_TURN_JOBS * 2;
 

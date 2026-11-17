@@ -7,6 +7,7 @@ import { identifyAts, atsAuthFailureIsPlatformWide, atsResponseSchemaFailureIsPl
 import { isFirstCollectionPlatform } from '../../src/lib/atsFirstCollectionAdmission';
 import { enrichAtsListingJob, readAtsJobEnrichmentMarker } from '../../src/lib/atsJobEnrichment';
 import { fetchAdditionalAtsPosting } from '../../src/lib/additionalAtsPosting';
+import { evaluateAuthoritativeMetadata } from '../../src/lib/authoritativeMetadataGate';
 
 const atom = (entries = `<entry><id>job_123</id><title>Channel Manager</title><author><name>Example Inc</name></author><link rel="alternate" type="text/html" href="https://example.homerun.co/channel-manager"/><description><![CDATA[<p>Full responsibilities and requirements.</p>]]></description><location><name>Berlin, Germany</name></location></entry>`) => `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><id>https://example.homerun.co/</id>${entries}</feed>`;
 const dvinciJob = () => ({ id: 123, position: 'Channel Manager', language: 'de', jobPublicationURL: 'https://example.dvinci.de/de/jobs/123/channel-manager',
@@ -80,6 +81,21 @@ test('classic Softgarden requires every declared ID and exact source detail iden
   assert.equal(j.company, 'Example Inc');
   assert.throws(() => parseAdditionalDetail('softgarden','example.softgarden.io',classicDetail().replace('/job/123','/job/456'),'https://example.softgarden.io/job/123/channel-manager', 'Channel Manager'));
   assert.throws(() => parseAdditionalDetail('softgarden','example.softgarden.io',classicDetail(),'https://example.softgarden.io/job/123/channel-manager', 'Different title'));
+});
+
+test('Softgarden translated remote requirements are rejected before new-job scoring', () => {
+  // SYSGO job 67952777 / Dashboard c9917529: the English posting retains a
+  // German country name in both its remote restriction and placeholder address.
+  const data = { ...sgJob(), identifier: { value: 'https://example.softgarden.io/#organization' },
+    jobLocationType: 'TELECOMMUTE', applicantLocationRequirements: { '@type': 'Country', name: 'Dänemark' },
+    jobLocation: { address: { addressLocality: '-', addressRegion: '-', addressCountry: 'Dänemark' } } };
+  const html = `<html><link rel="canonical" href="https://example.softgarden.io/job/123"><script type="application/ld+json">${JSON.stringify(data)}</script></html>`;
+  const job = parseAdditionalDetail('softgarden', 'example.softgarden.io', html,
+    'https://example.softgarden.io/job/123/channel-manager', 'Channel Manager');
+  assert.equal(job.location, 'Remote (Dänemark); -, -, Dänemark');
+  const verdict = evaluateAuthoritativeMetadata({ title: String(job.title), company: String(job.company), location: String(job.location) });
+  assert.equal(verdict.passes, false);
+  assert.match(verdict.reason, /outside the searched geographies/);
 });
 
 test('Flatchr persists only published job fields and checks employer, intranet and continuation', () => {

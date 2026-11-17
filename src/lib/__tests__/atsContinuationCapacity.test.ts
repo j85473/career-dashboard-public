@@ -1,10 +1,9 @@
-import { apiRotationDayFor } from '../atsRotation';
-import { atsRotationCohortWhere } from '../atsRotationCohort';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ATS_COHORT_PRESSURE_LISTING_CONCURRENCY, ATS_PRESSURE_LISTING_CONCURRENCY, withAtsListingCapacity } from '../atsContinuationCapacity';
 import { findAtsContinuationCandidate } from '../atsAcquisitionLedger';
 import type { Prisma } from '../prismaClient';
+import { ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK, ATS_LEDGER_STAGING_BYTE_HIGH_WATERMARK } from '../atsAcquisitionPressure';
 
 const now = new Date('2026-10-07T16:00:00Z');
 
@@ -40,6 +39,7 @@ test('eight competing workers can reserve only one listing lease when drain work
 test('an all-listing backlog can use idle capacity to create drainable batches', async () => {
   let claims = 0;
   const transaction = { $executeRaw: async () => 0,
+    $queryRaw: async () => [{ items: BigInt(0), bytes: BigInt(0), unfinished: BigInt(0) }],
     atsIngestionBatch: { findFirst: async () => null,
       count: async () => { throw new Error('No drain inventory means no producer cap'); } },
   } as unknown as Parameters<typeof withAtsListingCapacity>[0];
@@ -48,7 +48,30 @@ test('an all-listing backlog can use idle capacity to create drainable batches',
   }
 });
 
-test('delayed drain inventory still prevents producers from growing the queue unchecked', async () => {
+test('a large saved listing backlog can borrow idle workers without lending new intake its allowance', async () => {
+  let claims = 0;
+  let drain: { id: string } | null = null;
+  const volume = { items: BigInt(1000), bytes: BigInt(1000000), unfinished: BigInt(100) };
+  const transaction = { $executeRaw: async () => 0, $queryRaw: async () => [volume],
+    atsIngestionBatch: { findFirst: async () => drain, count: async () => claims },
+  } as unknown as Parameters<typeof withAtsListingCapacity>[0];
+  const claim = async () => ++claims;
+  for (let i = 0; i < 8; i++)
+    assert.equal(await withAtsListingCapacity(transaction, now, 2, claim, { existingListing: true }), i + 1);
+  assert.equal(await withAtsListingCapacity(transaction, now, 2, claim), null, 'new intake retains the bounded producer allowance');
+  drain = { id: 'new-processing-work' };
+  assert.equal(await withAtsListingCapacity(transaction, now, 2, claim, { existingListing: true }), null,
+    'new downstream demand stops further loans without interrupting owned work');
+  drain = null;
+  volume.items = BigInt(ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK / 2);
+  assert.equal(await withAtsListingCapacity(transaction, now, 2, claim, { existingListing: true }), null);
+  volume.items = BigInt(1000);
+  volume.bytes = ATS_LEDGER_STAGING_BYTE_HIGH_WATERMARK / BigInt(2);
+  assert.equal(await withAtsListingCapacity(transaction, now, 2, claim, { existingListing: true }), null);
+  assert.equal(claims, 8, 'retained volume stops lending at either admission threshold');
+});
+
+test('runnable drain inventory still prevents producers from growing the queue unchecked', async () => {
   let drainWhere: Prisma.AtsIngestionBatchWhereInput | undefined;
   let countWhere: Prisma.AtsIngestionBatchWhereInput | undefined;
   const transaction = { $executeRaw: async () => 0,
@@ -61,7 +84,8 @@ test('delayed drain inventory still prevents producers from growing the queue un
   } as unknown as Parameters<typeof withAtsListingCapacity>[0];
   const claim = await withAtsListingCapacity(transaction, now, 1, async () => { throw new Error('Capacity is occupied'); });
   assert.equal(claim, null);
-  assert.equal(drainWhere?.OR, undefined);
+  assert.ok(JSON.stringify(drainWhere).includes('nextAcquireAt'));
+  assert.ok(JSON.stringify(drainWhere).includes('acquisitionLeaseExpiresAt'));
   assert.deepEqual(countWhere?.acquisitionLeaseExpiresAt, { gt: now });
   assert.deepEqual(countWhere?.acquisitionClaimToken, { not: null });
 });
@@ -73,29 +97,22 @@ test('expired producer leases do not reserve capacity forever', async () => {
   assert.equal(await withAtsListingCapacity(transaction, now, 1, async () => 'replacement'), 'replacement');
 });
 
-test('today continues before older weekday work, with retry guards retained', async () => {
-  const retryGuard = { OR: [{ nextAcquireAt: null }, { nextAcquireAt: { lte: now } }] };
-  const filters: Prisma.AtsIngestionBatchWhereInput[] = [];
-  const client = { atsIngestionBatch: { findFirst: async (args: { where: Prisma.AtsIngestionBatchWhereInput }) => {
-    filters.push(args.where);
-    return { id: 'today', acquisitionPhase: 'enrichment' };
+test('oldest eligible work is retained within its service class with retry guards intact', async () => {
+  const guards = { OR: [{ nextAcquireAt: null }, { nextAcquireAt: { lte: now } }] };
+  let seen: unknown;
+  const client = { atsIngestionBatch: { findFirst: async (args: { where: unknown }) => {
+    seen = args.where; return { id: 'oldest', acquisitionPhase: 'enrichment', lastServedAt: null };
   } } } as unknown as Parameters<typeof findAtsContinuationCandidate>[0];
-  const result = await findAtsContinuationCandidate(client, retryGuard, [{ createdAt: 'asc' }], now);
-  assert.equal(result?.id, 'today');
-  assert.equal(filters.length, 1);
-  assert.deepEqual(filters[0].board, { status: 'active', ...atsRotationCohortWhere(apiRotationDayFor(now)) });
-  assert.equal(filters[0].OR, retryGuard.OR);
+  assert.equal((await findAtsContinuationCandidate(client, guards, [], now))?.id, 'oldest');
+  assert.equal(seen, guards);
 });
 
-test('other active cohorts use spare capacity before recovery boards', async () => {
-  const filters: Prisma.AtsIngestionBatchWhereInput[] = [];
-  const client = { atsIngestionBatch: { findFirst: async (args: { where: Prisma.AtsIngestionBatchWhereInput }) => {
-    filters.push(args.where);
-    return filters.length === 2 ? { id: 'other-active', acquisitionPhase: 'enrichment' } : null;
-  } } } as unknown as Parameters<typeof findAtsContinuationCandidate>[0];
-  assert.equal((await findAtsContinuationCandidate(client, {}, [], now))?.id, 'other-active');
-  assert.deepEqual(filters[1].board, { status: 'active' });
-  assert.equal(filters.length, 2);
+test('long-waiting work cannot be bypassed by the finishing preference', async () => {
+  const client = { atsIngestionBatch: {
+    findFirst: async () => ({ id: 'long-waiting', acquisitionPhase: 'listing', lastServedAt: new Date(+now - 86400000) }),
+    findMany: async () => { throw Error('The finishing preference cannot bypass this wait'); },
+  } } as unknown as Parameters<typeof findAtsContinuationCandidate>[0];
+  assert.equal((await findAtsContinuationCandidate(client, { acquisitionPhase: 'listing' }, [], now, true))?.id, 'long-waiting');
 });
 
 
@@ -125,21 +142,16 @@ test('coverage and continuation together cannot exceed two listing leases across
   assert.equal(liveListings, 2);
 });
 
-test('today listing outranks a recently productive old catalog without removing retry or lease guards', async () => {
+test('catalogue selection preserves provider, retry and lease conditions within a class', async () => {
   const guards: Prisma.AtsIngestionBatchWhereInput = {
     acquisitionPhase: 'listing', OR: [{ nextAcquireAt: null }, { nextAcquireAt: { lte: now } }],
     AND: [{ OR: [{ acquisitionClaimToken: null }, { acquisitionLeaseExpiresAt: { lte: now } }] }],
   };
-  let calls = 0;
-  const client = { atsIngestionBatch: { findFirst: async (args: { where: Prisma.AtsIngestionBatchWhereInput }) => {
-    calls++;
-    assert.equal(args.where.OR, guards.OR);
-    assert.equal(args.where.AND, guards.AND);
-    assert.deepEqual(args.where.board, { status: 'active', ...atsRotationCohortWhere(apiRotationDayFor(now)) });
-    return { id: 'today', acquisitionPhase: 'listing' };
+  const client = { atsIngestionBatch: { findFirst: async (args: { where: unknown }) => {
+    assert.equal(args.where, guards);
+    return { id: 'saved', acquisitionPhase: 'listing', lastServedAt: null };
   } } } as unknown as Parameters<typeof findAtsContinuationCandidate>[0];
-  assert.equal((await findAtsContinuationCandidate(client, guards, [], now))?.id, 'today');
-  assert.equal(calls, 1);
+  assert.equal((await findAtsContinuationCandidate(client, guards, [], now))?.id, 'saved');
 });
 
 
@@ -162,24 +174,24 @@ test('pressure finishes the nearest healthy saved catalogue while retaining retr
     AND: [{ acquisitionClaimToken: null }],
   };
   const client = { atsIngestionBatch: {
+    findFirst: async () => ({ id: 'oldest-recent', acquisitionPhase: 'listing', lastServedAt: now }),
     findMany: async (args: { where: Prisma.AtsIngestionBatchWhereInput; take: number }) => {
-      assert.equal(args.where.OR, guards.OR);
-      assert.deepEqual(args.where.AND, [...guards.AND as [],
-        { listingOffset: { gt: 0 }, latestObservedTotal: { gt: 0 }, lastError: null }]);
+      assert.deepEqual(args.where.AND, [guards,
+        { acquisitionPhase: 'listing', listingOffset: { gt: 0 }, latestObservedTotal: { gt: 0 }, lastError: null }]);
       assert.equal(args.take, 64);
       return [
         { id: 'large', acquisitionPhase: 'listing', listingOffset: 5000, latestObservedTotal: 10000 },
         { id: 'nearly-finished', acquisitionPhase: 'listing', listingOffset: 9000, latestObservedTotal: 9050 },
         { id: 'drifting-total', acquisitionPhase: 'listing', listingOffset: 500, latestObservedTotal: 450 },
       ];
-    }, findFirst: async () => { throw new Error('Should use existing productive work'); },
+    },
   } } as unknown as Parameters<typeof findAtsContinuationCandidate>[0];
   assert.equal((await findAtsContinuationCandidate(client, guards, [], now, true))?.id, 'nearly-finished');
 });
 
 test('pressure falls back to ordinary fairness when no healthy known-total catalogue exists', async () => {
   const client = { atsIngestionBatch: {
-    findMany: async () => [], findFirst: async () => ({ id: 'fair-fallback', acquisitionPhase: 'listing' }),
+    findMany: async () => [], findFirst: async () => ({ id: 'fair-fallback', acquisitionPhase: 'listing', lastServedAt: now }),
   } } as unknown as Parameters<typeof findAtsContinuationCandidate>[0];
   assert.equal((await findAtsContinuationCandidate(client, { acquisitionPhase: 'listing' }, [], now, true))?.id, 'fair-fallback');
 });
