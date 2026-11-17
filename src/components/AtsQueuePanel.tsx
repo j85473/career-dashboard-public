@@ -16,7 +16,7 @@ export function AtsQueuePanel({ snapshot, unavailable = false }: {
   const retryHolds = snapshot.holds.filter(hold => hold.retryAt);
   const earliest = retryHolds.map(hold => hold.retryAt!).sort()[0] || null;
   return (
-    <details className="ats-queue-panel" aria-label="ATS queues" open>
+    <details className="ats-queue-panel" aria-label="ATS queues">
       <summary className="ats-queue-heading">
         <strong>New boards &amp; held work</strong>
       </summary>
