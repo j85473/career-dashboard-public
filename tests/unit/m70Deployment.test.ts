@@ -19,6 +19,29 @@ const canonicalApiTimer = readFileSync(path.resolve('scripts/deployment/m70/care
 const gustoService = readFileSync(path.resolve('scripts/deployment/m70/career-dashboard-gusto.service'), 'utf8');
 const gustoTimer = readFileSync(path.resolve('scripts/deployment/m70/career-dashboard-gusto.timer'), 'utf8');
 
+test('deployment lets canonical API work finish beyond ten minutes but remains bounded and fail-closed', () => {
+  assert.match(canonicalApiService, /TimeoutStartSec=50min/);
+  for (const scenario of [
+    { unit: 'career-dashboard-canonical-api.service', busy: 140, state: 'activating', status: 0 },
+    { unit: 'career-dashboard-canonical-api.service', busy: 601, state: 'activating', status: 1 },
+    { unit: 'career-dashboard-public-http.service', busy: 140, state: 'activating', status: 1 },
+    { unit: 'career-dashboard-public-http.service', busy: 2, state: 'deactivating', status: 0 },
+    { unit: 'career-dashboard-canonical-api.service', busy: 1, state: 'unknown', status: 1 },
+  ]) {
+    const result = spawnSync('bash', ['-c', `
+polls=0
+systemctl() {
+ if (( polls < MOCK_BUSY_POLLS )); then echo "$MOCK_BUSY_STATE"; else echo inactive; fi
+}
+sleep() { polls=$((polls + 1)); }
+source scripts/deployment/wait-unit-idle.sh "$1"
+`, 'wait-test', scenario.unit], { encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, MOCK_BUSY_POLLS: String(scenario.busy), MOCK_BUSY_STATE: scenario.state } });
+    assert.equal(result.status, scenario.status, JSON.stringify(scenario) + result.stderr);
+    if (scenario.status === 1) assert.match(result.stderr, /refusing to continue|Could not establish/);
+  }
+});
+
 test('a release is built from one clean commit and never against production credentials', () => {
   // The archive that reaches the M70 is the commit CI tested, not a working
   // tree: an uncommitted change cannot ride along, and the revision is pinned.
