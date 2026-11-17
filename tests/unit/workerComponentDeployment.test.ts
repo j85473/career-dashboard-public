@@ -25,7 +25,7 @@ function fixture(changed: string[] = ['acquisition']) {
         Object.fromEntries(groups.map((name) => [name, { inputsHash: (revision === B && changed.includes(name) ? 'e' : 'c').repeat(64) }])) } }));
     for (const component of Object.values(WORKER_COMPONENTS)) {
       for (const unit of component.units) {
-        for (const suffix of ['service', 'timer']) {
+        for (const suffix of ['service', 'timer', 'path']) {
           const source = path.resolve('scripts/deployment/m70', `${unit}.${suffix}`);
           if (fs.existsSync(source)) fs.copyFileSync(source, path.join(release, 'scripts/deployment/m70', `${unit}.${suffix}`));
         }
@@ -46,7 +46,9 @@ function runtime(f: ReturnType<typeof fixture>, settings: { failStart?: boolean;
   for (const [name, definition] of Object.entries(WORKER_COMPONENTS)) {
     for (const unit of definition.units) {
       states.set(`${unit}.service`, { active: ['pipeline', 'acquisition'].includes(name) && definition.units[0] === unit, pid: ++nextPid });
-      if (fs.existsSync(path.join(f.paths.units, `${unit}.timer`))) states.set(`${unit}.timer`, { active: true, pid: 0 });
+      for (const suffix of ['timer', 'path']) {
+        if (fs.existsSync(path.join(f.paths.units, `${unit}.${suffix}`))) states.set(`${unit}.${suffix}`, { active: true, pid: 0 });
+      }
     }
   }
   const marker = (name: string) => path.join(f.paths.runtime, 'worker-drain', `${name}.json`);
@@ -514,4 +516,32 @@ test('real worker replacement preserves completed task IDs while a separate coor
     assert.ok(!commands.includes('systemctl stop career-dashboard-pipeline.service'));
     assert.equal(diagnostics, '');
   } finally { await Promise.all(children.map(stop)); f.cleanup(); }
+});
+
+
+test('manual discovery path is captured, stopped before drain, and restored with its original ownership', async () => {
+  const f = fixture([]);
+  try {
+    const trigger = 'career-dashboard-discovery-manual.path';
+    const file = path.join(f.paths.units, trigger);
+    assert.ok(fs.existsSync(file), 'manual discovery has a managed path unit');
+    const original = fs.readFileSync(file, 'utf8');
+    const snapshot = capturePins(f.paths);
+    fs.writeFileSync(file, '[Path]\nPathExists=/tmp/wrong-trigger\n');
+    assert.equal(planComponentActivation(f.candidate, environment, f.paths).mode, 'coordinated');
+    restorePins(snapshot, f.paths);
+    assert.equal(fs.readFileSync(file, 'utf8'), original);
+    const r = runtime(f);
+    const activity = r.engine.activities('platform') as Record<string, boolean>;
+    assert.equal(activity[trigger], true);
+    const token = randomUUID();
+    await r.engine.drain('platform', activity, token);
+    assert.equal(r.states.get(trigger)!.active, false);
+    r.engine.clearMarker('platform', token);
+    r.engine.restoreTimers(activity);
+    assert.equal(r.states.get(trigger)!.active, true);
+    r.states.get(trigger)!.active = false;
+    r.engine.restoreTimers(r.engine.activities('platform'));
+    assert.equal(r.states.get(trigger)!.active, false, 'a stopped manual trigger stays stopped');
+  } finally { f.cleanup(); }
 });

@@ -32,7 +32,7 @@ import {
   planAtsV2PublicationGate,
   type AtsV2BatchFinalizationSnapshot,
 } from '../atsAcquisitionLedger';
-import { validateAtsV2AuthorityActive } from '../atsAcquisitionCompatibility';
+import { ATS_ACQUISITION_WRITER_VERSION, validateAtsV2AuthorityActive, validateAtsAcquisitionWriterCompatibility } from '../atsAcquisitionCompatibility';
 import {
   ATS_FAILURE_SCOPES,
   ATS_PIPELINE_CONTROL_FAILURE_SCOPES,
@@ -119,7 +119,7 @@ test('the worker that holds the ATS lanes transfers drained legacy boards while 
   assert.match(worker, /clearInterval\(promotion\)/);
 });
 
-test('v2 runtime flags require an explicitly activated writer-3 authority gate', () => {
+test('v2 runtime flags require an explicitly activated current-writer authority gate', () => {
   const dormant = {
     minimumWriterVersion: 1,
     compatibilityWriterVersion: 2,
@@ -128,8 +128,8 @@ test('v2 runtime flags require an explicitly activated writer-3 authority gate',
   };
   assert.equal(validateAtsV2AuthorityActive(dormant).valid, false);
   assert.deepEqual(validateAtsV2AuthorityActive({
-    minimumWriterVersion: 3,
-    compatibilityWriterVersion: 3,
+    minimumWriterVersion: ATS_ACQUISITION_WRITER_VERSION,
+    compatibilityWriterVersion: ATS_ACQUISITION_WRITER_VERSION,
     v2AuthorityActivatedAt: new Date('2026-08-30T22:00:00.000Z'),
     activatedLedgerVersion: 2,
   }), { valid: true });
@@ -139,6 +139,13 @@ test('ledger hashing is canonical and sensitive to occurrence multiplicity', () 
   assert.equal(atsLedgerHash({ b: 2, a: 1 }), atsLedgerHash({ a: 1, b: 2 }));
   assert.notEqual(atsLedgerHash(['job-a']), atsLedgerHash(['job-a', 'job-a']));
   assert.notEqual(atsLedgerHash({ jobs: [{ id: 'a' }] }), atsLedgerHash({ jobs: [{ id: 'b' }] }));
+});
+
+test('response-attempt authority refuses an older acquisition writer after migration', () => {
+  const activated = { minimumWriterVersion: 4, compatibilityWriterVersion: 4,
+    v2AuthorityActivatedAt: new Date(), activatedLedgerVersion: 2 };
+  assert.equal(validateAtsAcquisitionWriterCompatibility(activated, 3).valid, false);
+  assert.equal(validateAtsAcquisitionWriterCompatibility(activated, ATS_ACQUISITION_WRITER_VERSION).valid, true);
 });
 
 test('daily contact authority assigns the confirmed instant to the Chicago day', () => {
@@ -238,7 +245,7 @@ test('the dispatcher releases only harmless same-day schedule drift', () => {
     dispatcher.indexOf('export async function runAtsV2ContinuousDispatcher'),
     dispatcher.indexOf('export async function atsV2ShadowLanePlan'),
   );
-  assert.match(loop, /await reconcileExpiredAtsV2Work\(\);[\s\S]*?repairStaggeredAtsRotationSchedule\(\)/);
+  assert.match(loop, /await dependencies\.reconcileExpiredAtsV2Work\(\);[\s\S]*?dependencies\.repairStaggeredAtsRotationSchedule\(\)/);
   assert.match(loop, /let nextReconcileAt = Date\.now\(\) \+ 60_000/);
 });
 
@@ -377,7 +384,7 @@ test('v2 progress writes are row-granular and segment publication is credit-fenc
   // existing receipts is what lets that rule need no counter of its own.
   assert.doesNotMatch(dispatcher, /atsIngestionBatch\.(?:update|updateMany|create|createMany|upsert|delete)/);
   assert.match(dispatcher, /runAtsV2ContinuousDispatcher/);
-  assert.match(dispatcher, /await runAtsV2Claim\(claim, input\.signal\)/);
+  assert.match(dispatcher, /await dependencies\.runAtsV2Claim\(claim, input\.signal\)/);
   assert.match(dispatcher, /reconcileExpiredAtsV2Work/);
   assert.match(dispatcher, /input\.onError\?\./);
   assert.match(dispatcher, /await dependencies.recordAtsV2ListingDispatchIntent\(claim, intentAt\);\s+\/\/[\s\S]+?requestStartedAt = intentAt/);

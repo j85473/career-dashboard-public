@@ -131,6 +131,12 @@ fi
 # Capture operator service ownership after the potentially long online backup.
 SCHEDULE=0; WATCHDOG=0; ACQUISITION=0; PRUNING=0; DISCOVERY=0; DISCOVERY_AUDIT=0; CANONICAL_RESOLVER=0; GUSTO=0; STATS_WARM=0; ROTATION_BALANCE=0; FIRST_COLLECTIONS=0; CANONICAL_API=0; CANONICAL_API_NEW=0; PUBLIC_BOARDS=0; PUBLIC_BOARDS_NEW=0; PUBLIC_HTTP=0; PUBLIC_HTTP_NEW=0; WEB_DISCOVERY=0; CRAWL_ARCHIVE=0
 PIPELINE=0; PIPELINE_NEW=0
+DISCOVERY_RECOVERY=0; DISCOVERY_RECOVERY_NEW=0
+DISCOVERY_MANUAL=0; DISCOVERY_MANUAL_NEW=0
+[[ -f /etc/systemd/system/career-dashboard-discovery-manual.path ]] || DISCOVERY_MANUAL_NEW=1
+systemctl is-active --quiet career-dashboard-discovery-manual.path && DISCOVERY_MANUAL=1 || true
+[[ -f /etc/systemd/system/career-dashboard-discovery-recovery.timer ]] || DISCOVERY_RECOVERY_NEW=1
+systemctl is-active --quiet career-dashboard-discovery-recovery.timer && DISCOVERY_RECOVERY=1 || true
 WORKER_RECOVERY=0; WORKER_RECOVERY_NEW=0
 [[ -f /etc/systemd/system/career-dashboard-worker-recovery.timer ]] || WORKER_RECOVERY_NEW=1
 systemctl is-active --quiet career-dashboard-worker-recovery.timer && WORKER_RECOVERY=1 || true
@@ -186,6 +192,8 @@ fi
 [[ $MODE != maintenance ]] || CRAWL_ARCHIVE=0
 [[ $MODE != maintenance ]] || PIPELINE=0
 [[ $MODE != maintenance ]] || WORKER_RECOVERY=0
+[[ $MODE != maintenance ]] || DISCOVERY_RECOVERY=0
+[[ $MODE != maintenance ]] || DISCOVERY_MANUAL=0
 resume_discovery_audit() {
  (( DISCOVERY_AUDIT == 0 )) && return
  local audit_root=$APP
@@ -216,6 +224,8 @@ restart_background() {
  (( WATCHDOG == 0 )) || systemctl start career-dashboard-watchdog.timer
  (( PRUNING == 0 )) || systemctl start career-dashboard-board-pruning.timer
  (( DISCOVERY == 0 )) || systemctl start career-dashboard-discovery.timer
+ (( DISCOVERY_RECOVERY == 0 )) || systemctl start career-dashboard-discovery-recovery.timer
+ (( DISCOVERY_MANUAL == 0 )) || systemctl start career-dashboard-discovery-manual.path
  (( CANONICAL_RESOLVER == 0 )) || systemctl start career-dashboard-canonical-resolver.timer
  (( CANONICAL_API == 0 )) || systemctl start career-dashboard-canonical-api.timer
  (( GUSTO == 0 )) || systemctl start career-dashboard-gusto.timer
@@ -238,6 +248,18 @@ WORKER_PINS_SNAPSHOTTED=1
 recover() {
  trap - ERR
  echo 'Release failed; preserving the database and restoring prior application routing.' >&2
+ systemctl stop career-dashboard-discovery-manual.path career-dashboard-discovery-manual.service 2>/dev/null || true
+ if [[ ! -f $OLD/scripts/deployment/m70/career-dashboard-discovery-manual.path ]]; then
+  DISCOVERY_MANUAL=0
+  systemctl disable career-dashboard-discovery-manual.path 2>/dev/null || true
+  rm -f /etc/systemd/system/career-dashboard-discovery-manual.path /etc/systemd/system/career-dashboard-discovery-manual.service
+ fi
+ systemctl stop career-dashboard-discovery-recovery.timer career-dashboard-discovery-recovery.service 2>/dev/null || true
+ if [[ ! -f $OLD/scripts/deployment/m70/career-dashboard-discovery-recovery.timer ]]; then
+  DISCOVERY_RECOVERY=0
+  systemctl disable career-dashboard-discovery-recovery.timer 2>/dev/null || true
+  rm -f /etc/systemd/system/career-dashboard-discovery-recovery.timer /etc/systemd/system/career-dashboard-discovery-recovery.service
+ fi
  if [[ -f /etc/systemd/system/career-dashboard-pipeline.service ]]; then systemctl stop career-dashboard-pipeline.service || true; fi
  systemctl stop career-dashboard-worker-recovery.timer career-dashboard-worker-recovery.service 2>/dev/null || true
  if (( ${WORKER_RECOVERY_NEW:-0} == 1 )); then
@@ -323,6 +345,8 @@ systemctl stop career-dashboard-board-pruning.timer 2>/dev/null || true
 systemctl stop career-dashboard-first-collections.timer 2>/dev/null || true
 systemctl stop career-dashboard-rotation-balance.timer 2>/dev/null || true
 systemctl stop career-dashboard-discovery.timer 2>/dev/null || true
+systemctl stop career-dashboard-discovery-manual.path career-dashboard-discovery-manual.service 2>/dev/null || true
+systemctl stop career-dashboard-discovery-recovery.timer career-dashboard-discovery-recovery.service 2>/dev/null || true
 # Cancel an active weekly worker or its pending automatic restart before the
 # release changes. Its committed receipts/cursor are resumed by the audit worker.
 systemctl stop career-dashboard-discovery.service 2>/dev/null || true
@@ -339,7 +363,7 @@ curl -fsS --max-time 15 -X POST http://100.107.116.123:3000/api/pipeline/stop?mo
 systemctl stop career-dashboard-acquisition.service
 if [[ -f /etc/systemd/system/career-dashboard-pipeline.service ]]; then systemctl stop career-dashboard-pipeline.service; fi
 # Let a current watchdog/scheduler invocation finish rather than interrupting its DB work.
-for unit in career-dashboard-first-collections.service career-dashboard-watchdog.service career-dashboard-scheduler.service career-dashboard-board-pruning.service career-dashboard-rotation-balance.service career-dashboard-discovery.service career-dashboard-discovery-audit.service career-dashboard-canonical-api.service career-dashboard-canonical-resolver.service career-dashboard-gusto.service career-dashboard-public-boards.service career-dashboard-public-http.service; do
+for unit in career-dashboard-first-collections.service career-dashboard-watchdog.service career-dashboard-scheduler.service career-dashboard-board-pruning.service career-dashboard-rotation-balance.service career-dashboard-discovery.service career-dashboard-discovery-audit.service career-dashboard-discovery-recovery.service career-dashboard-discovery-manual.service career-dashboard-canonical-api.service career-dashboard-canonical-resolver.service career-dashboard-gusto.service career-dashboard-public-boards.service career-dashboard-public-http.service; do
  bash "$STAGE/scripts/deployment/wait-unit-idle.sh" "$unit"
 done
 cd "$APP"
@@ -392,6 +416,12 @@ curl -fsS --max-time 10 -D - -o /dev/null http://100.107.116.123:3000/api/stats 
  | grep -i '^x-career-stats-cache: hit' > /dev/null
 restart_background
 if [[ $MODE == normal ]]; then
+ if (( DISCOVERY_MANUAL_NEW == 1 )); then systemctl enable --now career-dashboard-discovery-manual.path; fi
+ # A new validation-recovery lane inherits enabled discovery on first install.
+ # Later releases preserve an operator's stopped timer.
+ if (( DISCOVERY_RECOVERY_NEW == 1 && DISCOVERY == 1 )); then
+  systemctl enable --now career-dashboard-discovery-recovery.timer
+ fi
  if (( WORKER_RECOVERY_NEW == 1 )); then systemctl enable career-dashboard-worker-recovery.timer; fi
  if (( PIPELINE_NEW == 1 )); then systemctl enable career-dashboard-pipeline.service; fi
  systemctl enable --now career-dashboard-stats-warm.timer

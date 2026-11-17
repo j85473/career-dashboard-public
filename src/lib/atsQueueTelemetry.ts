@@ -45,7 +45,7 @@ export function groupAtsQueueHolds(rows: HoldRow[]): AtsQueueHold[] {
       if (value.lastRetryAt && (!prior.lastRetryAt || value.lastRetryAt > prior.lastRetryAt)) prior.lastRetryAt = value.lastRetryAt;
     }
   }
-  const stageOrder = ['First collection', 'Validation due', 'Validation', 'Size review', 'Persistence', 'Acquisition due', 'Acquisition', 'Provider', 'Common Crawl'];
+  const stageOrder = ['First collection', 'Validation due', 'Validation', 'Size review', 'Persistence', 'Posting detail', 'Acquisition due', 'Acquisition', 'Provider', 'Common Crawl'];
   return [...groups.values()].sort((a, b) => stageOrder.indexOf(a.stage) - stageOrder.indexOf(b.stage) || b.count - a.count || a.provider.localeCompare(b.provider));
 }
 
@@ -64,6 +64,13 @@ async function queryAtsQueueTelemetry(): Promise<AtsQueueSnapshot> {
         (SELECT COUNT(*) FROM "AtsCompany" WHERE "firstCollectionState"='ready') AS ready,
         (SELECT COUNT(*) FROM "AtsCompany" WHERE "firstCollectionState"='ready' AND "acquisitionEngine"='legacy') AS "awaitingHandoff",
         (SELECT COUNT(*) FROM "AtsCompany" WHERE "firstCollectionState"='admitted') AS collecting,
+        (SELECT COUNT(*) FROM "AtsBrowserDetailRetry" WHERE status='pending') AS "browserDetailPending",
+        (SELECT COUNT(*) FROM "AtsBrowserDetailRetry" r JOIN "AtsCompany" c USING(slug,platform)
+          WHERE r.status='pending' AND c.status IN ('active','parked') AND r."nextRetryAt"<=${nowUtc}) AS "browserDetailDue",
+        (SELECT COUNT(*) FROM "AtsBrowserDetailRetry" r JOIN "AtsCompany" c USING(slug,platform)
+          WHERE r.status='pending' AND c.status IN ('active','parked') AND r."nextRetryAt">${nowUtc}) AS "browserDetailScheduled",
+        (SELECT COUNT(*) FROM "AtsBrowserDetailRetry" r JOIN "AtsCompany" c USING(slug,platform)
+          WHERE r.status='pending' AND c.status NOT IN ('active','parked')) AS "browserDetailInactive",
         (SELECT COALESCE(SUM(GREATEST("itemCount"-"processingOffset",0)),0) FROM "AtsIngestionSegment" segment
           WHERE NOT ${atsEmployerVerificationHoldSql()} AND
             (status='processing' OR (status='published' AND ("nextProcessAt" IS NULL OR "nextProcessAt" <= ${nowUtc})))) AS "persistenceDue",
@@ -78,6 +85,11 @@ async function queryAtsQueueTelemetry(): Promise<AtsQueueSnapshot> {
     `);
     const rows = await tx.$queryRaw<HoldRow[]>(Prisma.sql`
       WITH holds AS (
+        SELECT 'Posting detail' AS stage, r.platform AS provider, r."lastError" AS reason,
+          'postings' AS unit, 0::bigint AS items, r."nextRetryAt" AS retry, r.slug AS example
+        FROM "AtsBrowserDetailRetry" r JOIN "AtsCompany" c USING(slug,platform)
+        WHERE r.status='pending' AND c.status IN ('active','parked')
+        UNION ALL
         SELECT CASE WHEN state='size_review' THEN 'Size review'
           WHEN "nextValidationAt"<=${nowUtc} THEN 'Validation due' ELSE 'Validation' END AS stage,
           platform AS provider, COALESCE("lastError",'Waiting for validation') AS reason,
@@ -140,6 +152,8 @@ async function queryAtsQueueTelemetry(): Promise<AtsQueueSnapshot> {
     capacity: await readAtsCapacityTelemetry(now),
     validationDue: n('validationDue'), validationHeld: n('validationHeld'), sizeReview: n('sizeReview'),
     ready: n('ready'), awaitingHandoff: n('awaitingHandoff'), collecting: n('collecting'),
+    browserDetails: { pending: n('browserDetailPending'), retryDateReached: n('browserDetailDue'),
+      scheduled: n('browserDetailScheduled'), inactiveBoards: n('browserDetailInactive') },
     persistenceDue: n('persistenceDue') + n('legacyPersistenceDue'), persistenceHeld: n('persistenceHeld') + n('legacyPersistenceHeld'),
     persistenceEvidenceHeld: n('persistenceEvidenceHeld'), holds: groupAtsQueueHolds(rows) };
 }

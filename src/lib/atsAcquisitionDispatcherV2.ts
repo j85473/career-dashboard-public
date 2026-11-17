@@ -1176,6 +1176,17 @@ export async function runAtsV2ContinuousPublisher(input: {
   }
 }
 
+const continuousDispatcherDependencies = {
+  readAtsListingPauses,
+  reconcileExpiredAtsV2Work,
+  repairStaggeredAtsRotationSchedule,
+  claimNextAtsV2Coverage,
+  claimNextAtsV2Continuation,
+  runAtsV2Claim,
+  wait: waitForAbortableDelay,
+  monotonicNow: () => performance.now(),
+};
+
 export async function runAtsV2ContinuousDispatcher(input: {
   signal: AbortSignal;
   shouldDrain?: () => boolean;
@@ -1188,22 +1199,22 @@ export async function runAtsV2ContinuousDispatcher(input: {
   onScheduleRepair?: (repaired: number) => void;
   onError?: (failure: AtsV2DispatcherError) => void;
   idleDelayMs?: number;
-}): Promise<void> {
+}, dependencies = continuousDispatcherDependencies): Promise<void> {
   const totalSlots = Math.max(1, Math.min(
     ATS_ACQUISITION_CONCURRENCY,
     Math.floor(input.totalSlots || ATS_ACQUISITION_CONCURRENCY),
   ));
   const idleDelayMs = Math.max(100, Math.floor(input.idleDelayMs || 1_000));
-  const delay = () => waitForAbortableDelay(input.signal, idleDelayMs);
+  const delay = () => dependencies.wait(input.signal, idleDelayMs);
   // Share advisory counts across this session's workers for at most a second.
   // Pressure changes may take that long to change the lane mix/listing cap.
   // Coverage still reads current staging before admission; continuation claims
   // retain live lease/retry checks and the atomic cap whenever it is enabled.
-  const readPlan = createAtsLanePlanReader(input.plan);
-  const readPauses = createAtsLanePlanReader(() => readAtsListingPauses());
+  const readPlan = createAtsLanePlanReader(input.plan, dependencies.monotonicNow);
+  const readPauses = createAtsLanePlanReader(() => dependencies.readAtsListingPauses(), dependencies.monotonicNow);
   const reconcileAndRepair = async () => {
-    await reconcileExpiredAtsV2Work();
-    const schedule = await repairStaggeredAtsRotationSchedule();
+    await dependencies.reconcileExpiredAtsV2Work();
+    const schedule = await dependencies.repairStaggeredAtsRotationSchedule();
     if (schedule.repaired > 0) input.onScheduleRepair?.(schedule.repaired);
   };
   await reconcileAndRepair();
@@ -1227,35 +1238,44 @@ export async function runAtsV2ContinuousDispatcher(input: {
         if ((input.shouldDrain || workerDrainRequested)()) {
           if (!input.holdForDrain) return;
           input.onDrainState?.(workerIndex, true);
-          await waitForAbortableDelay(input.signal, 250);
+          await dependencies.wait(input.signal, 250);
           continue;
         }
         input.onDrainState?.(workerIndex, false);
         if (!storageAllows('collection')) {
-          await waitForAbortableDelay(input.signal, 15_000);
+          await dependencies.wait(input.signal, 15_000);
           continue;
         }
         await reconcileIfDue(workerIndex);
         const plan = await readPlan();
+        // The shared, at-most-one-second-old plan has already established that
+        // no due work can be claimed. Repeating all class/phase queries in each
+        // worker adds no authority. Refresh after the bounded idle wait so a
+        // retry becoming due or newly admitted work is noticed promptly.
+        const continuationOnly = input.lanePolicy === 'continuation-only';
+        if (plan.continuationEligible === 0
+          && (continuationOnly || plan.coverageEligible === 0)) {
+          await delay();
+          continue;
+        }
         // Reuse durable reads briefly, but merge local throttles on every turn.
         // A newly refused request must stop claims immediately, not after cache expiry.
         const pausedPlatforms = pausedAtsListingPlatforms(await readPauses());
         if ((input.shouldDrain || workerDrainRequested)()) continue;
-        const continuationOnly = input.lanePolicy === 'continuation-only';
         const lane: AtsV2Lane = continuationOnly
           ? 'continuation'
           : workerIndex < plan.coverageSlots ? 'coverage' : 'continuation';
         let claim = lane === 'coverage'
-          ? await claimNextAtsV2Coverage(new Date(), pausedPlatforms)
-          : await claimNextAtsV2Continuation({ listingConcurrencyLimit: plan.listingConcurrencyLimit, pausedPlatforms });
+          ? await dependencies.claimNextAtsV2Coverage(new Date(), pausedPlatforms)
+          : await dependencies.claimNextAtsV2Continuation({ listingConcurrencyLimit: plan.listingConcurrencyLimit, pausedPlatforms });
         let effectiveLane = lane;
         const mayBorrowOtherLane = !continuationOnly
           && (lane === 'coverage' || plan.coverageSlots > 0);
         if (!claim && mayBorrowOtherLane) {
           effectiveLane = lane === 'coverage' ? 'continuation' : 'coverage';
           claim = effectiveLane === 'coverage'
-            ? await claimNextAtsV2Coverage(new Date(), pausedPlatforms)
-            : await claimNextAtsV2Continuation({ listingConcurrencyLimit: plan.listingConcurrencyLimit, pausedPlatforms });
+            ? await dependencies.claimNextAtsV2Coverage(new Date(), pausedPlatforms)
+            : await dependencies.claimNextAtsV2Continuation({ listingConcurrencyLimit: plan.listingConcurrencyLimit, pausedPlatforms });
         }
         if (!claim) {
           await delay();
@@ -1263,7 +1283,7 @@ export async function runAtsV2ContinuousDispatcher(input: {
         }
         input.onProgress?.({ lane: effectiveLane, workerIndex, claim });
         try {
-          await runAtsV2Claim(claim, input.signal);
+          await dependencies.runAtsV2Claim(claim, input.signal);
         } catch (error) {
           input.onError?.({ workerIndex, phase: 'run', error });
           await delay();

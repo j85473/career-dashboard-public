@@ -22,6 +22,9 @@ export type BrowserSweepProgress = {
     loaded: boolean;
     /** Unverified details remain attached to this page and cannot count as seen. */
     detailFailures?: { id: string; message: string }[];
+    /** Enumerated postings durably handed to independent detail recovery. These
+     * IDs are listing evidence, never proof that their descriptions succeeded. */
+    deferredDetailIds?: string[];
     terminal?: BrowserPageEnd;
     /** Audit of incomplete rendered pages extended without discarding work. */
     pageRepairs?: { page: number; previousSignature: string; signature: string; addedIds: string[] }[];
@@ -63,6 +66,9 @@ export function readBrowserSweep(value: unknown, platform: BrowserAtsPlatform, b
         || p.detailFailures.some(f => !f || typeof f.id !== 'string' || typeof f.message !== 'string' || f.message.length > 500
             || !p.queue.some(link => link.id === f.id) || p.seen.includes(f.id))))
         throw Error('Invalid saved detail retries; preserving progress for review');
+    if (p.deferredDetailIds !== undefined && (!Array.isArray(p.deferredDetailIds) || p.deferredDetailIds.length > BROWSER_MAX_SEEN_IDS
+        || !p.deferredDetailIds.every(id => typeof id === 'string') || new Set(p.deferredDetailIds).size !== p.deferredDetailIds.length))
+        throw Error('Invalid retained posting identities; preserving progress for review');
     if (p.next !== null && (!p.next || !['url', 'click'].includes(p.next.kind) || p.next.kind === 'url' && browserAtsBoardFromUrl(platform, p.next.url) !== board))
         throw Error('Invalid saved pagination');
     if (p.total !== null && (!Number.isSafeInteger(p.total) || p.total < 0))
@@ -124,15 +130,28 @@ export function advanceBrowserSweep(p: BrowserSweepProgress): BrowserSweepProgre
     if (p.detailFailures?.length)
         throw new BrowserPostingEvidenceError(`${p.detailFailures.length} job details lack verified evidence; retaining this page and every failed posting for retry`, true);
     if (!p.next) {
-        if (p.total !== null && p.seen.length < p.total && !verifiedFinalPage(p))
-            throw Error(`Only ${p.seen.length} of ${p.total} advertised jobs enumerated; retaining progress`);
+        if (p.total !== null && browserSweepEnumeratedCount(p) < p.total && !verifiedFinalPage(p))
+            throw Error(`Only ${browserSweepEnumeratedCount(p)} of ${p.total} advertised jobs enumerated; retaining progress`);
         return null;
     }
-    if (p.page >= BROWSER_MAX_PAGES || p.seen.length >= BROWSER_MAX_SEEN_IDS)
+    if (p.page >= BROWSER_MAX_PAGES || browserSweepEnumeratedCount(p) >= BROWSER_MAX_SEEN_IDS)
         throw Error('Board exceeds bounded catalogue limits; retaining progress for review');
     const next: BrowserSweepProgress={ ...p, page: p.page + 1, pageUrl: p.next.kind === 'url' ? p.next.url : undefined, queue: [], offset: 0, loaded: false, next: null };
     delete next.terminal;
     return next;
+}
+
+export function browserSweepEnumeratedCount(p: BrowserSweepProgress): number {
+    return new Set([...p.seen, ...(p.deferredDetailIds || [])]).size;
+}
+
+/** Call only inside the transaction that inserts every corresponding retry.
+ * Until that transaction commits, advanceBrowserSweep still refuses failures. */
+export function detachBrowserSweepDetails(p: BrowserSweepProgress): BrowserSweepProgress {
+    if (!p.detailFailures?.length) return p;
+    const result = { ...p, deferredDetailIds: [...new Set([...(p.deferredDetailIds || []), ...p.detailFailures.map(f => f.id)])] };
+    delete result.detailFailures;
+    return result;
 }
 
 /** Finish checking the page before retrying its earliest unresolved detail.

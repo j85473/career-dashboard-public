@@ -54,6 +54,11 @@ export class AtsWebDiscoveryState {
         PRIMARY KEY(platform,slug)
       );
       CREATE INDEX IF NOT EXISTS boards_ready ON boards(status,next_at);
+      CREATE TABLE IF NOT EXISTS board_handoff_history (
+        platform TEXT NOT NULL, slug TEXT NOT NULL, attempt INTEGER NOT NULL,
+        status TEXT NOT NULL, next_at INTEGER NOT NULL, last_error TEXT,
+        observed_at INTEGER NOT NULL, PRIMARY KEY(platform,slug,attempt)
+      );
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS lease (id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT, expires_at INTEGER NOT NULL);
       INSERT OR IGNORE INTO lease VALUES(1,NULL,0);
@@ -199,13 +204,24 @@ export class AtsWebDiscoveryState {
 
   pendingCandidates(limit: number, now: number): DiscoveryCandidate[] {
     return this.db.prepare(`SELECT platform,slug,matched_url AS matchedUrl,source_url AS sourceUrl,attempts
-      FROM boards WHERE status IN ('pending','retry') AND next_at<=? ORDER BY first_seen,platform,slug LIMIT ?`)
-      .all(now, limit).map(row => ({ ...row })) as unknown as DiscoveryCandidate[];
+      FROM boards WHERE (status IN ('pending','retry')
+        OR (status='rejected' AND last_error='No jobs listed' AND next_at<=?-604800000))
+        AND next_at<=? ORDER BY first_seen,platform,slug LIMIT ?`)
+      .all(now, now, limit).map(row => ({ ...row })) as unknown as DiscoveryCandidate[];
   }
 
-  finishCandidate(board: WebDiscoveredBoard, status: string, now: number, error: string | null = null): void {
-    this.db.prepare(`UPDATE boards SET status=?,next_at=?,last_error=?,attempts=attempts+1 WHERE platform=? AND slug=?`)
-      .run(status, now + 60 * 60_000, error, board.platform, board.slug);
+  finishCandidate(board: WebDiscoveredBoard, status: string, now: number, error: string | null = null, retryAt?: number): void {
+    this.transaction(() => {
+      // Capture the legacy rejection before its narrow compatibility retry.
+      // observed_at records when it was retained, not an invented attempt time.
+      const retain = () => this.db.prepare(`INSERT OR IGNORE INTO board_handoff_history
+        SELECT platform,slug,attempts,status,next_at,last_error,? FROM boards
+        WHERE platform=? AND slug=? AND attempts>0`).run(now, board.platform, board.slug);
+      retain();
+      this.db.prepare(`UPDATE boards SET status=?,next_at=?,last_error=?,attempts=attempts+1 WHERE platform=? AND slug=?`)
+        .run(status, retryAt ?? now + 60 * 60_000, error, board.platform, board.slug);
+      retain();
+    });
   }
 
   report(maximumPendingUrls?: number) {

@@ -68,7 +68,7 @@ for (const restartSucceeds of [false, true]) {
     try {
       const result = spawnSync('bash', ['-c', `
 set -Eeuo pipefail
-MODE=normal; PIPELINE_NEW=0; WORKER_RECOVERY_NEW=0; CANONICAL_API_NEW=0; PUBLIC_BOARDS_NEW=0; PUBLIC_BOARDS=0; PUBLIC_HTTP_NEW=0
+MODE=normal; PIPELINE_NEW=0; WORKER_RECOVERY_NEW=0; CANONICAL_API_NEW=0; PUBLIC_BOARDS_NEW=0; PUBLIC_BOARDS=0; PUBLIC_HTTP_NEW=0; DISCOVERY_MANUAL_NEW=0; DISCOVERY_RECOVERY_NEW=0; DISCOVERY=0
 systemctl() { return 0; }
 restart_background() { [[ "$RESTART_SUCCEEDS" == 1 ]]; }
 ${completion}

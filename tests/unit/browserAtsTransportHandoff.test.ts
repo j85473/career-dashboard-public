@@ -86,7 +86,7 @@ test('legacy page numbers and loaded legacy queues remain under the browser owne
 test('SQL ownership filters preserve completed cycles, saved transport and exact handoffs without mutating them', () => {
     const http = publicCrawlLaneSql('http'), browser = publicCrawlLaneSql('browser');
     for (const query of [http, browser]) {
-        assert.match(query.text, /s\.status <> 'succeeded'/);
+        assert.match(query.text, /s\.status NOT IN \('succeeded','listed'\)/);
         assert.match(query.text, /browserRequired/);
         assert.match(query.text, /browser-v1/);
         assert.ok(query.values.includes('icims') && query.values.includes('paylocity'));

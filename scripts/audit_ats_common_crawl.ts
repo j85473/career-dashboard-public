@@ -1,3 +1,6 @@
+import { runDiscoveryRecovery, discoveryRecoverySnapshot, discoveryRecoveryAllowed, createDiscoveryRecoveryCadence } from '../src/lib/atsDiscoveryValidationRecovery';
+import { startDiscoveryRuntime } from '../src/lib/atsDiscoveryRuntime';
+import { storageAllows } from '../src/lib/storagePressure';
 import { isBrowserAtsPlatform } from '../src/lib/browserAtsBoards';
 import { isFirstCollectionPlatform } from '../src/lib/atsFirstCollectionAdmission';
 import { ATS_DISCOVERY_PLATFORMS as PLATFORMS, discoveryCandidateStatus, isDiscoveryOnlyAtsPlatform } from '../src/lib/atsDiscoveryPlatforms';
@@ -10,6 +13,7 @@ import {
   getIndices,
   patternsFor,
   validateSlug,
+  setLogger,
 } from '../src/scripts/discoverATS';
 import {
   firstDiscoveredAtsBoardCheckDate,
@@ -49,8 +53,19 @@ type AthenaRead =
 export type AuditWorkItem = { platformKey: PlatformKey; pattern: string };
 type AthenaReader = Pick<AthenaCommonCrawlReader, 'start' | 'state' | 'results'>;
 
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+let auditStopSignal: AbortSignal | undefined;
+let serviceHistoricalRecovery: (() => Promise<unknown>) | undefined;
+function checkAuditStop(): void {
+  auditStopSignal?.throwIfAborted();
+  if (!storageAllows('collection')) throw Error('Discovery paused for storage pressure');
+}
+async function sleep(milliseconds: number): Promise<void> {
+  const until = Date.now() + milliseconds;
+  while (Date.now() < until) {
+    checkAuditStop();
+    await new Promise(resolve => setTimeout(resolve, Math.min(1000, until - Date.now())));
+  }
+  checkAuditStop();
 }
 
 export function commonCrawlPageRetryDelay(failures: number): number {
@@ -345,6 +360,11 @@ async function processCandidate(candidate: {
 }
 
 async function processReadyCandidates(runId: string, limit = VALIDATION_BATCH_SIZE): Promise<number> {
+  checkAuditStop();
+  if (!await discoveryRecoveryAllowed(prisma)) throw Error('Discovery paused by operator control');
+  await serviceHistoricalRecovery?.();
+  checkAuditStop();
+  if (!await discoveryRecoveryAllowed(prisma)) throw Error('Discovery paused by operator control');
   const candidates = await prisma.atsDiscoveryAuditCandidate.findMany({
     where: {
       runId,
@@ -357,6 +377,11 @@ async function processReadyCandidates(runId: string, limit = VALIDATION_BATCH_SI
   });
 
   for (let offset = 0; offset < candidates.length; offset += VALIDATION_CONCURRENCY) {
+    checkAuditStop();
+    if (!await discoveryRecoveryAllowed(prisma)) throw Error('Discovery paused by operator control');
+    await serviceHistoricalRecovery?.();
+    checkAuditStop();
+    if (!await discoveryRecoveryAllowed(prisma)) throw Error('Discovery paused by operator control');
     await Promise.all(candidates.slice(offset, offset + VALIDATION_CONCURRENCY).map(processCandidate));
   }
   return candidates.length;
@@ -420,8 +445,9 @@ async function durableIndexSequence(run: AtsDiscoveryAuditRun): Promise<string[]
 
 async function loadAuditIndices(unfinished: AtsDiscoveryAuditRun | null): Promise<string[]> {
   try {
-    return await getIndices();
+    return await getIndices(auditStopSignal);
   } catch (error) {
+    auditStopSignal?.throwIfAborted();
     if (!unfinished) throw error;
     const durable = await durableIndexSequence(unfinished);
     if (!durable) throw error;
@@ -613,7 +639,7 @@ export async function crawlPatternQuantum(
   dependencies = {
     client: prisma,
     reader: athenaReader as AthenaReader | null,
-    fetchPage: fetchCommonCrawl,
+    fetchPage: (index: string, pattern: string, page: number) => fetchCommonCrawl(index, pattern, page, 3, auditStopSignal),
     processReady: processReadyCandidates,
     wait: sleep,
   },
@@ -824,11 +850,22 @@ export function localAuditIndexOrder(indices: readonly string[], running: readon
   return [...active, ...[...indices].reverse().filter(index => !active.includes(index))];
 }
 
-export async function runFullAudit(): Promise<void> {
+export async function runFullAudit(signal?: AbortSignal): Promise<void> {
+  auditStopSignal = signal;
+  checkAuditStop();
+  if (!await discoveryRecoveryAllowed(prisma)) throw Error('Discovery paused by operator control');
+  serviceHistoricalRecovery = createDiscoveryRecoveryCadence(async () => {
+    const result = await runDiscoveryRecovery(prisma, { signal });
+    console.log('[Discovery recovery]', JSON.stringify(result));
+    return result;
+  }, { signal });
+  await serviceHistoricalRecovery();
+  checkAuditStop();
   if (!Number.isFinite(COMMON_CRAWL_DELAY_MS) || COMMON_CRAWL_DELAY_MS < 5000) {
     throw new Error('ATS_DISCOVERY_CC_DELAY_MS must be at least 5000ms to respect Common Crawl rate guidance.');
   }
   while (true) {
+    checkAuditStop();
     const unfinished = await findUnfinishedRun();
     const allIndices = await loadAuditIndices(unfinished);
     const workItems = await auditWorkItems(unfinished);
@@ -844,9 +881,10 @@ export async function runFullAudit(): Promise<void> {
       const running = await prisma.atsDiscoveryLocalScan.findMany({ where: { runId: run.id, status: 'running' },
         orderBy: { createdAt: 'asc' }, select: { indexId: true } });
       for (const indexId of localAuditIndexOrder(indices, running.map(scan => scan.indexId))) {
+        checkAuditStop();
         await scanLocalCrawl(prisma, run.id, indexId,
           workItems.map(({ platformKey, pattern }) => ({ platform: platformKey, pattern })), config,
-          () => processReadyCandidates(run.id));
+          () => processReadyCandidates(run.id), signal);
       }
       await completeLocalAuditCheckpoints(prisma, run, indices, workItems);
       await drainCandidates(run.id);
@@ -941,6 +979,7 @@ export async function reportAuditStatus(): Promise<void> {
   ]);
   console.log(JSON.stringify({
     ...run,
+    recovery: await discoveryRecoverySnapshot(prisma),
     workerSource: process.env.ATS_DISCOVERY_SOURCE || 'cdx',
     expectedReceipts: run.patternCount * run.indexCount,
     receipts,
@@ -956,22 +995,28 @@ export async function reportAuditStatus(): Promise<void> {
 }
 
 if (process.argv[1]?.includes('audit_ats_common_crawl')) {
-  const command = process.argv.includes('--status') ? reportAuditStatus() : runFullAudit();
-  command
-    .catch(async (error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[Audit] Failed safely: ${message}`);
-      const active = await prisma.atsDiscoveryAuditRun.findFirst({
-        where: { status: { in: ['running', 'validating'] } },
-        orderBy: { startedAt: 'desc' },
-      });
-      if (active) {
-        await prisma.atsDiscoveryAuditRun.update({
-          where: { id: active.id },
-          data: { status: 'running', lastError: message },
-        });
+  const main = async () => {
+    if (process.argv.includes('--status')) { await reportAuditStatus(); return; }
+    const recoveryOnly = process.argv.includes('--recover-only');
+    const runtime = await startDiscoveryRuntime(recoveryOnly ? 'recovery' : 'scan', process.argv.includes('--manual'));
+    setLogger(message => { runtime.report(message); process.stdout.write(message + '\n'); });
+    auditStopSignal = runtime.signal;
+    let failure: unknown;
+    try {
+      checkAuditStop();
+      if (recoveryOnly) console.log('[Discovery recovery]', JSON.stringify(await runDiscoveryRecovery(prisma, { signal: runtime.signal })));
+      else await runFullAudit(runtime.signal);
+    } catch (error) {
+      if (!runtime.signal.aborted) {
+        failure = error;
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[Audit] Failed safely: ${message}`);
+        const active = await findUnfinishedRun();
+        if (active) await prisma.atsDiscoveryAuditRun.update({ where: { id: active.id }, data: { lastError: message } });
+        process.exitCode = 1;
       }
-      process.exitCode = 1;
-    })
+    } finally { await runtime.finish(failure); setLogger(null); }
+  };
+  main().catch(error => { console.error('[Audit] Worker startup failed safely:', error); process.exitCode = 1; })
     .finally(() => prisma.$disconnect());
 }

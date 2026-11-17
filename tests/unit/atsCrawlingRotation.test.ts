@@ -171,7 +171,7 @@ test('untouched discovery placeholders receive first turns while real failures a
   } } as unknown as Pick<PrismaClient, '$queryRaw'>;
   assert.equal((await nextCrawlBoard(['paycom'], 0, false, undefined, undefined, client))?.queue, 'first', 'a disabled retry allocation must still admit untouched first work');
   assert.ok(queryText.includes(CRAWL_PENDING_DISCOVERY_SQL));
-  assert.ok(queryText.indexOf(CRAWL_PENDING_DISCOVERY_SQL) < queryText.indexOf(`THEN 'retry'`), 'the narrow discovery exception precedes actual failure classification');
+  assert.ok(queryText.indexOf(CRAWL_PENDING_DISCOVERY_SQL) < queryText.indexOf(`WHEN board."failCount">0 OR s."lastError" IS NOT NULL THEN 'retry'`), 'the narrow discovery exception precedes actual failure classification');
   const apply = crawlingRotationApplySql(planCrawlingRotation([pending], [], now).assignments, now);
   assert.ok(apply.text.includes(CRAWL_PENDING_DISCOVERY_SQL), 'the guarded application uses the same narrow exception');
   const updateFields = apply.text.slice(apply.text.indexOf('UPDATE "AtsCompany"'), apply.text.indexOf('FROM selected'));

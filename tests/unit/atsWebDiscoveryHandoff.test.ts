@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { publishAtsWebDiscoveries } from '../../src/lib/atsWebDiscoveryHandoff';
 import { knownAtsBoardFromUrl } from '../../src/lib/atsWebDiscoveryLinks';
@@ -101,4 +105,66 @@ test('candidate evidence keeps its original source when encountered again', () =
     state.recordBoard(board, 'https://second.example/careers', now() + 1);
     assert.equal(state.pendingCandidates(10, now())[0].sourceUrl, 'https://first.example/careers');
   } finally { state.close(); }
+});
+
+test('an empty feed is rechecked after its weekly hold even without rediscovery', async () => {
+  const state = new AtsWebDiscoveryState(':memory:');
+  discover(state, 'https://jobs.lever.co/acme');
+  const client = { atsCompany: { findMany: async () => [] } } as unknown as Client;
+  try {
+    assert.deepEqual(await publishAtsWebDiscoveries(state, client,
+      async () => ({ success: false, reason: 'No jobs listed' }), 3, now), { retry: 1 });
+    assert.equal(state.pendingCandidates(3, now() + 7 * 86_400_000 - 1).length, 0);
+    let calls = 0;
+    const outcomes = await publishAtsWebDiscoveries(state, client, async () => {
+      calls++;
+      return { success: false, transient: true, reason: 'HTTP 429' };
+    }, 3, () => now() + 7 * 86_400_000);
+    assert.equal(calls, 1);
+    assert.deepEqual(outcomes, { retry: 1 });
+  } finally { state.close(); }
+});
+
+test('only historical empty-feed rejections regain a validation opportunity', async () => {
+  const state = new AtsWebDiscoveryState(':memory:');
+  const empty = knownAtsBoardFromUrl('https://jobs.lever.co/empty')!;
+  const absent = knownAtsBoardFromUrl('https://jobs.lever.co/absent')!;
+  const retired = knownAtsBoardFromUrl('https://jobs.lever.co/retired')!;
+  try {
+    for (const board of [empty, absent, retired]) state.recordBoard(board, 'https://employer.example/careers', now());
+    state.finishCandidate(empty, 'rejected', now(), 'No jobs listed');
+    state.finishCandidate(absent, 'rejected', now(), 'HTTP 404');
+    state.finishCandidate(retired, 'retired', now(), 'No jobs listed');
+    assert.equal(state.pendingCandidates(10, now() + 7 * 86_400_000).length, 0);
+    assert.deepEqual(state.pendingCandidates(10, now() + 8 * 86_400_000).map(board => board.slug), ['empty']);
+    // A permanent retirement discovered since the original rejection wins.
+    const client = { atsCompany: { findMany: async () => [{ status: 'excluded', excludedReason: 'Operator retirement' }] } } as unknown as Client;
+    assert.deepEqual(await publishAtsWebDiscoveries(state, client,
+      async () => { throw Error('Retired board must not be fetched'); }, 3, () => now() + 8 * 86_400_000), { retired: 1 });
+    assert.equal(state.pendingCandidates(10, now() + 100 * 86_400_000).length, 0);
+  } finally { state.close(); }
+});
+
+test('the six legacy empty-feed rejections retain original evidence and append recovery receipts', async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), 'discovery-empty-history-'));
+  const file = path.join(directory, 'state.sqlite');
+  new AtsWebDiscoveryState(file).close();
+  let db = new DatabaseSync(file);
+  const insert = db.prepare(`INSERT INTO boards(platform,slug,matched_url,source_url,first_seen,last_seen,status,attempts,next_at,last_error)
+    VALUES('lever',?,?,'https://original.example/careers',1,2,'rejected',1,?,'No jobs listed')`);
+  for (let n = 0; n < 6; n++) insert.run(`empty-${n}`, `https://jobs.lever.co/empty-${n}`, now() - 8 * 86_400_000);
+  db.close();
+  const state = new AtsWebDiscoveryState(file);
+  try {
+    const client = { atsCompany: { findMany: async () => [] } } as unknown as Client;
+    assert.deepEqual(await publishAtsWebDiscoveries(state, client,
+      async () => ({ success: false, reason: 'No jobs listed' }), 10, now), { retry: 6 });
+    assert.equal(state.pendingCandidates(10, now()).length, 0);
+  } finally { state.close(); }
+  db = new DatabaseSync(file, { readOnly: true });
+  try {
+    assert.equal(db.prepare("SELECT count(*) n FROM board_handoff_history WHERE attempt=1 AND status='rejected' AND last_error='No jobs listed'").get()!.n, 6);
+    assert.equal(db.prepare("SELECT count(*) n FROM boards WHERE attempts=2 AND status='retry' AND first_seen=1 AND last_seen=2 AND source_url='https://original.example/careers'").get()!.n, 6);
+    assert.equal(db.prepare("SELECT count(*) n FROM board_handoff_history WHERE attempt=2 AND status='retry'").get()!.n, 6);
+  } finally { db.close(); rmSync(directory, { recursive: true, force: true }); }
 });

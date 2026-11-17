@@ -615,6 +615,8 @@ export function StatsTab({ onOpenFailedQueue }: StatsTabProps) {
   const [snapshotAge, setSnapshotAge] = useState<{ seconds: number; from: string } | null>(null);
   const [terminalOutput, setTerminalOutput] = useState<string[]>([]);
   const [isDiscoveryRunning, setIsDiscoveryRunning] = useState(false);
+  const [discoveryToken, setDiscoveryToken] = useState<string | null>(null);
+  const [discoveryRecovery, setDiscoveryRecovery] = useState<{ pending: number; held: number; review: number; recovered: number; unqueued: number } | null>(null);
   const [discoveryAction, setDiscoveryAction] = useState<'start' | 'stop' | null>(null);
   const [showRetiredTasks, setShowRetiredTasks] = useState(false);
   const [showHealthySources, setShowHealthySources] = useState(false);
@@ -682,10 +684,12 @@ export function StatsTab({ onOpenFailedQueue }: StatsTabProps) {
       request: async (signal) => {
         const response = await fetch('/api/ats-companies/discover', { signal });
         if (!response.ok) throw new Error('Could not load discovery status.');
-        return await response.json() as { isRunning: boolean; logs?: unknown[] };
+        return await response.json() as { isRunning: boolean; token?: string; logs?: unknown[]; recovery?: typeof discoveryRecovery };
       },
       onData: (payload) => {
         setIsDiscoveryRunning(payload.isRunning === true);
+        setDiscoveryToken(payload.token || null);
+        if (payload.recovery) setDiscoveryRecovery(payload.recovery);
         if (Array.isArray(payload.logs)) {
           const next = payload.logs.filter((line): line is string => typeof line === 'string').map((line) => `${line}\n`);
           setTerminalOutput((previous) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
@@ -714,13 +718,17 @@ export function StatsTab({ onOpenFailedQueue }: StatsTabProps) {
     try {
       const response = await fetch('/api/ats-companies/discover', {
         method: action === 'start' ? 'POST' : 'DELETE',
+        ...(action === 'stop' ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: discoveryToken }) } : {}),
         signal: controller.signal,
       });
       const payload = await readClientMutationResponse(response, `Failed to ${action} ATS discovery.`);
-      if (payload.status !== (action === 'start' ? 'started' : 'stopped')) {
+      if (!(action === 'start' ? ['started', 'starting'] : ['stopped', 'stopping']).includes(String(payload.status))) {
         throw new Error('Discovery returned an unexpected response. Check its status before trying again.');
       }
-      if (!controller.signal.aborted) setIsDiscoveryRunning(action === 'start');
+      if (!controller.signal.aborted) {
+        setIsDiscoveryRunning(action === 'start' || payload.status === 'stopping');
+        if (typeof payload.token === 'string') setDiscoveryToken(payload.token);
+      }
     } catch (error) {
       if (!controller.signal.aborted) {
         await showAlert(error instanceof Error ? error.message : `Failed to ${action} ATS discovery.`);
@@ -1443,6 +1451,13 @@ export function StatsTab({ onOpenFailedQueue }: StatsTabProps) {
 
         <details className="ops-details">
           <summary>ATS catalog discovery tool</summary>
+          {discoveryRecovery && <p>
+            Retained discovery candidates: {discoveryRecovery.pending.toLocaleString()} due for validation,
+            {' '}{discoveryRecovery.held.toLocaleString()} waiting for retry,
+            {' '}{discoveryRecovery.review.toLocaleString()} need identity or validation review,
+            {' '}{discoveryRecovery.unqueued.toLocaleString()} awaiting bounded enrollment.
+            {' '}{discoveryRecovery.recovered.toLocaleString()} resolved or already represented. These are unverified board candidates, not open jobs.
+          </p>}
           <div className="ops-discovery-head">
             <p>Expands the employer-board catalog by crawling Common Crawl for new tenant URLs. This is not the recurring job-ingestion scheduler.</p>
             <div>

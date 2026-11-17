@@ -55,7 +55,7 @@ export async function runDiscoveryAndWait(): Promise<void> {
 
   const deadline = Date.now() + 6 * 60 * 60 * 1000;
   while (Date.now() < deadline) {
-    const status = await getDashboardJson<{ isRunning?: boolean; logs?: string[] }>('/api/ats-companies/discover');
+    const status = await getDashboardJson<{ isRunning?: boolean; state?: string; logs?: string[] }>('/api/ats-companies/discover');
     const logs = Array.isArray(status.logs) ? status.logs : [];
     const joinedLogs = logs.join('\n');
 
@@ -63,7 +63,7 @@ export async function runDiscoveryAndWait(): Promise<void> {
       if (/\[Process error:/i.test(joinedLogs) || /\[Discovery process failed/i.test(joinedLogs)) {
         throw new Error(`ATS discovery failed: ${logs.slice(-5).join(' | ')}`);
       }
-      if (/\[Discovery process completed successfully\]/i.test(joinedLogs)) {
+      if (status.state ? status.state === 'complete' : /\[Discovery process completed successfully\]/i.test(joinedLogs)) {
         console.log('ATS discovery completed successfully.');
         return;
       }

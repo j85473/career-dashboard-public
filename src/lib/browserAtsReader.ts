@@ -1,6 +1,6 @@
 import { paycorPublicListing, PAYCOR_CATALOGUE_LIMIT } from './paycorPublic';
 import { icimsPublicListing } from './icimsPublicListing';
-import { assertPublicBoardAvailable } from './publicBoardAvailability';
+import { assertPublicBoardAvailable, isPaylocityUnavailablePage } from './publicBoardAvailability';
 import { AdpPublicReader } from './adpPublicReader';
 import type { BrowserContext, Page, Locator } from 'playwright-core';
 import * as cheerio from 'cheerio';
@@ -522,7 +522,9 @@ export class BrowserAtsReader {
         const docs = await this.listingDocuments(page, platform, board, pageNumber);
         if (platform === 'icims') {
             const verified = docs.map(doc => icimsPublicListing(doc, board, pageNumber)).find(Boolean);
-            if (verified) { this.position = { platform, board, page: pageNumber }; return verified; }
+            if (!verified) throw Error('iCIMS catalogue incomplete or filtered; retaining sweep for retry');
+            this.position = { platform, board, page: pageNumber };
+            return verified;
         }
         if (platform === 'paycor') {
             const verified = pageNumber === 1 ? docs.map(doc => paycorPublicListing(doc, board)).find(Boolean) : null;
@@ -532,6 +534,7 @@ export class BrowserAtsReader {
         }
         const links = postingLinksFromDocuments(platform, board, docs);
         const emptyVerified = !links.length && verifiedEmptyBoard(platform, docs, board, this.taleoPages.get(pageNumber));
+        if (!links.length && !emptyVerified) throw Error('Public board empty state is unverified; retaining sweep for retry');
         const total = emptyVerified ? 0 : listingTotal(docs.map(d => d.text).join('\n'));
         let control = await nextControl(page, platform, pageNumber);
         const range=platform==='paycom' ? paycomRange(docs) : undefined;
@@ -565,6 +568,8 @@ export class BrowserAtsReader {
             }
             for (let attempt = 0; attempt < 12; attempt++) {
                 const docs = await documents(page);
+                if (platform === 'paylocity' && browserPostingLink(platform, board, link.url)?.id === link.id
+                    && docs.some(isPaylocityUnavailablePage)) return null;
                 for (const doc of docs) assertPublicBoardAvailable(platform, doc);
                 const result = parseBrowserPosting(platform, board, link, docs);
                 if (result)

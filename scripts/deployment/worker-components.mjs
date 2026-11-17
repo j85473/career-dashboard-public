@@ -18,14 +18,14 @@ export const WORKER_COMPONENTS = {
   'web-discovery': { strategy: 'turn', units: [unit('web-discovery')], entries: ['scripts/crawl_ats_boards.ts'] },
   // Discovery audits, storage operations and backups can run for hours. They
   // stay pinned, but their changes still require the coordinated release.
-  platform: { strategy: 'coordinated', units: [unit('discovery'), unit('discovery-audit'), unit('board-pruning'),
+  platform: { strategy: 'coordinated', units: [unit('discovery'), unit('discovery-audit'), unit('discovery-recovery'), unit('discovery-manual'), unit('board-pruning'),
     unit('storage-monitor'), unit('crawl-archive'), unit('backup'), unit('worker-recovery')], entries: ['scripts/audit_ats_common_crawl.ts',
       'scripts/review_ats_board_pruning.ts', 'scripts/deployment/archive-crawls.ts', 'scripts/deployment/dispose-crawls.ts',
       'scripts/deployment/snapshot-backup-runtime.mjs'] },
 };
 
 export function componentForUnit(filename) {
-  const name = path.basename(filename).replace(/\.(service|timer)$/, '');
+  const name = path.basename(filename).replace(/\.(service|timer|path)$/, '');
   return Object.keys(WORKER_COMPONENTS).find((key) => WORKER_COMPONENTS[key].units.includes(name));
 }
 

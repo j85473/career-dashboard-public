@@ -3,6 +3,7 @@ import { PUBLIC_ATS_HTTP_FIRST_PLATFORMS, type BrowserAtsPlatform } from './brow
 import type { BrowserSweepProgress } from './browserAtsProgress';
 
 export type PublicCrawlLane = 'http' | 'browser' | 'all';
+export const browserListingCompleted = (status: string) => status === 'succeeded' || status === 'listed';
 /** Provider tasks are shared, but serving HTTP must not reset the browser's fairness clock. */
 export function crawlLaneStart(cursor: unknown, lane: 'http' | 'browser'): Date | null {
     if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) return null;
@@ -42,14 +43,14 @@ export function publicCrawlLaneAllows(platform: string, lane: PublicCrawlLane, s
     status: string; progress: BrowserSweepProgress;
 }): boolean {
     if (lane === 'all' || !PUBLIC_ATS_HTTP_FIRST_PLATFORMS.includes(platform as BrowserAtsPlatform)) return true;
-    const needsBrowser = !!sweep && sweep.status !== 'succeeded' && browserSweepNeedsBrowser(sweep.progress);
+    const needsBrowser = !!sweep && !browserListingCompleted(sweep.status) && browserSweepNeedsBrowser(sweep.progress);
     return lane === 'browser' ? needsBrowser : !needsBrowser;
 }
 
 /** Shares the same decision with selection. Board/task claims recheck it before any crawl mutation. */
 export function publicCrawlLaneSql(lane: PublicCrawlLane): Prisma.Sql {
     if (lane === 'all') return Prisma.sql`TRUE`;
-    const needsBrowser = Prisma.sql`(s.status IS NOT NULL AND s.status <> 'succeeded' AND (
+    const needsBrowser = Prisma.sql`(s.status IS NOT NULL AND s.status NOT IN ('succeeded','listed') AND (
         s.cursor->>'browserRequired' IS NOT NULL OR s.cursor->>'transport' = 'browser-v1'
         OR (s.cursor->>'transport' IS NULL AND (
             COALESCE(s.cursor->>'page', '1') <> '1' OR s.cursor->>'loaded' = 'true'

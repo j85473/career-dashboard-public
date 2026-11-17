@@ -26,7 +26,12 @@ export const setLogger = (fn: ((msg: string) => void) | null) => { logger = fn; 
 let shouldCancel = false;
 export const cancelDiscovery = () => { shouldCancel = true; };
 
-const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+const delay = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) { reject(signal.reason); return; }
+  const timer = setTimeout(() => { signal?.removeEventListener('abort', aborted); resolve(); }, ms);
+  const aborted = () => { clearTimeout(timer); signal?.removeEventListener('abort', aborted); reject(signal?.reason); };
+  signal?.addEventListener('abort', aborted, { once: true });
+});
 
 const originalLog = console.log;
 console.log = (...args: any[]) => {
@@ -359,10 +364,10 @@ async function saveProgress(platform: string, pattern: string, state: ProgressSt
   });
 }
 
-export async function getIndices(): Promise<string[]> {
+export async function getIndices(signal?: AbortSignal): Promise<string[]> {
   const res = await fetch('https://index.commoncrawl.org/collinfo.json', {
     headers: COMMON_CRAWL_HEADERS,
-    signal: AbortSignal.timeout(60000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000),
   });
   if (!res.ok) throw new Error(`Unable to read the Common Crawl index catalog: HTTP ${res.status}`);
   const data = await res.json();
@@ -384,14 +389,16 @@ export type CrawlPage =
   | { ok: true; records: any[] }
   | { ok: false; reason: string };
 
-export async function fetchCommonCrawl(indexId: string, pattern: string, page: number, retries = 3): Promise<CrawlPage> {
+export async function fetchCommonCrawl(indexId: string, pattern: string, page: number, retries = 3, signal?: AbortSignal): Promise<CrawlPage> {
   const url = `https://index.commoncrawl.org/${indexId}?url=${encodeURIComponent(pattern)}&output=json&page=${page}`;
   console.log(`[CommonCrawl] Fetching page ${page} from ${indexId} for ${pattern}...`);
 
   for (let attempt = 1; attempt <= retries; attempt++) {
+    signal?.throwIfAborted();
     try {
       // Broad Common Crawl queries take a long time, so use a 60s timeout.
-      const response = await fetch(url, { headers: COMMON_CRAWL_HEADERS, signal: AbortSignal.timeout(60000) });
+      const response = await fetch(url, { headers: COMMON_CRAWL_HEADERS,
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000) });
       if (!response.ok) {
         // 404/400 is the index server's way of saying the page is past the end
         // of the result set. Everything else is the server having a bad time.
@@ -409,6 +416,7 @@ export async function fetchCommonCrawl(indexId: string, pattern: string, page: n
       }
       return { ok: true, records };
     } catch (error: any) {
+      signal?.throwIfAborted();
       const reason = error.message || String(error);
       console.error(`[CommonCrawl] Error fetching page ${page} (Attempt ${attempt}/${retries}):`, reason);
 
@@ -418,7 +426,7 @@ export async function fetchCommonCrawl(indexId: string, pattern: string, page: n
       }
       // Wait before retrying. The index server sheds load aggressively, so back
       // off in tens of seconds rather than single-digit ones.
-      await delay(10000 * attempt);
+      await delay(10000 * attempt, signal);
     }
   }
   return { ok: false, reason: 'retries exhausted' };
@@ -431,7 +439,10 @@ export async function fetchCommonCrawl(indexId: string, pattern: string, page: n
  */
 const TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 524]);
 
-export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: string, maximumBytes = 5 * 1024 * 1024): Promise<any> {
+export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: string, maximumBytes = 5 * 1024 * 1024,
+  transport?: (url: string, init?: RequestInit) => Promise<Response>): Promise<any> {
+  const sendRequest = transport || ((url: string, init?: RequestInit) =>
+    isPublicAtsPlatform(platformKey) || platformKey === 'eightfold' ? safeExternalFetch(url, init) : fetch(url, init));
   const platform = PLATFORMS[platformKey];
   if (isBrowserAtsPlatform(platformKey)) return browserAtsBoardFromUrl(platformKey, slug) === slug
     ? { success: false, browserPending: true, reason: 'Awaiting dedicated public-board collection' }
@@ -442,16 +453,16 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
       let config;
       if (publicAtsNeedsConfig(platformKey, slug)) {
         const boardUrl = publicAtsBoardUrl(platformKey, slug);
-        const page = await safeExternalFetch(boardUrl, { signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'Mozilla/5.0' } });
+        const page = await sendRequest(boardUrl, { signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'Mozilla/5.0' } });
         if (!page.ok) return { success: false, transient: true, reason: `Career page HTTP ${page.status}` };
         const pageHtml = isFirstCollectionPlatform(platformKey) ? await readBoundedAtsBody(page, maximumBytes) : await page.text();
         config = parsePublicAtsConfig(platformKey, slug, pageHtml, page.url);
         if (platformKey === 'ukg' && !config.company) config.company = await resolveUkgBoardEmployer(pageHtml, boardUrl,
-          url => safeExternalFetch(url, { signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'Mozilla/5.0' } }));
+          url => sendRequest(url, { signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'Mozilla/5.0' } }));
       }
       const request = buildPublicAtsBoardRequest(platformKey, slug, 0, config);
       if (platformKey === 'jobscore' && !await reserveJobScoreFeedRequest(prisma, config?.canonicalSlug || slug)) return { success: false, transient: true, reason: 'JobScore hourly feed interval' };
-      const response = await safeExternalFetch(request.url, { ...request.init, signal: AbortSignal.timeout(15000) });
+      const response = await sendRequest(request.url, { ...request.init, signal: AbortSignal.timeout(15000) });
       if (!response.ok) return { success: false, transient: true, reason: `Feed HTTP ${response.status}` };
       if (['cornerstone', 'hireology', 'polymer', ...ADDITIONAL_PUBLIC_ATS].includes(platformKey) && response.url
         && new URL(response.url).href !== new URL(request.url).href) return { success: false, transient: true, reason: 'Career feed redirected away from its verified endpoint' };
@@ -465,7 +476,7 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
         if ((feed.total || 0) > 250) return { success: true, jobsFound: feed.total };
         const { completeExpandedListing } = await import('../lib/expandedPublicAts');
         feed = await completeExpandedListing(platformKey, slug, feed, async (url, init) => {
-          const detail = await safeExternalFetch(url, { ...init, signal: AbortSignal.timeout(15000) });
+          const detail = await sendRequest(url, { ...init, signal: AbortSignal.timeout(15000) });
           if (!detail.ok) throw Error('Public ATS verification follow-up failed');
           return { url: detail.url, body: await readBoundedAtsBody(detail, maximumBytes) };
         });
@@ -488,10 +499,10 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
   if (platformKey === 'eightfold') {
     try {
       const identity = eightfoldBoardIdentity(slug);
-      const page = await safeExternalFetch(eightfoldCareersUrl(slug), { signal: AbortSignal.timeout(15000) });
+      const page = await sendRequest(eightfoldCareersUrl(slug), { signal: AbortSignal.timeout(15000) });
       if (!page.ok) return { success: false, transient: true, reason: `Career page HTTP ${page.status}` };
       const config = parseEightfoldConfig(await page.text(), identity.domain);
-      const response = await safeExternalFetch(eightfoldSearchUrl(slug, 0, config.domain), { signal: AbortSignal.timeout(15000) });
+      const response = await sendRequest(eightfoldSearchUrl(slug, 0, config.domain), { signal: AbortSignal.timeout(15000) });
       if (!response.ok) return { success: false, transient: true, reason: `Search HTTP ${response.status}` };
       const feed = parseEightfoldListing(await response.json());
       return { success: true, jobsFound: feed.count };
@@ -512,7 +523,7 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
       const [company, tenant] = slug.split("::");
       const companyWithoutWd = company.split('.')[0];
       const apiUrl = `https://${company}.myworkdayjobs.com/wday/cxs/${companyWithoutWd}/${tenant}/jobs`;
-      response = await fetch(apiUrl, {
+      response = await sendRequest(apiUrl, {
         method: "POST",
         headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify({ appliedFacets: {}, limit: 20, offset: 0, searchText: "" }),
@@ -520,7 +531,7 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
       });
     } else if (platformKey === 'workable') {
       const apiUrl = platform.test_api.replace("{slug}", slug);
-      response = await fetch(apiUrl, {
+      response = await sendRequest(apiUrl, {
         method: "POST",
         headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
         body: JSON.stringify({ query: "", location: [], department: [], worktype: [], remote: [] }),
@@ -528,7 +539,7 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
       });
     } else {
       const apiUrl = platform.test_api.replace("{slug}", slug);
-      response = await fetch(apiUrl, { headers: DEFAULT_HEADERS, signal: AbortSignal.timeout(10000) });
+      response = await sendRequest(apiUrl, { headers: DEFAULT_HEADERS, signal: AbortSignal.timeout(10000) });
     }
 
     if (!response.ok) {

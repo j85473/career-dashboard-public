@@ -593,10 +593,11 @@ async function stageLegacyConversion(
   await prisma.$transaction(async (transaction) => {
     const existingPage = await transaction.atsIngestionPage.findUnique({
       where: {
-        batchId_generation_requestedOffset: {
+        batchId_generation_requestedOffset_responseAttempt: {
           batchId: claim.batchId,
           generation,
           requestedOffset: 0,
+          responseAttempt: 0,
         },
       },
     });
@@ -1075,6 +1076,6 @@ export async function assertLegacyAtsConversionAuthority(): Promise<void> {
     || (gate.activatedLedgerVersion || 0) < ATS_LEDGER_VERSION
     || gate.minimumWriterVersion < ATS_ACQUISITION_WRITER_VERSION
     || gate.compatibilityWriterVersion < ATS_ACQUISITION_WRITER_VERSION) {
-    throw new Error('Legacy ATS conversion requires the active writer-3/ledger-2 authority gate.');
+    throw new Error(`Legacy ATS conversion requires the active writer-${ATS_ACQUISITION_WRITER_VERSION}/ledger-2 authority gate.`);
   }
 }

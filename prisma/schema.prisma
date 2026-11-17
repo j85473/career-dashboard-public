@@ -293,6 +293,7 @@ model AtsCompany {
   ingestionBatches   AtsIngestionBatch[]
   endpointSweeps     AtsEndpointSweepReceipt[]
   dailyContacts      AtsEndpointDailyContactReceipt[]
+  browserDetailRetries AtsBrowserDetailRetry[]
 
   employerMappings EmployerAtsBoard[]
 
@@ -539,6 +540,7 @@ model AtsIngestionPage {
   batchId                   String
   generation                Int
   requestedOffset           Int
+  responseAttempt           Int                     @default(0)
   requestedLimit            Int
   providerOffset            Int?
   providerTotal             Int?
@@ -559,7 +561,7 @@ model AtsIngestionPage {
   batch                     AtsIngestionBatch       @relation(fields: [batchId], references: [id], onDelete: Restrict)
   observations              AtsListingObservation[]
 
-  @@unique([batchId, generation, requestedOffset])
+  @@unique([batchId, generation, requestedOffset, responseAttempt], map: "AtsIngestionPage_response_attempt_key")
   @@index([batchId, generation, requestedOffset])
   @@index([partitionDay, createdAt])
 }
@@ -1766,4 +1768,45 @@ model AtsBrowserSweep {
 
   @@id([slug, platform])
   @@index([platform, status])
+}
+
+/// Exact failed posting evidence survives listing completion and later refreshes.
+model AtsBrowserDetailRetry {
+  slug String
+  platform String
+  postingId String
+  posting Json
+  status String @default("pending")
+  attemptCount Int @default(1)
+  nextRetryAt DateTime
+  lastError String
+  firstFailedAt DateTime @default(now())
+  lastAttemptedAt DateTime?
+  resolvedAt DateTime?
+  updatedAt DateTime @updatedAt
+  board AtsCompany @relation(fields: [slug, platform], references: [slug, platform], onDelete: Restrict)
+
+  @@id([slug, platform, postingId])
+  @@index([platform, status, nextRetryAt])
+  @@index([slug, platform, status])
+}
+
+/// Recovery ownership is separate from immutable historical discovery outcomes.
+model AtsDiscoveryValidationRecovery {
+  platform String
+  normalizedSlug String
+  slug String
+  sourceRunId String
+  state String @default("pending")
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  lastError String?
+  leaseToken String?
+  leaseExpiresAt DateTime?
+  resolvedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([platform, normalizedSlug])
+  @@index([state, nextAttemptAt])
 }

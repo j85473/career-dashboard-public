@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { NON_API_ATS_PLATFORMS } from '../../src/lib/browserAtsBoards';
-import { legacyAtsWorkerShouldRun } from '../../src/lib/atsAcquisitionCompatibility';
+import { ATS_ACQUISITION_WRITER_VERSION, legacyAtsWorkerShouldRun } from '../../src/lib/atsAcquisitionCompatibility';
 import { planLegacyAtsRetirement, type LegacyAtsRetirementSnapshot } from '../../src/lib/atsLegacyRetirement';
 
 const releaseId = 'a'.repeat(40);
 const fixture = (): LegacyAtsRetirementSnapshot => ({
-  gate: { minimumWriterVersion: 3, compatibilityWriterVersion: 3, activatedLedgerVersion: 2,
+  gate: { minimumWriterVersion: ATS_ACQUISITION_WRITER_VERSION, compatibilityWriterVersion: ATS_ACQUISITION_WRITER_VERSION, activatedLedgerVersion: 2,
     v2AuthorityActivatedAt: new Date('2026-09-01'), legacyAcquisitionRetiredAt: null, legacyAcquisitionRetirementReleaseId: null },
   unfinished: { unfinishedBatches: 0, runningAttempts: 0, convertingBatches: 0, convertingBoards: 0 },
   workers: { matchingV2: 8, otherRelease: 0 },

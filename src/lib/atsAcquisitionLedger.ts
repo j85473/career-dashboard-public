@@ -381,14 +381,14 @@ export async function admitAtsV2Board(input: {
         },
       });
       if (!gate) {
-        throw new AtsLedgerAuthorityError('ATS v2 board admission requires the durable writer-3 authority gate.');
+        throw new AtsLedgerAuthorityError(`ATS v2 board admission requires the durable writer-${ATS_ACQUISITION_WRITER_VERSION} authority gate.`);
       }
       if (gate.admissionState !== 'open') return null;
       if (!gate.v2AuthorityActivatedAt
         || (gate.activatedLedgerVersion || 0) < ATS_LEDGER_VERSION
         || gate.minimumWriterVersion < ATS_ACQUISITION_WRITER_VERSION
         || gate.compatibilityWriterVersion < ATS_ACQUISITION_WRITER_VERSION) {
-        throw new AtsLedgerAuthorityError('ATS v2 board admission requires the durable writer-3 authority gate.');
+        throw new AtsLedgerAuthorityError(`ATS v2 board admission requires the durable writer-${ATS_ACQUISITION_WRITER_VERSION} authority gate.`);
       }
       const active = await transaction.atsIngestionBatch.findFirst({
         where: {
@@ -945,6 +945,20 @@ export function isRepeatedAtsV2ListingEnd(input: {
     && input.repeatedIdentitySet;
 }
 
+/** A zero-row response cannot advance a cursor that explicitly has more work.
+ * Keep that response immutable, but permit a later fenced attempt at the same
+ * offset. Ordinary completed empty pages and every nonempty page stay final. */
+export function isAtsV2RetryableEmptyPage(platform: string, page: {
+  responseItemCount: number; requestedOffset: number; providerTotal: number | null;
+  metadata: unknown; materializationCompleteAt: Date | null;
+}): boolean {
+  if (platform === 'oracle' || page.responseItemCount !== 0 || !page.materializationCompleteAt) return false;
+  const hasMore = page.metadata && typeof page.metadata === 'object'
+    ? (page.metadata as Record<string, unknown>).listingHasMore : undefined;
+  return typeof hasMore === 'boolean' ? hasMore
+    : page.providerTotal !== null && page.providerTotal > page.requestedOffset;
+}
+
 async function earlierMatchingPage(
   transaction: AtsLedgerTransaction,
   batchId: string,
@@ -1012,24 +1026,30 @@ export async function commitAtsV2ListingPage(input: AtsLedgerPageInput): Promise
       hashes.identityMultisetHash,
     );
     const listingComplete = input.listingComplete || repeatedPage;
-    const existing = await transaction.atsIngestionPage.findUnique({
+    const existing = await transaction.atsIngestionPage.findFirst({
       where: {
-        batchId_generation_requestedOffset: {
-          batchId: input.claim.batchId,
-          generation: input.claim.listingGeneration,
-          requestedOffset: input.requestedOffset,
-        },
+        batchId: input.claim.batchId,
+        generation: input.claim.listingGeneration,
+        requestedOffset: input.requestedOffset,
       },
+      orderBy: { responseAttempt: 'desc' },
     });
-    if (existing) {
-      if (existing.responseHash !== hashes.responseHash
-        || existing.identityMultisetHash !== hashes.identityMultisetHash) {
+    let responseAttempt = 0;
+    if (existing && (existing.responseHash !== hashes.responseHash
+      || existing.identityMultisetHash !== hashes.identityMultisetHash)) {
+      if (batch.listingOffset !== input.requestedOffset
+        || !isAtsV2RetryableEmptyPage(input.claim.platform, existing)) {
         throw new AtsLedgerDivergentPageError(
           input.claim.batchId,
           input.claim.listingGeneration,
           input.requestedOffset,
         );
       }
+      // Append a response attempt, never rewrite or renumber the saved page.
+      // The cursor fence below and the unique attempt key serialize recovery;
+      // a restart selects the newest attempt while retaining the original.
+      responseAttempt = existing.responseAttempt + 1;
+    } else if (existing) {
       await transaction.atsAcquisitionWorkReceipt.update({
         where: { id: input.claim.workReceiptId },
         data: { adoptedCheckpoint: true, heartbeatAt: now },
@@ -1056,6 +1076,7 @@ export async function commitAtsV2ListingPage(input: AtsLedgerPageInput): Promise
         batchId: input.claim.batchId,
         generation: input.claim.listingGeneration,
         requestedOffset: input.requestedOffset,
+        responseAttempt,
         requestedLimit: input.requestedLimit,
         providerOffset: input.providerOffset ?? null,
         providerTotal: input.providerTotal ?? null,
@@ -1097,10 +1118,11 @@ export async function commitAtsV2ListingPage(input: AtsLedgerPageInput): Promise
       if (batch.latestObservedTotal && batch.latestObservedTotal > 0) {
         schedulingTotal = batch.latestObservedTotal;
       } else {
-        const firstPage = await transaction.atsIngestionPage.findUnique({
-          where: { batchId_generation_requestedOffset: {
+        const firstPage = await transaction.atsIngestionPage.findFirst({
+          where: {
             batchId: input.claim.batchId, generation: input.claim.listingGeneration, requestedOffset: 0,
-          } },
+          },
+          orderBy: { responseAttempt: 'desc' },
           select: { providerTotal: true },
         });
         schedulingTotal = firstPage?.providerTotal && firstPage.providerTotal > 0 ? firstPage.providerTotal : undefined;
@@ -1168,7 +1190,7 @@ export async function completeAtsV2ListingAtSavedEnd(claim: AtsLedgerClaim): Pro
     if (batch.acquisitionPhase !== 'listing') return false;
     const latest = await transaction.atsIngestionPage.findFirst({
       where: { batchId: claim.batchId, generation: claim.listingGeneration },
-      orderBy: { requestedOffset: 'desc' },
+      orderBy: [{ requestedOffset: 'desc' }, { responseAttempt: 'desc' }],
       select: {
         requestedOffset: true, responseItemCount: true, requestedLimit: true,
         providerTotal: true, identityMultisetHash: true, materializationCompleteAt: true,
@@ -1232,12 +1254,12 @@ export async function readAtsV2ListingCheckpoint(claim: AtsLedgerClaim) {
   const [pendingPage, latestPage] = await Promise.all([
     prisma.atsIngestionPage.findFirst({
       where: { ...where, materializationCompleteAt: null },
-      orderBy: { requestedOffset: 'asc' },
+      orderBy: [{ requestedOffset: 'asc' }, { responseAttempt: 'asc' }],
       select,
     }),
     prisma.atsIngestionPage.findFirst({
       where,
-      orderBy: { requestedOffset: 'desc' },
+      orderBy: [{ requestedOffset: 'desc' }, { responseAttempt: 'desc' }],
       select,
     }),
   ]);
@@ -2215,7 +2237,7 @@ export async function claimNextAtsV2Segment(
   const canonicalOrdinals = remainingItems.map((item) => item.canonicalOrdinal);
   const pages = await prisma.atsIngestionPage.findMany({
     where: { batchId: segment.batchId, generation: segment.ledgerGeneration },
-    orderBy: { requestedOffset: 'asc' },
+    orderBy: [{ requestedOffset: 'asc' }, { responseAttempt: 'asc' }],
     select: { metadata: true },
   });
   const metadata = pages.reduce<JsonObject>(

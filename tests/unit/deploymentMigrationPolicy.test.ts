@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -150,4 +150,24 @@ test('expand-only policy does not let other maintenance in through ANALYZE', () 
       assert.match(result.stderr, /Disallowed statements/, sql);
     });
   }
+});
+
+
+test('page response compatibility upgrade requires the replacement key and writer fence atomically', () => {
+  const sql = readFileSync('prisma/migrations/20261117050200_ats_page_response_attempt/migration.sql', 'utf8');
+  withMigration(sql, directory => {
+    const result = spawnSync(process.execPath, [checker, directory], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  });
+  for (const unsafe of [
+    'DROP INDEX "AtsIngestionPage_batchId_generation_requestedOffset_key";',
+    sql.replace('BEGIN;', ''),
+    sql.replace(/CREATE UNIQUE INDEX "AtsIngestionPage_response_attempt_key"[\s\S]*?;/, ''),
+    sql.replace(/UPDATE "AtsAcquisitionRuntimeGate"[\s\S]*?;/, ''),
+    sql.replaceAll('GREATEST("minimumWriterVersion", 4)', 'GREATEST("minimumWriterVersion", 5)'),
+    sql.replace('WHERE id = \'global\' AND "v2AuthorityActivatedAt" IS NOT NULL', 'WHERE id = \'global\''),
+  ]) withMigration(unsafe, directory => {
+    const result = spawnSync(process.execPath, [checker, directory], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0, 'unsafe compatibility change was accepted');
+  });
 });

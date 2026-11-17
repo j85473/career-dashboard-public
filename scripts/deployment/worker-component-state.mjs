@@ -35,7 +35,7 @@ export function componentEnvironment(component, revision) {
 export function captureComponent(component, paths) {
   const unitFiles = {};
   for (const name of WORKER_COMPONENTS[component].units) {
-    for (const suffix of ['service', 'timer']) unitFiles[`${name}.${suffix}`] = readOptional(path.join(paths.units, `${name}.${suffix}`));
+    for (const suffix of ['service', 'timer', 'path']) unitFiles[`${name}.${suffix}`] = readOptional(path.join(paths.units, `${name}.${suffix}`));
   }
   return { alias: linkTarget(path.join(paths.pins, component)),
     rollback: linkTarget(path.join(paths.pins, `${component}.rollback`)),
@@ -50,7 +50,7 @@ function restoreFile(filename, contents, mode = 0o600) {
   if (contents === null) fs.rmSync(filename, { force: true }); else atomicWrite(filename, contents, mode);
 }
 export function restoreComponent(component, snapshot, paths, own = () => {}) {
-  const allowed = WORKER_COMPONENTS[component].units.flatMap((unit) => [`${unit}.service`, `${unit}.timer`]);
+  const allowed = WORKER_COMPONENTS[component].units.flatMap((unit) => [`${unit}.service`, `${unit}.timer`, `${unit}.path`]);
   if (Object.keys(snapshot.unitFiles).some((name) => !allowed.includes(name))) throw new Error('Unknown unit in recovery snapshot.');
   for (const target of [snapshot.alias, snapshot.rollback]) {
     const resolved = target == null ? null : path.resolve(paths.pins, target);
@@ -81,7 +81,7 @@ export function installComponent(component, directory, environmentHash, paths, o
   const env = path.join(paths.config, 'worker-releases', `${component}.env`);
   atomicWrite(env, componentEnvironment(component, manifest.release), 0o640); own(env);
   for (const name of WORKER_COMPONENTS[component].units) {
-    for (const suffix of ['service', 'timer']) {
+    for (const suffix of ['service', 'timer', 'path']) {
       const filename = `${name}.${suffix}`;
       const source = readOptional(path.join(directory, 'scripts/deployment/m70', filename));
       if (source !== null) atomicWrite(path.join(paths.units, filename), suffix === 'service' ? renderWorkerUnit(source, component, paths) : source, 0o644);
@@ -119,7 +119,7 @@ export function planComponentActivation(directory, environmentHash, paths = depl
         || prior.workerGroups?.coordinationHash !== candidate.workerGroups.coordinationHash) return full('Coordination, schema, dependency or unclassified inputs changed.');
       if (readOptional(path.join(paths.config, 'worker-releases', `${name}.env`)) !== componentEnvironment(name, pin.release)) return full('Installed worker configuration differs from its pin.');
       for (const unit of component.units) {
-        for (const suffix of ['service', 'timer']) {
+        for (const suffix of ['service', 'timer', 'path']) {
           const filename = `${unit}.${suffix}`;
           const dropins = path.join(paths.units, `${filename}.d`);
           if (fs.existsSync(dropins) && fs.readdirSync(dropins).some((override) =>

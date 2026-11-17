@@ -162,8 +162,11 @@ export async function inheritLocalCrawlCoverage(client: PrismaClient, runId: str
 
 /** Finish one immutable plan before considering newly added URL patterns. */
 export async function scanLocalCrawl(client: PrismaClient, runId: string, indexId: string,
-  patterns: LocalCrawlPattern[], config: LocalCrawlConfig, afterBlock: () => Promise<unknown>): Promise<void> {
+  patterns: LocalCrawlPattern[], config: LocalCrawlConfig, afterBlock: () => Promise<unknown>, signal?: AbortSignal): Promise<void> {
+  const fetcher: typeof fetch = (input, init) => fetch(input, { ...init,
+    signal: signal ? AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]) : init?.signal });
   for (;;) {
+    signal?.throwIfAborted();
     const completed = await client.atsDiscoveryLocalScan.findMany({ where: { runId, indexId, status: 'complete' } });
     for (const saved of completed) await cleanupCommittedBlocks(config, saved);
     let scan = await client.atsDiscoveryLocalScan.findFirst({ where: { runId, indexId, status: 'running' }, orderBy: { createdAt: 'asc' } });
@@ -174,7 +177,7 @@ export async function scanLocalCrawl(client: PrismaClient, runId: string, indexI
       const missing = patterns.filter(p => !covered.has(JSON.stringify([p.platform, p.pattern])));
       if (!missing.length) return;
       await requireLocalCrawlSpace(config, 512 * 1024 ** 2);
-      const filename = await downloadLocalCrawlDirectory(config.workspace, indexId);
+      const filename = await downloadLocalCrawlDirectory(config.workspace, indexId, fetcher);
       const plan = await planLocalCrawl(filename, indexId, missing);
       const planHash = localCrawlPlanHash(plan);
       scan = await client.atsDiscoveryLocalScan.create({ data: {
@@ -184,7 +187,12 @@ export async function scanLocalCrawl(client: PrismaClient, runId: string, indexI
       await new Promise(resolve => setTimeout(resolve, config.delayMs));
     }
     await cleanupCommittedBlocks(config, scan);
-    const finished = await consumeLocalCrawlScan(client, scan, config, afterBlock);
+    const finished = await consumeLocalCrawlScan(client, scan, config, afterBlock, {
+      readBlock: (plan, ordinal, workspace) => readLocalCrawlBlock(plan, ordinal, workspace, fetcher),
+      saveBlock: saveLocalCrawlBlock, finish: finishLocalCrawlScan, remove: removeLocalCrawlFile,
+      space: async (configuration, bytes) => { signal?.throwIfAborted(); await requireLocalCrawlSpace(configuration, bytes); },
+      wait: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    });
     await cleanupCommittedBlocks(config, finished);
     console.log(`[Local CC] ${indexId}: receipts saved; temporary directory and compressed blocks removed.`);
   }

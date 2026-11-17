@@ -48,7 +48,9 @@ export class ComponentDeployment {
     const result = {};
     for (const name of WORKER_COMPONENTS[component].units) {
       result[`${name}.service`] = this.active(`${name}.service`);
-      if (fs.existsSync(path.join(this.paths.units, `${name}.timer`))) result[`${name}.timer`] = this.active(`${name}.timer`);
+      for (const suffix of ['timer', 'path']) {
+        if (fs.existsSync(path.join(this.paths.units, `${name}.${suffix}`))) result[`${name}.${suffix}`] = this.active(`${name}.${suffix}`);
+      }
     }
     return result;
   }
@@ -73,7 +75,7 @@ export class ComponentDeployment {
     const deadline = this.now() + this.timeout;
     const existing = readOptional(this.marker(component));
     if (existing !== null && JSON.parse(existing).token !== token) throw new Error('A different handoff owns this worker.');
-    for (const unit of Object.keys(activity)) if (unit.endsWith('.timer')) this.command('systemctl', ['stop', unit]);
+    for (const unit of Object.keys(activity)) if (/\.(timer|path)$/.test(unit)) this.command('systemctl', ['stop', unit]);
     let resumeMode = component === 'pipeline' ? preservedResumeMode : null, softDrain = definition.strategy !== 'turn';
     if (definition.strategy === 'pipeline' && this.active('career-dashboard-pipeline.service')) {
       const health = await this.pipelineHealth();
@@ -137,7 +139,7 @@ export class ComponentDeployment {
     }, `${component} starting on its selected release`, deadline);
   }
   restoreTimers(activity) {
-    for (const [unit, wasActive] of Object.entries(activity)) if (unit.endsWith('.timer') && wasActive) this.command('systemctl', ['start', unit]);
+    for (const [unit, wasActive] of Object.entries(activity)) if (/\.(timer|path)$/.test(unit) && wasActive) this.command('systemctl', ['start', unit]);
   }
   async resumePipeline(mode, token) {
     if (mode !== 'full') return;

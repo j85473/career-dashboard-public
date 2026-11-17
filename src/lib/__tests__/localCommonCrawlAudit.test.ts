@@ -5,6 +5,7 @@ import { consumeLocalCrawlScan, finishLocalCrawlScan, saveLocalCrawlBlock } from
 import { localCrawlConfig, localCrawlPlanHash, type LocalCrawlPlan } from '../localCommonCrawl';
 import { completeLocalAuditCheckpoints } from '../../../scripts/audit_ats_common_crawl';
 import { athenaDiscoveryConfig } from '../athenaCommonCrawl';
+import { createDiscoveryRecoveryCadence } from '../atsDiscoveryValidationRecovery';
 
 const indexId = 'CC-MAIN-2026-39-index';
 const pattern = 'job-boards.greenhouse.io/*';
@@ -143,6 +144,43 @@ test('low scratch space stops before downloading, saving, deleting or earning a 
   await assert.rejects(h.consume(), /preserve free space/);
   assert.deepEqual(h.read, []); assert.deepEqual(h.removed, []); assert.deepEqual(h.receipts(), []);
   assert.equal(h.scan().nextBlock, 0);
+});
+
+test('a long scanner services historical recovery while the external timer yields its shared lock', async () => {
+  const h = harness(21);
+  let now = 0, timerSkips = 0, historicalRemaining = 200;
+  const recoveredAt: number[] = [];
+  const service = createDiscoveryRecoveryCadence(async () => {
+    recoveredAt.push(now);
+    historicalRemaining -= 20; // Each owner turn invokes the same bounded pass as the timer.
+    return 20;
+  }, { now: () => now });
+  await service(); // Startup entitlement.
+  const readBlock = h.dependencies.readBlock;
+  const completed = await consumeLocalCrawlScan(h.client, h.scan(), config, async () => {
+    if (now % (5 * 60_000) === 0) timerSkips++; // Timer's flock refuses while scanner remains owner.
+    assert.equal(h.scan().nextBlock, now / 60_000, 'source block commits before a recovery turn');
+    await service();
+  }, { ...h.dependencies, readBlock: async (plan, ordinal) => {
+    now += 60_000;
+    return readBlock(plan, ordinal);
+  } });
+  assert.equal(timerSkips, 4);
+  assert.deepEqual(recoveredAt, [0, 300_000, 600_000, 900_000, 1_200_000]);
+  assert.equal(historicalRemaining, 100, 'historical work continues without ever acquiring the lock from a timer');
+  assert.equal(completed.status, 'complete');
+  assert.equal(h.receipts().length, 1);
+  assert.equal(h.total(), 2, 'periodic recovery does not replay or double-count source candidates');
+});
+
+test('failed periodic recovery retains the committed source block without earning false completion', async () => {
+  const h = harness(2);
+  const service = createDiscoveryRecoveryCadence(async () => { throw Error('recovery database unavailable'); });
+  await assert.rejects(consumeLocalCrawlScan(h.client, h.scan(), config, service, h.dependencies), /recovery database unavailable/);
+  assert.equal(h.scan().nextBlock, 1);
+  assert.equal(h.scan().status, 'running');
+  assert.equal(h.total(), 2);
+  assert.deepEqual(h.receipts(), []);
 });
 
 test('new provider discovery inherits exact finished coverage without resetting or overwriting current receipts', async () => {

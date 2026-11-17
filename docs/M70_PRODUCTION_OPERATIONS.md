@@ -24,6 +24,8 @@ Migration record from September 2, 2026; operating layout checked against the re
 | Repair watchdog | `career-dashboard-watchdog.timer` | Runs the existing repair checks every 15 minutes. Preserves the cap of three repairs per action per six hours and the ledger across releases. A critical finding remains a failed service result, not a successful health check. |
 | Database and file backups | `career-dashboard-backup.timer` | Runs daily at 03:15 America/Chicago and catches a missed run after startup. Copies completed backups to the dedicated SSD attached to the M70. |
 | Common Crawl board discovery | `career-dashboard-discovery.timer` | Looks for candidate ATS boards weekly. Discovery does not itself activate every candidate. |
+| Retained discovery validation | `career-dashboard-discovery-recovery.timer` | Every five minutes, runs a bounded recovery pass without downloading source indexes. Shares the discovery lock and honors operator pause, storage and provider holds. First installation inherits an active discovery timer; later releases preserve its running state. |
+| Manual durable discovery | `career-dashboard-discovery-manual.path` | Watches the fixed operator request file and starts the managed scanner under the same discovery lock. Enabled on first normal installation; subsequent releases preserve an intentionally stopped path. |
 | Stored and API canonical URL recovery | `career-dashboard-canonical-api.timer` | Ten minutes after each completed pass, retries up to 10 retained aggregator arrivals, checks up to 250 unresolved jobs against stored ATS postings, then checks up to 25 through supported employer APIs. Separate rotating cursors keep API misses from consuming the stored-match budget. Requires no browser license. Existing cards receive link-only repairs. |
 | Protected aggregator canonical URL recovery | `career-dashboard-canonical-resolver.timer` | Each hour, discovers official employer boards for eight unresolved active Himalayas employers and rechecks eight active Himalayas pages. Stable ID/slug boundaries keep the bounded sets rotating as new cards arrive or links are repaired. The licensed browser remains separate from stored and API matching. Existing cards receive link-only repairs; user-selected links are excluded. |
 | Gusto ATS crawling | `career-dashboard-gusto.timer` | Runs the licensed browser outside ATS API acquisition, one minute after each completed pass. Its task and progress appear in ATS Crawling alongside the other public-board collectors. |
@@ -277,6 +279,61 @@ restart before migration or release activation. The existing audit recovery
 check resumes unfinished work after the new release is healthy. Direct-file
 download errors include the source URL and byte range, and a failed response
 body cannot prevent its scratch file from closing.
+
+### Retained discovery and posting recovery (November 16, 2026)
+
+Historical unresolved discoveries now have a separate recovery owner. Each
+five-minute invocation catalogues up to 500 missing identities and processes up
+to twenty candidates within two minutes, without fetching Common Crawl indexes
+or issuing Athena queries. The original audit rows and completed source receipts
+remain unchanged. Retry dates, operator pauses, provider limits, storage holds
+and permanent board retirements still apply. Eight failed validation attempts
+become visible review work; malformed saved identities require review before a
+network request. The discovery panel reports this work across historical runs.
+While a long scan owns the discovery lock, its safe source checkpoints also
+service a bounded recovery pass at most once every five minutes. Timer lock
+contention therefore cannot strand recovery for the duration of the audit.
+
+The manual discovery control writes
+`/var/lib/career-dashboard/data/runtime/discovery-manual-request.json`.
+The path unit starts a fixed service command using the platform component's
+release and the same `discovery.lock` as scheduled discovery. Token-bound status,
+consumption and stop files prevent duplicate starts and stale stop requests.
+A rejected or expired startup is visible rather than reported as running.
+Provider configuration precedence is runtime, acquisition release, Athena,
+explicit discovery-source selection, then Common Crawl local settings.
+
+The recovery timer and manual path are stopped before their services drain.
+Coordinated activation and maintenance include both workers. A first normal
+installation enables the manual path and enables recovery only when scheduled
+discovery was active; later releases preserve stopped triggers. Interrupted
+manual work retains durable candidates and source checkpoints. Restore trigger
+ownership rather than replaying a consumed manual request.
+
+Browser posting failures now retain the exact failed link separately from the
+listing cursor. Old failures transfer only when their existing retry date is
+reached. Later pages and fresh listing refreshes may proceed while descriptions
+wait. Queue diagnostics show pending details, dates reached, future schedules,
+and inactive employers; a reached date alone does not override other holds.
+The sweep status `listed` means enumeration finished but details remain. Only
+`succeeded` means all retained details resolved, and only then does processing
+completion advance. Recovery and closure outcomes remain recorded.
+
+The page-response migration is an explicitly reviewed, atomic compatibility
+change, not an expand-only migration. It preserves all existing pages, introduces
+an attempt dimension, installs its immutable-evidence fence, and raises already
+activated acquisition gates to writer version 4 in one transaction. Every old
+acquisition writer must be stopped first. A prior application can still read jobs
+after rollback, but its version-3 acquisition process must refuse work against
+the upgraded ledger. Restore a compatible writer to resume collection; never
+lower the gate or restore an old database to make rollback appear healthy.
+
+Local validation uses dedicated PostgreSQL fixtures for actual migration,
+concurrent retries, stale-owner fencing, durable detail transfer, historical
+discovery recovery, and score/lifecycle preservation. These are targeted baseline
+fixtures; they do not claim the entire historical migration chain can bootstrap
+an empty database. The existing historical `PipelineState` baseline gap remains
+outside this repair and does not affect applying the new migrations to M70.
 
 ## Releases and persistent files
 

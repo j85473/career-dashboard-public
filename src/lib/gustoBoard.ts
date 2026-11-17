@@ -85,6 +85,9 @@ export function parseGustoBoardHtml(html: string, slug: string): GustoBoardListi
     postings.set(id, { id, title, location, url });
   });
   if (hasEmptyHeading && postings.size > 0) return null;
+    // The heading can render before the cards. Only the publisher's explicit
+    // empty state can finish an empty catalogue; keep waiting on loading shells.
+    if (!postings.size && !hasEmptyHeading) return null;
   return { company, postings: [...postings.values()] };
 }
 

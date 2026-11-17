@@ -1,11 +1,11 @@
 /** JSON-safe operator telemetry. Counts use distinct stages, never a combined
  * total of boards, candidates, segments and jobs. */
 export type AtsQueueHold = {
-  stage: 'Validation' | 'Validation due' | 'Size review' | 'First collection' | 'Acquisition due' | 'Acquisition' | 'Persistence' | 'Provider' | 'Common Crawl';
+  stage: 'Validation' | 'Validation due' | 'Size review' | 'First collection' | 'Acquisition due' | 'Acquisition' | 'Persistence' | 'Posting detail' | 'Provider' | 'Common Crawl';
   provider: string;
   reason: string;
   count: number;
-  unit: 'candidates' | 'boards' | 'batches' | 'segments' | 'providers' | 'checkpoints';
+  unit: 'candidates' | 'boards' | 'batches' | 'segments' | 'postings' | 'providers' | 'checkpoints';
   items: number;
   retryAt: string | null;
   lastRetryAt: string | null;
@@ -26,6 +26,7 @@ export type AtsQueueSnapshot = {
   persistenceDue: number;
   persistenceHeld: number;
   persistenceEvidenceHeld?: number;
+  browserDetails?: { pending: number; retryDateReached: number; scheduled: number; inactiveBoards: number };
   holds: AtsQueueHold[];
 };
 

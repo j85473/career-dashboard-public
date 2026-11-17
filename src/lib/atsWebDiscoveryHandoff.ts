@@ -23,6 +23,7 @@ export async function publishAtsWebDiscoveries(
       state.renew(now());
       let outcome = 'retry';
       let reason: string | null = null;
+      let retryAt: number | undefined;
       try {
         const parsed = knownAtsBoardFromUrl(candidate.matchedUrl);
         if (!parsed || parsed.platform !== candidate.platform || parsed.slug !== candidate.slug) {
@@ -48,7 +49,12 @@ export async function publishAtsWebDiscoveries(
           } else {
             const result = await validate(candidate.platform, candidate.slug);
             if (signal?.aborted) break;
-            if (result.transient) {
+            if (result.reason === 'No jobs listed') {
+              // An empty catalogue is not evidence that this employer will
+              // never hire. Keep its original discovery and retry it weekly.
+              reason = result.reason;
+              retryAt = now() + 7 * 86_400_000;
+            } else if (result.transient) {
               reason = result.reason || 'Board validation temporarily unavailable';
             } else if (result.browserPending || result.success && Number.isSafeInteger(result.jobsFound) && result.jobsFound! >= 0) {
               const registered = await client.$transaction(tx => recordDiscoveredAtsBoard(tx, candidate,
@@ -66,7 +72,7 @@ export async function publishAtsWebDiscoveries(
       } catch {
         reason = 'Handoff failed; discovery retained for retry';
       }
-      state.finishCandidate(candidate, outcome, now(), reason);
+      state.finishCandidate(candidate, outcome, now(), reason, retryAt);
       outcomes[outcome] = (outcomes[outcome] || 0) + 1;
     }
   } finally {

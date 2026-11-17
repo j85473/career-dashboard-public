@@ -27,6 +27,12 @@ const allowedStatements = [
   // the narrower direct-batch index and parent-run index have been created.
   // No table data or accepted score authority is changed by the replacement.
   /^DROP\s+INDEX\s+"ScoringBatch_one_nonterminal_per_stage"$/i,
+  // Reviewed, coordinated writer-4 upgrade. The replacement retains every
+  // immutable page and adds an append dimension for failed empty responses.
+  // The per-migration validation below requires the replacement key and the
+  // old-writer fence in the same transaction before this exact key is removed.
+  /^DROP\s+INDEX\s+"AtsIngestionPage_batchId_generation_requestedOffset_key"$/i,
+  /^UPDATE\s+"AtsAcquisitionRuntimeGate"\s+SET\s+"minimumWriterVersion"\s*=\s*GREATEST\("minimumWriterVersion",\s*4\),\s*"compatibilityWriterVersion"\s*=\s*GREATEST\("compatibilityWriterVersion",\s*4\)\s+WHERE\s+id\s*=\s*'global'\s+AND\s+"v2AuthorityActivatedAt"\s+IS\s+NOT\s+NULL$/i,
   // Two indexes on "Job" that no query plan can use. Pinned by exact name so
   // this exception cannot authorize dropping any other index, column, or
   // table. Dropping an unusable index reads no row and changes no row, so no
@@ -148,6 +154,17 @@ for (const filename of migrationFiles) {
   const sql = fs.readFileSync(filename, 'utf8')
     .replace(/--[^\n]*/g, '')
     .trim();
+
+  if (/DROP\s+INDEX\s+"AtsIngestionPage_batchId_generation_requestedOffset_key"/i.test(sql)) {
+    const statements = splitSqlStatements(sql).map(value => value.replace(/\s+/g, ' ').trim());
+    const replacement = statements.findIndex(value => /^CREATE UNIQUE INDEX "AtsIngestionPage_response_attempt_key" ON "AtsIngestionPage" \("batchId", "generation", "requestedOffset", "responseAttempt"\)$/i.test(value));
+    const removal = statements.findIndex(value => /^DROP INDEX "AtsIngestionPage_batchId_generation_requestedOffset_key"$/i.test(value));
+    const fence = statements.findIndex(value => /^UPDATE "AtsAcquisitionRuntimeGate" SET "minimumWriterVersion" = GREATEST\("minimumWriterVersion", 4\), "compatibilityWriterVersion" = GREATEST\("compatibilityWriterVersion", 4\) WHERE id = 'global' AND "v2AuthorityActivatedAt" IS NOT NULL$/i.test(value));
+    if (statements[0] !== 'BEGIN' || statements.at(-1) !== 'COMMIT'
+      || replacement < 0 || fence < 0 || replacement >= removal || fence >= removal) {
+      violations.push(`${path.relative(process.cwd(), filename)}: page response upgrade requires an atomic replacement key and activated-writer fence before removal`);
+    }
+  }
 
   for (const rawStatement of splitSqlStatements(sql)) {
     const statement = rawStatement.replace(/\s+/g, ' ').trim();

@@ -36,6 +36,8 @@ class Fake(m.Coordinator):
         self.drain_fails = False
         self.reboot_fails = False
         self.preflight_fails = False
+        self.rejected_starts = set()
+        self.completed_one_shots = set()
 
     def now(self):
         return self.clock
@@ -72,7 +74,10 @@ class Fake(m.Coordinator):
             # Match the installed condition: background work stays held until health passes.
             if self.hold.exists() and set(units) & set(m.BACKGROUND):
                 raise AssertionError('Started background work before lifting its maintenance hold')
+            if set(units) & self.rejected_starts:
+                raise m.Deferred('One-shot authorization has already been consumed.')
             self.units.update(units)
+            self.units.difference_update(self.completed_one_shots)
 
     def preflight(self):
         self.events.append(('preflight',))
@@ -340,6 +345,66 @@ class CoordinationTests(unittest.TestCase):
         self.fake.required = False
         self.fake.recover()
         self.assertNotIn(timer, self.fake.units)
+
+    def test_discovery_recovery_restores_triggers_without_replaying_consumed_one_shots(self):
+        triggers = {'career-dashboard-discovery-manual.path',
+                    'career-dashboard-discovery-recovery.timer'}
+        services = set(m.NON_RESTARTABLE_INVOCATIONS)
+        self.fake.loaded_units.update(triggers | services)
+        self.fake.units.update(triggers | services)
+        self.fake.rejected_starts.add('career-dashboard-discovery-manual.service')
+        self.fake.completed_one_shots.add('career-dashboard-discovery-recovery.service')
+        expected = self.fake.units - services
+        self.fake.run()
+        # An old pending snapshot containing the services must also be recoverable.
+        self.assertTrue(services.issubset(json.loads(self.fake.pending.read_text())['background']))
+        self.assertFalse((triggers | services) & self.fake.units)
+        self.fake.events.clear()
+        self.fake.boot = 'after'
+        self.fake.required = False
+        self.fake.recover()
+        self.assertEqual(self.fake.units, expected)
+        self.assertFalse(self.fake.pending.exists())
+        health = next(index for index, event in enumerate(self.fake.events) if event[0] == 'health')
+        restored = next(index for index, event in enumerate(self.fake.events)
+                        if event[0] == 'start' and triggers.issubset(event[1:]))
+        self.assertLess(health, restored)
+        self.assertFalse(any(event[0] == 'start' and services.intersection(event[1:])
+                             for event in self.fake.events))
+        self.fake.events.clear()
+        self.fake.recover()
+        self.assertEqual(self.fake.events, [])
+
+    def test_failed_maintenance_keeps_stopped_discovery_triggers_stopped(self):
+        triggers = {'career-dashboard-discovery-manual.path',
+                    'career-dashboard-discovery-recovery.timer'}
+        services = set(m.NON_RESTARTABLE_INVOCATIONS)
+        self.fake.loaded_units.update(triggers | services)
+        # The triggering units can already be stopped while their invocations drain.
+        self.fake.units.update(services)
+        self.fake.rejected_starts.add('career-dashboard-discovery-manual.service')
+        self.fake.completed_one_shots.add('career-dashboard-discovery-recovery.service')
+        self.fake.reboot_fails = True
+        with self.assertRaisesRegex(m.Deferred, 'Reboot command rejected'):
+            self.fake.run()
+        self.assertFalse((triggers | services) & self.fake.units)
+        self.assertFalse(self.fake.pending.exists())
+        self.assertFalse(self.fake.hold.exists())
+        self.assertFalse(any(event[0] == 'start' and (triggers | services).intersection(event[1:])
+                             for event in self.fake.events))
+
+    def test_manual_invocation_started_after_snapshot_blocks_the_final_drain(self):
+        real = m.Coordinator(self.fake.state)
+        manual = 'career-dashboard-discovery-manual.service'
+        self.assertIn(manual, m.INVOCATIONS)
+        real.loaded = lambda unit: unit == manual
+        real.active = lambda unit: unit == manual
+        commands = []
+        real.command = lambda args, **kwargs: commands.append(args)
+        with patch.object(m.time, 'monotonic', side_effect=[0, 1000]), patch.object(m.time, 'sleep'):
+            with self.assertRaises(m.Deferred):
+                real.wait_idle(300)
+        self.assertEqual(commands, [])
 
     def test_web_discovery_stops_before_drain_and_preserves_opt_in_state(self):
         timer = 'career-dashboard-web-discovery.timer'

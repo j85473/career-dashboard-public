@@ -28,6 +28,15 @@ export function AtsQueuePanel({ snapshot, unavailable = false }: {
         <div><dt>Awaiting handoff</dt><dd>{count(snapshot.awaitingHandoff)}</dd></div>
         <div><dt>Unfinished collections</dt><dd>{count(snapshot.collecting)}</dd></div>
       </dl>
+      {snapshot.browserDetails && <>
+        <h3>Saved posting retries · {count(snapshot.browserDetails.pending)}</h3>
+        <dl className="ats-queue-metrics">
+          <div><dt>Retry date reached</dt><dd>{count(snapshot.browserDetails.retryDateReached)}</dd></div>
+          <div><dt>Scheduled for retry</dt><dd>{count(snapshot.browserDetails.scheduled)}</dd></div>
+          <div><dt>Retained on inactive boards</dt><dd>{count(snapshot.browserDetails.inactiveBoards)}</dd></div>
+        </dl>
+        <p className="ats-queue-help">Failed posting details stay saved while other pages and later board refreshes continue. Reached retry dates still wait for provider access, board policy and collection capacity. Inactive boards are not reopened.</p>
+      </>}
       {snapshot.retained && <>
         <h3>Downloaded records retained · {count(snapshot.retained.downloads.total)}</h3>
         <dl className="ats-queue-metrics">
@@ -84,7 +93,7 @@ export function AtsQueuePanel({ snapshot, unavailable = false }: {
         <p className="ats-queue-help">Each row counts its own stage; do not add these counts together. Validation due and Acquisition due retain failures after their retry time passes. Times are Central and show earliest eligibility, not a promised attempt. Due work also waits for worker and intake capacity and admission policy. Acquisition handoff is checked every five minutes.</p>
         <label className="ats-queue-filter">Show stage
           <select value={stage} onChange={event => setStage(event.target.value)}>
-            {['All stages', 'First collection', 'Validation due', 'Validation', 'Size review', 'Persistence', 'Acquisition due', 'Acquisition', 'Provider', 'Common Crawl'].map(value => <option key={value}>{value}</option>)}
+            {['All stages', 'First collection', 'Validation due', 'Validation', 'Size review', 'Persistence', 'Posting detail', 'Acquisition due', 'Acquisition', 'Provider', 'Common Crawl'].map(value => <option key={value}>{value}</option>)}
           </select>
         </label>
         {visibleHolds.length === 0 ? <p>No held work in this view.</p> : (

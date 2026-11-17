@@ -21,7 +21,7 @@ export function componentManifest(tree, isWebOnly, root = process.cwd()) {
     }
     for (const filename of records.keys()) {
       if (component.units.some((unit) => filename === `scripts/deployment/m70/${unit}.service`
-        || filename === `scripts/deployment/m70/${unit}.timer`)) files.add(filename);
+        || filename === `scripts/deployment/m70/${unit}.timer` || filename === `scripts/deployment/m70/${unit}.path`)) files.add(filename);
     }
     for (const filename of files) assigned.add(filename);
     components[name] = { inputsHash: hash(files), files: [...files].sort() };

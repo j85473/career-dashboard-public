@@ -1,3 +1,4 @@
+import { ATS_ACQUISITION_WRITER_VERSION } from '../../src/lib/atsAcquisitionCompatibility';
 /** Disposable schema-only PostgreSQL fixture; never runs against user data.
  * DATABASE_URL=postgresql://ats_followups@127.0.0.1:55481/career_ats_followups_20261104
  * node --import tsx tests/integration/atsFollowupRepairs.ts
@@ -37,8 +38,8 @@ async function main() {
   assert.equal(await prisma.atsIngestionBatch.count(), 0, 'Use an empty schema-only copy');
   const job = await prisma.job.create({ data: { title: 'Saved scored job', company: 'Saved Employer',
     source: 'fixture', postedAt: now, status: 'applied', aimFitScore: 88, reqFitScore: 74, description: 'Preserved description' } });
-  await prisma.atsAcquisitionRuntimeGate.create({ data: { id: 'global', minimumWriterVersion: 3,
-    compatibilityWriterVersion: 3, activatedLedgerVersion: 2, v2AuthorityActivatedAt: now } });
+  await prisma.atsAcquisitionRuntimeGate.create({ data: { id: 'global', minimumWriterVersion: ATS_ACQUISITION_WRITER_VERSION,
+    compatibilityWriterVersion: ATS_ACQUISITION_WRITER_VERSION, activatedLedgerVersion: 2, v2AuthorityActivatedAt: now } });
   await prisma.pipelineState.create({ data: { id: 'global', schedulePaused: false } });
   const proof = employerProofFixture();
   await prisma.atsCompany.create({ data: { platform: proof.platform, slug: proof.slug, acquisitionEngine: 'v2', checkDay: 3 } });

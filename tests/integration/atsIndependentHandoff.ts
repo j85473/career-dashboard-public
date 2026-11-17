@@ -1,3 +1,4 @@
+import { ATS_ACQUISITION_WRITER_VERSION } from '../../src/lib/atsAcquisitionCompatibility';
 /** Run only on an empty schema-only copy in a disposable PostgreSQL server.
  * Applies the additive retry migration and exercises real ledger constraints.
  * DATABASE_URL=postgresql://ats_fixture@127.0.0.1:55479/career_ats_simplify_20261104
@@ -44,8 +45,8 @@ async function main() {
   await sql.query(readFileSync(new URL('../../prisma/migrations/20261104190000_ats_retry_classification/migration.sql', import.meta.url), 'utf8'));
   assert.deepEqual(await snapshot(), retained, 'migration preserves evidence, holds and exact retry dates');
   assert.deepEqual(await prisma.job.findUnique({ where: { id: savedJob.id } }), savedJob);
-  await prisma.atsAcquisitionRuntimeGate.create({ data: { id: 'global', minimumWriterVersion: 3,
-    compatibilityWriterVersion: 3, activatedLedgerVersion: 2, v2AuthorityActivatedAt: new Date() } });
+  await prisma.atsAcquisitionRuntimeGate.create({ data: { id: 'global', minimumWriterVersion: ATS_ACQUISITION_WRITER_VERSION,
+    compatibilityWriterVersion: ATS_ACQUISITION_WRITER_VERSION, activatedLedgerVersion: 2, v2AuthorityActivatedAt: new Date() } });
 
   for (const platform of ['oracle', 'ukg'] as const) {
     const slug = platform === 'oracle' ? 'fixture.fa.us2.oraclecloud.com::CX'

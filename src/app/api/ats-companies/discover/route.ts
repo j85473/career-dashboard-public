@@ -1,88 +1,54 @@
 import { NextResponse } from 'next/server';
-import { runDiscovery, setLogger, cancelDiscovery } from '../../../../scripts/discoverATS';
-import * as fs from 'fs';
-import * as path from 'path';
+import { prisma } from '@/lib/prisma';
+import { discoveryRecoveryAllowed, discoveryRecoverySnapshot } from '@/lib/atsDiscoveryValidationRecovery';
+import { readDiscoveryRuntime, requestDiscoveryStart, requestDiscoveryStop } from '@/lib/atsDiscoveryRuntime';
+import { storageAllows } from '@/lib/storagePressure';
 
 export const dynamic = 'force-dynamic';
-
-const LOG_FILE = path.join(process.cwd(), 'data', 'discover_logs.txt');
-
-// Track state in the Node process global so it persists across API requests
-type DiscoveryGlobalState = typeof globalThis & {
-  isDiscoveryRunning?: boolean;
-};
-
-const globalState = globalThis as DiscoveryGlobalState;
+let recoveryCache: { until: number; value: Awaited<ReturnType<typeof discoveryRecoverySnapshot>> } | null = null;
+let recoveryRefresh: Promise<void> | null = null;
 
 export async function GET() {
-  let logs: string[] = [];
   try {
-    if (fs.existsSync(LOG_FILE)) {
-      const content = fs.readFileSync(LOG_FILE, 'utf-8');
-      logs = content.split('\n').filter(Boolean);
-      // Keep only last 200 lines to keep the UI snappy
-      logs = logs.slice(-200);
+    const runtime = await readDiscoveryRuntime();
+    if (!recoveryCache || recoveryCache.until < Date.now()) {
+      recoveryRefresh ||= discoveryRecoverySnapshot(prisma).then(value => { recoveryCache = { until: Date.now() + 60_000, value }; })
+        .finally(() => { recoveryRefresh = null; });
+      await recoveryRefresh;
     }
-  } catch {
-    // Ignore read errors
-  }
-
-  return NextResponse.json({
-    isRunning: !!globalState.isDiscoveryRunning,
-    logs,
-  });
+    const state = runtime.starting ? 'starting' : runtime.startupExpired ? 'failed' : runtime.requestCancelled ? 'stopped'
+      : runtime.isRunning ? runtime.status!.state : runtime.status && ['running', 'stopping'].includes(runtime.status.state) ? 'interrupted'
+        : runtime.status?.state || 'idle';
+    const message = runtime.starting ? 'Waiting for the managed discovery worker to start'
+      : runtime.startupExpired ? 'Managed discovery did not start. Its lane may be busy, disabled, or paused; saved progress is retained.'
+        : runtime.requestCancelled ? 'Discovery start was cancelled; saved progress is retained'
+          : state === 'interrupted' ? 'Discovery worker is no longer running; its saved progress can resume'
+            : runtime.status?.message || 'Discovery is idle; saved progress is retained';
+    return NextResponse.json({ isRunning: runtime.isRunning || runtime.starting,
+      token: runtime.token, state,
+      kind: runtime.status?.kind, logs: [...(runtime.status?.logs || []), message].slice(-100), recovery: recoveryCache?.value });
+  } catch { return NextResponse.json({ error: 'Discovery status could not be read' }, { status: 503 }); }
 }
 
 export async function POST() {
+  if (!storageAllows('collection')) return NextResponse.json({ error: 'Discovery is paused to preserve database storage' }, { status: 409 });
+  if (!await discoveryRecoveryAllowed(prisma)) return NextResponse.json({ error: 'Discovery is paused by the pipeline operator control' }, { status: 409 });
+  if (process.platform !== 'linux') return NextResponse.json({ error: 'Manual discovery requires the managed production worker' }, { status: 503 });
   try {
-    if (globalState.isDiscoveryRunning) {
-      return NextResponse.json({ error: 'Discovery is already running' }, { status: 400 });
-    }
-
-    globalState.isDiscoveryRunning = true;
-    
-    // Ensure data dir exists
-    const dataDir = path.dirname(LOG_FILE);
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-
-    // Reset log file
-    fs.writeFileSync(LOG_FILE, '[System] Starting Native ATS Discovery Process...\n');
-
-    setLogger((msg: string) => {
-      try {
-        fs.appendFileSync(LOG_FILE, msg + '\n');
-      } catch {}
-    });
-
-    // Run in background (do not await)
-    runDiscovery()
-      .then(() => {
-        fs.appendFileSync(LOG_FILE, '\n[Discovery process completed successfully]\n');
-      })
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        fs.appendFileSync(LOG_FILE, `\n[Process error: ${message}]\n`);
-      })
-      .finally(() => {
-        globalState.isDiscoveryRunning = false;
-        setLogger(null);
-      });
-
-    return NextResponse.json({ status: 'started' });
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    const stack = error instanceof Error ? error.stack : undefined;
-    return NextResponse.json({ error: message, stack }, { status: 500 });
+    const request = await requestDiscoveryStart();
+    return NextResponse.json({ status: 'starting', token: request.token, isRunning: true }, { status: 202 });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Discovery could not be started' }, { status: 409 });
   }
 }
 
-export async function DELETE() {
-  if (globalState.isDiscoveryRunning) {
-    cancelDiscovery();
-    fs.appendFileSync(LOG_FILE, '\n[System] Discovery process cancelled by user.\n');
-    globalState.isDiscoveryRunning = false;
+export async function DELETE(request: Request) {
+  try {
+    const body = await request.json() as { token?: unknown };
+    if (typeof body.token !== 'string') return NextResponse.json({ error: 'The current discovery owner is required' }, { status: 400 });
+    const status = await requestDiscoveryStop(body.token);
+    return NextResponse.json({ status, isRunning: status === 'stopping' });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Discovery could not be stopped' }, { status: 409 });
   }
-  return NextResponse.json({ status: 'stopped' });
 }

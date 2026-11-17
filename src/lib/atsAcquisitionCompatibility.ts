@@ -5,8 +5,11 @@ import { prisma } from './prisma';
  * Version 3 is the first binary that can write row-granular v2 pages/items and
  * the transaction-capability-fenced v2 lifecycle summaries. Activation must
  * raise the durable minimum to 3 only after every acquisition worker runs it.
+ * Version 4 reads append-only response attempts at an unchanged empty-page
+ * cursor. Its coordinated migration fences version-3 workers before any new
+ * attempt is written; rollback retains evidence but requires a v4 reader.
  */
-export const ATS_ACQUISITION_WRITER_VERSION = 3;
+export const ATS_ACQUISITION_WRITER_VERSION = 4;
 
 export type AtsAcquisitionRuntimeGateState = {
   minimumWriterVersion: number;
@@ -67,7 +70,7 @@ export function validateAtsV2AuthorityActive(
     || gate.compatibilityWriterVersion < ATS_ACQUISITION_WRITER_VERSION) {
     return {
       valid: false,
-      reason: 'ATS v2 flags require the durable writer-3/ledger-2 authority gate to be active.',
+      reason: `ATS v2 flags require the durable writer-${ATS_ACQUISITION_WRITER_VERSION}/ledger-2 authority gate to be active.`,
     };
   }
   return { valid: true };

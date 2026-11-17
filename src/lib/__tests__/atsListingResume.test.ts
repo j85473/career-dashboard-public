@@ -299,8 +299,7 @@ test('a repeated Workday response is saved once and closes the listing phase', a
       },
     },
     atsIngestionPage: {
-      findFirst: async () => ({ id: 'earlier-identical-page' }),
-      findUnique: async () => null,
+      findFirst: async ({ orderBy }: { orderBy?: unknown }) => orderBy ? null : ({ id: 'earlier-identical-page' }),
       create: async () => {},
     },
     atsListingObservation: { createMany: async () => {} },
@@ -332,9 +331,8 @@ test('Workday retains or recovers its positive total while preserving literal pa
     atsIngestionBatch: { findUniqueOrThrow: async () => batch,
       updateMany: async ({ data }: { data: typeof writes[number] }) => { writes.push(data); Object.assign(batch, data); return { count: 1 }; } },
     atsIngestionPage: {
-      findFirst: async () => null,
-      findUnique: async ({ where }: { where: { batchId_generation_requestedOffset: { generation: number; requestedOffset: number } } }) => {
-        const key = where.batchId_generation_requestedOffset;
+      findFirst: async ({ where }: { where: { generation: number; requestedOffset: number | object } }) => {
+        const key = where;
         assert.equal(key.generation, 1, 'recovery must stay within the active listing generation');
         if (key.requestedOffset === 0) { firstPageReads++; return firstPage; }
         return null;

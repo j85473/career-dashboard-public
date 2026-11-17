@@ -11,7 +11,7 @@ export function crawlQueueOrder(turn: number, allowRetry: boolean): CrawlQueue[]
   const preferred = CRAWL_TURN_CYCLE[turn % CRAWL_TURN_CYCLE.length];
   return [...new Set([preferred, 'continuation', 'refresh', 'first', 'retry'] as CrawlQueue[])].filter(q => q !== 'retry' || allowRetry);
 }
-export type CrawlBoard = { slug: string; platform: string; checkDay: number; failCount: number; lastSynchronizedAt: Date | null; queue: CrawlQueue };
+export type CrawlBoard = { slug: string; platform: string; checkDay: number; failCount: number; lastSynchronizedAt: Date | null; queue: CrawlQueue; workKind?: 'listing' | 'detail' };
 export type CrawlProviderHead = CrawlBoard & {
   providerLastStartedAt: Date | null;
   readyBoards?: number;
@@ -73,9 +73,10 @@ async function readCrawlHeads(platforms: readonly string[], turn: number, allowR
       WHERE "ingestionMode"='public-board' AND source IN ('ATS-icims','ATS-paylocity','ATS-paycom')
         AND error IS NOT NULL AND COALESCE(checkpoint->'crawl'->>'deferred','false')='false'
     ), candidates AS MATERIALIZED (
-      SELECT board.slug,board.platform,board."checkDay",board."failCount",board."lastSynchronizedAt",board."nextCheckDate",board."lastAttemptedAt",t."lastStartedAt" AS "providerLastStartedAt",t.cursor AS "providerCursor",
+      SELECT board.slug,board.platform,board."checkDay",board."failCount",board."lastSynchronizedAt",work.due_at AS "nextCheckDate",board."lastAttemptedAt",t."lastStartedAt" AS "providerLastStartedAt",t.cursor AS "providerCursor",work.kind AS "workKind",
         (ARRAY[${Prisma.join([...CRAWL_TURN_CYCLE])}]::text[])[mod(t.attempt+${ownedTaskId ? turn : 0},${CRAWL_TURN_CYCLE.length})+1] AS preferred_queue,
-        CASE WHEN s.status IN ('partial','running') AND s."lastError" IS NULL
+        CASE WHEN work.kind='detail' THEN 'retry'
+          WHEN s.status IN ('partial','running') AND s."lastError" IS NULL
             AND (s.cursor->>'loaded'='true' OR CASE WHEN jsonb_typeof(s.cursor->'seen')='array' THEN jsonb_array_length(s.cursor->'seen') ELSE 0 END>0) THEN 'continuation'
           WHEN ${Prisma.raw(CRAWL_PENDING_DISCOVERY_SQL)} THEN 'first'
           WHEN board.platform IN ('icims','paylocity','paycom') AND board.status='parked'
@@ -90,18 +91,29 @@ async function readCrawlHeads(platforms: readonly string[], turn: number, allowR
       FROM "AtsCompany" board LEFT JOIN "AtsBrowserSweep" s ON s.platform=board.platform AND s.slug=board.slug
       JOIN "IngestionTask" t ON t.source=CASE WHEN board.platform='gusto' THEN 'Gusto' ELSE 'ATS-'||board.platform END
         AND t."ingestionMode"='public-board' AND t."lifecycleStatus"='active'
+      JOIN LATERAL (
+        SELECT 'listing'::text AS kind,board."nextCheckDate" AS due_at
+        WHERE board."nextCheckDate"<=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC') AND ${publicCrawlLaneSql(lane)}
+        UNION ALL
+        SELECT 'detail'::text,MIN(r."nextRetryAt") FROM "AtsBrowserDetailRetry" r
+        WHERE r.slug=board.slug AND r.platform=board.platform AND r.status='pending'
+          AND r."nextRetryAt"<=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          AND (s."lastError" IS NULL OR board."nextCheckDate"<=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'))
+          AND (${lane}='all' OR ${lane}='browser' AND board.platform<>'adp' OR ${lane}='http' AND board.platform='adp')
+        HAVING COUNT(*)>0
+      ) work ON TRUE
       WHERE board.platform IN (${Prisma.join([...platforms])}) AND board.status IN ('active','parked')
-        AND board."nextCheckDate"<=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
         AND t."nextRunAt"<=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
         AND (t."leaseToken" IS NULL OR t."leaseExpiresAt"<=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC') ${ownedTaskId ? Prisma.sql`OR t.id=${ownedTaskId}` : Prisma.empty})
-        AND ${publicCrawlLaneSql(lane)}
+        AND NOT EXISTS (SELECT 1 FROM "ProviderCircuit" circuit WHERE circuit.provider='ATS-'||board.platform
+          AND circuit.state='open' AND circuit."openUntil"> (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'))
         ${boards ? Prisma.sql`AND board.slug IN (${Prisma.join([...boards])})` : Prisma.empty}
     ), ranked AS (
       SELECT *,COUNT(*) OVER (PARTITION BY platform)::int AS "readyBoards",ROW_NUMBER() OVER (PARTITION BY platform${perQueue ? Prisma.sql`,queue` : Prisma.empty} ORDER BY
         ${preferredQueues ? Prisma.sql`array_position(ARRAY[${Prisma.join(order)}]::text[],queue)` : Prisma.sql`CASE WHEN queue=preferred_queue THEN 0 ELSE array_position(ARRAY['continuation','refresh','first','retry']::text[],queue) END`},
         "nextCheckDate","lastAttemptedAt" NULLS FIRST,slug) AS board_rank
       FROM candidates WHERE queue IN (${Prisma.join(order)})
-    ) SELECT slug,platform,"checkDay","failCount","lastSynchronizedAt",queue,"providerLastStartedAt","providerCursor","readyBoards",
+    ) SELECT slug,platform,"checkDay","failCount","lastSynchronizedAt",queue,"workKind","providerLastStartedAt","providerCursor","readyBoards",
       ${platforms.length <= 1 ? Prisma.sql`NULL::double precision` : Prisma.sql`(
         SELECT AVG(LEAST(60000,GREATEST(500,recent."durationMs")))::double precision
         FROM (SELECT run."durationMs",run.checkpoint->'crawl'->>'lane' AS lane FROM "IngestionSourceRun" run

@@ -25,6 +25,8 @@ BACKGROUND = (
     'career-dashboard-crawl-archive.timer', 'career-dashboard-worker-recovery.timer',
     'career-dashboard-scheduler.timer', 'career-dashboard-watchdog.timer',
     'career-dashboard-board-pruning.timer', 'career-dashboard-discovery.timer',
+    'career-dashboard-discovery-recovery.timer', 'career-dashboard-discovery-recovery.service',
+    'career-dashboard-discovery-manual.path', 'career-dashboard-discovery-manual.service',
     'career-dashboard-canonical-api.timer', 'career-dashboard-canonical-resolver.timer', 'career-dashboard-gusto.timer', 'career-dashboard-public-boards.timer',
     'career-dashboard-public-http.timer',
     'career-dashboard-web-discovery.timer', 'career-dashboard-web-discovery.service',
@@ -33,8 +35,16 @@ BACKGROUND = (
     'travel-dashboard-backup.timer', 'career-dashboard-acquisition.service',
     'career-dashboard-discovery-audit.service', 'career-dashboard-pipeline.service',
 )
-INVOCATIONS = tuple(unit.replace('.timer', '.service') for unit in BACKGROUND
-                    if unit.endswith('.timer'))
+INVOCATIONS = tuple(dict.fromkeys(unit.rsplit('.', 1)[0] + '.service' for unit in BACKGROUND
+                                 if unit.endswith(('.timer', '.path'))))
+# These invocations are owned by their timer/path, not by maintenance recovery.
+# In particular, a manual scan has already consumed its one-use authorization.
+# Keep them in BACKGROUND for stop/hold coverage and in old pending snapshots,
+# but restore only the trigger's prior state, never replay the invocation.
+NON_RESTARTABLE_INVOCATIONS = frozenset((
+    'career-dashboard-discovery-recovery.service',
+    'career-dashboard-discovery-manual.service',
+))
 FOREGROUND = ('career-dashboard.service', 'walking-dashboard.service', 'travel-dashboard.service')
 LOCKS = (
     '/var/lib/career-dashboard/deploy.lock', '/var/lib/career-dashboard/backup.lock',
@@ -273,8 +283,10 @@ class Coordinator:
                 time.sleep(5)
         self.release_background_locks()
         self.hold.unlink(missing_ok=True)
-        self.systemctl('start', pending['background'])
-        for unit in pending['background']:
+        background = [unit for unit in pending['background']
+                      if unit not in NON_RESTARTABLE_INVOCATIONS]
+        self.systemctl('start', background)
+        for unit in background:
             if not self.active(unit):
                 raise Deferred('A previously running background unit did not recover: ' + unit)
         for unit in FOREGROUND:
@@ -328,7 +340,7 @@ class Coordinator:
             self.command(['sync', '-f', str(self.state)])
             reboot_requested = False
             try:
-                self.systemctl('stop', [unit for unit in background if unit.endswith('.timer')])
+                self.systemctl('stop', [unit for unit in background if unit.endswith(('.timer', '.path'))])
                 # The existing quiesce endpoint preserves schedulePaused and pausedUntil.
                 self.command(['curl', '-fsS', '--max-time', '15', '-X', 'POST',
                               HEALTH['career-dashboard.service'].replace('/api/health', '/api/pipeline/stop?mode=quiesce')])

@@ -1,3 +1,4 @@
+import { ATS_ACQUISITION_WRITER_VERSION } from '../atsAcquisitionCompatibility';
 import { prisma } from '../prisma';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -40,7 +41,7 @@ test('eight simultaneous admissions cannot exceed the unfinished listing allowan
       },
       $queryRaw: async () => [{ items: 0, bytes: 0, unfinishedListings: active }],
       atsCompany: { findUnique: async () => ({ acquisitionEngine: 'v2', nextCheckDate: new Date(0), status: 'active', checkDay: 5 }) },
-      atsAcquisitionRuntimeGate: { findUnique: async () => ({ admissionState: 'open', v2AuthorityActivatedAt: new Date(0), activatedLedgerVersion: 2, minimumWriterVersion: 3, compatibilityWriterVersion: 3 }) },
+      atsAcquisitionRuntimeGate: { findUnique: async () => ({ admissionState: 'open', v2AuthorityActivatedAt: new Date(0), activatedLedgerVersion: 2, minimumWriterVersion: ATS_ACQUISITION_WRITER_VERSION, compatibilityWriterVersion: ATS_ACQUISITION_WRITER_VERSION }) },
       atsIngestionBatch: {
         findFirst: async () => null,
         create: async () => { await Promise.resolve(); active++; admissions++; },

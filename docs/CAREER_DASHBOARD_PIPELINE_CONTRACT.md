@@ -236,6 +236,64 @@ The weekly board-pruning service has two different authorities. Its liveness arm
 
 Acquisition ledgers, worker leases, publication receipts, source scheduling, and board cleanup do not authorize a change to existing Aim or Experience scores. Scoring policy, model, prompt, evidence, runner, schema, and version changes apply prospectively. Only Joseph's explicit score-removal request or a Dashboard rescore action can displace an existing score. Background updates must also preserve protected human lifecycle decisions.
 
+### 4.4 Retained discovery and crawl recovery (November 16, 2026)
+
+Historical discovery outcomes remain unchanged. A separate bounded recovery
+owner catalogues unresolved candidate identities across all audit runs, excludes
+already enrolled employers, preserves their latest saved retry date, and records
+each identity's current recovery state. It validates at most twenty candidates
+per two-minute pass under the shared discovery lock, provider budgets, storage
+gate, and operator pause. Successful identities enter ordinary board admission;
+permanently retired boards cannot be reactivated. Eight unsuccessful validation
+attempts become visible review work. Malformed identities go directly to review.
+While a long source scan owns the discovery lock, its existing checkpoints also
+service recovery at most once every five minutes, without overlapping passes or
+accumulating missed turns.
+The Dashboard shows waiting, scheduled, review, and remaining historical work;
+a completed source-index receipt does not mean candidate validation completed.
+
+Manual discovery uses the same durable scanner and exclusive lock as scheduled
+discovery. The web request records a fixed local request file; a managed service
+owns execution, heartbeat, stop acknowledgement, environment, and release.
+Candidate persistence precedes advancement of the source checkpoint. Stopping or
+restarting discovery retains both. Empty valid feeds discovered through web
+search retry weekly, including narrowly identified historical `No jobs listed`
+rejections; the handoff history retains their prior outcome.
+
+A failed browser posting detail is retained by exact employer and posting ID in
+an independent recovery queue. Saving the failed link and detaching it from the
+page cursor is one task-lease-fenced transaction. Existing failures transfer only
+when their saved board retry date is reached. Verified enumeration can then
+continue to later pages and fresh listing cycles. A fully enumerated board with
+pending details is `listed`, not fully processed: `lastProcessedAt` advances only
+after every retained detail resolves. Detail recovery uses the existing provider,
+task and crawl-service ownership, at most five postings per bounded turn, and
+honors retry dates, provider pauses, storage pressure and board retirement.
+Recovered, already-observed and confirmed-closed outcomes remain inspectable.
+Deferred details do not count as successfully seen jobs.
+
+Full-board iCIMS validation also applies to browser fallback. Every empty refresh
+needs affirmative empty-catalogue evidence, regardless of prior synchronization;
+a loading Gusto shell cannot establish an empty board. Exact Paylocity posting
+closure retires that source posting from the sweep, without treating the entire
+employer board as unavailable.
+
+Acquisition lanes share the fresh demand plan and skip candidate selection when
+both permitted demand classes are empty. They refresh after the existing bounded
+idle wait, so due work remains discoverable. A premature empty API response with
+explicit remaining-listing evidence may acquire a new immutable response attempt
+at the unchanged cursor, under the current lease and generation. Original page
+bytes, observations and identity remain intact; changed nonempty evidence still
+fails closed. Response attempt readers select the latest attempt consistently.
+Writer version 4 is required after this atomic uniqueness-key migration. An
+older acquisition binary cannot resume against the changed page contract.
+
+The repair validation covers real PostgreSQL transfers, lease fencing,
+concurrent response retries, cursor resumption, retry-date preservation,
+retirement and provider holds, and unchanged scored interviewing jobs. The
+release-specific behavior and rollback limits are documented in
+[M70 operations](M70_PRODUCTION_OPERATIONS.md#retained-discovery-and-posting-recovery-november-16-2026).
+
 ## 5. Audit evidence and observability
 
 The mutable `Job` row tells us the current state. It is not enough to reconstruct how the job got there.
