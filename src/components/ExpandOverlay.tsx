@@ -147,17 +147,23 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
   const [mergeBusy, setMergeBusy] = useState(false);
   const [mergeError, setMergeError] = useState('');
   const [mergeCompleted, setMergeCompleted] = useState('');
+  const [mergeRefreshing, setMergeRefreshing] = useState(false);
+  const [mergeRefreshNotice, setMergeRefreshNotice] = useState('');
+  const mergeRefreshActiveRef = useRef(false);
   const [linkUpdateError, setLinkUpdateError] = useState('');
   const [openingCombinedCard, setOpeningCombinedCard] = useState(false);
   const refreshAbortRef = useRef<AbortController | null>(null);
-  useEffect(() => () => refreshAbortRef.current?.abort(), []);
+  useEffect(() => () => {
+    refreshAbortRef.current?.abort();
+    mergeRefreshActiveRef.current = false;
+  }, []);
   useDashboardRefresh(() => {
     if (refreshAbortRef.current || isLoadingJD || scoreAuthorityLoading) return;
     const canApply = dashboardRefreshGuard();
     const controller = new AbortController();
     refreshAbortRef.current = controller;
     const timeout = setTimeout(() => controller.abort(), 15_000);
-    void fetch(`/api/jobs/${initialJob.id}`, { cache: 'no-store', signal: controller.signal })
+    void fetch(`/api/jobs/${job.id}`, { cache: 'no-store', signal: controller.signal })
       .then(async response => response.ok ? response.json() : null)
       .then(data => {
         if (!controller.signal.aborted && canApply() && data?.job) {
@@ -539,22 +545,9 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
       setMergeBusy(false);
       return;
     }
-    let refreshNotice = '';
-    if (mergeReview.linkUpdate) {
-      // The merge has already saved the chosen canonical link atomically.
-      // Finish the original details refresh on whichever card survived.
-      try {
-        const refreshed = await fetch(`/api/jobs/${data.job.id}/scrape`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: mergeReview.linkUpdate.url, linkOnly: mergeReview.linkUpdate.linkOnly, skipRescore: mergeReview.linkUpdate.linkOnly }),
-        });
-        const refreshData = await refreshed.json();
-        if (refreshData.job) data.job = refreshData.job;
-        refreshNotice = refreshData.refreshWarning || (!refreshed.ok ? refreshData.error : '') || '';
-      } catch {
-        refreshNotice = 'Your link was saved, but the posting details could not be refreshed. Retry the details refresh.';
-      }
-    }
+    // Publish the committed merge before waiting on the external posting.
+    // Stop an older card read from putting the consolidated copy back on screen.
+    refreshAbortRef.current?.abort();
     if (onJobUpdate) {
       onJobUpdate(data.consolidatedJobId, { status: 'dismissed', tailoringStaged: false });
       onJobUpdate(data.job.id, data.job);
@@ -563,8 +556,43 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
     setManualJD(data.job.description || '');
     setDirectUrl('');
     setMergeReview(null);
-    setMergeCompleted(refreshNotice || `Merged into the ${data.job.status.replaceAll('_', ' ')} card.${mergeReview.linkUpdate ? ' Your link is now the canonical link and the posting details were refreshed.' : ''}${mergeReview.linkUpdate?.linkOnly === false ? ' A rescore was requested.' : ' Scores were preserved.'} Source history was preserved.`);
+    setMergeCompleted(`Merged into the ${data.job.status.replaceAll('_', ' ')} card.${mergeReview.linkUpdate ? ' Your link is saved.' : ''} Source history was preserved.`);
     setMergeBusy(false);
+    setMergeRefreshNotice('');
+
+    const linkUpdate = mergeReview.linkUpdate;
+    if (linkUpdate) {
+      setMergeRefreshing(true);
+      mergeRefreshActiveRef.current = true;
+      // The merge has already saved the chosen canonical link atomically.
+      // Closing the card leaves this request running, but its response must
+      // not overwrite a different card or subsequent Dashboard actions.
+      try {
+        const refreshed = await fetch(`/api/jobs/${data.job.id}/scrape`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: linkUpdate.url, linkOnly: linkUpdate.linkOnly, skipRescore: linkUpdate.linkOnly }),
+        });
+        const refreshData = await refreshed.json();
+        if (!mergeRefreshActiveRef.current) return;
+        if (refreshData.job) {
+          setJob(refreshData.job);
+          setManualJD(refreshData.job.description || '');
+          onJobUpdate?.(refreshData.job.id, refreshData.job);
+        }
+        setMergeRefreshNotice(refreshData.refreshWarning || (!refreshed.ok
+          ? refreshData.error || 'The posting details could not be refreshed. Retry the details refresh.'
+          : `Posting details refreshed.${refreshData.rescoreQueued ? ' A rescore was requested.' : ' Scores were preserved.'}`));
+      } catch {
+        if (mergeRefreshActiveRef.current) {
+          setMergeRefreshNotice('The posting details could not be refreshed. Your merge and link are saved. Retry the details refresh.');
+        }
+      } finally {
+        if (mergeRefreshActiveRef.current) setMergeRefreshing(false);
+        mergeRefreshActiveRef.current = false;
+      }
+    } else {
+      setMergeRefreshNotice('Scores were preserved.');
+    }
   };
 
   const handleScrape = async () => {
@@ -582,6 +610,7 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
     setIsScraping(true);
     setLinkUpdateError('');
     setMergeCompleted('');
+    setMergeRefreshNotice('');
     try {
       const res = await fetch(`/api/jobs/${job.id}/scrape`, {
         method: 'POST',
@@ -933,7 +962,7 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
   }
 
   return (
-    <div className="expand-overlay open" data-refresh-blocked={isEditingJD || isEditingMeta || showPassInput || isScraping || mergeBusy || splittingEmployer || restoringRepeat || Boolean(separatingId)} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="expand-overlay open" data-refresh-blocked={isEditingJD || isEditingMeta || showPassInput || isScraping || mergeBusy || mergeRefreshing || splittingEmployer || restoringRepeat || Boolean(separatingId)} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div className="expand-modal" role="dialog" aria-modal="true" aria-labelledby="job-dialog-title" tabIndex={-1} ref={dialogRef}>
         <div className="expand-header">
         <div className="expand-header-left">
@@ -952,7 +981,7 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
               <>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <div className="expand-title" id="job-dialog-title">{job.title}</div>
-                  <button onClick={() => {
+                  <button disabled={mergeRefreshing} onClick={() => {
                     setManualTitle(job.title || '');
                     setManualCompany(job.company || '');
                     setManualLocation(job.location || '');
@@ -1162,7 +1191,14 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
           </ul>
         </details>
       )}
-      {mergeCompleted && <div className="repeat-notice merge-complete-notice" role="status"><strong>{mergeCompleted}</strong></div>}
+      {mergeCompleted && (
+        <div className="repeat-notice merge-complete-notice" role="status">
+          <strong>{mergeCompleted}</strong>
+          {mergeRefreshing
+            ? <span><Loader2 size={14} className="animate-spin" aria-hidden="true" /> Refreshing posting details… You can close this card.</span>
+            : mergeRefreshNotice && <span>{mergeRefreshNotice}</span>}
+        </div>
+      )}
       {isApplicationCard && hiddenRepeats.length > 0 && (
         <details className="repeat-notice repeat-list">
           <summary>
@@ -1222,7 +1258,7 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
                 </button>
               )}
               {!isEditingJD ? (
-                <button onClick={() => setIsEditingJD(true)} className="expand-btn" style={{ padding: '2px 8px', fontSize: '12px' }}>
+                <button onClick={() => setIsEditingJD(true)} disabled={mergeRefreshing} className="expand-btn" style={{ padding: '2px 8px', fontSize: '12px' }}>
                   <Edit2 size={12} style={{ marginRight: '4px' }}/> Edit JD
                 </button>
               ) : (
@@ -1266,7 +1302,7 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
           {/* Scrape / URL */}
           <div className="scrape-input-group" style={{ display: 'flex', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--border)', background: 'rgba(0,0,0,0.5)', height: '36px' }}>
             <input type="text" className="scrape-url-input" placeholder="Paste Direct URL..." value={directUrl} onChange={(e) => setDirectUrl(e.target.value)} style={{ background: 'transparent', border: 'none', color: 'var(--text)', padding: '0 12px', outline: 'none', fontSize: '13px' }} />
-            <button onClick={handleScrape} disabled={isScraping} style={{ background: 'rgba(255,255,255,0.05)', border: 'none', borderLeft: '1px solid var(--border)', padding: '0 16px', color: 'var(--text)', cursor: 'pointer', fontWeight: 600, fontSize: '12px', display: 'flex', alignItems: 'center', transition: 'background 0.2s' }}>
+            <button onClick={handleScrape} disabled={isScraping || mergeRefreshing} style={{ background: 'rgba(255,255,255,0.05)', border: 'none', borderLeft: '1px solid var(--border)', padding: '0 16px', color: 'var(--text)', cursor: 'pointer', fontWeight: 600, fontSize: '12px', display: 'flex', alignItems: 'center', transition: 'background 0.2s' }}>
               {isScraping ? <Loader2 size={14} className="animate-spin" /> : 'Scrape'}
             </button>
           </div>
