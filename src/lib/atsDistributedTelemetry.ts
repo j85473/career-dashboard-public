@@ -66,6 +66,7 @@ export type AtsDistributedTelemetry = {
   weekActiveBoards: number;
   weekCoveredBoards: number;
   stagingItems: number;
+  stagingRetryItems?: number;
   stagingBytes: number;
   stagingItemLimit: number;
   stagingByteLimit: number;
@@ -132,6 +133,9 @@ export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelem
     staging AS (
       SELECT
         COALESCE(SUM(GREATEST("rawObservationCount" - "compactedOccurrenceCount" - "publishedItemCount", 0)), 0) AS items,
+        COALESCE(SUM(GREATEST("rawObservationCount" - "compactedOccurrenceCount" - "publishedItemCount", 0))
+          FILTER (WHERE "nextAcquireAt">day.now_utc AND NOT
+            ("acquisitionClaimToken" IS NOT NULL AND "acquisitionLeaseExpiresAt">day.now_utc) IS TRUE),0) AS retry_items,
         COALESCE(SUM("acquisitionBytes"), 0) AS bytes,
         COUNT(*) FILTER (WHERE ${atsListingAdmissionReservationSql(Prisma.sql`day.now_utc`)})
           AS unfinished_listings,
@@ -144,6 +148,7 @@ export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelem
     )
     SELECT
       (SELECT items FROM staging) AS "stagingItems",
+      (SELECT retry_items FROM staging) AS "stagingRetryItems",
       (SELECT bytes FROM staging) AS "stagingBytes",
       (SELECT unfinished_listings FROM staging) AS "unfinishedListings",
       (SELECT cohort_unfinished_listings FROM staging) AS "cohortUnfinishedListings",
@@ -291,6 +296,7 @@ export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelem
     weekActiveBoards: Number(row?.weekActiveBoards || 0),
     weekCoveredBoards: Number(row?.weekCoveredBoards || 0),
     stagingItems,
+    stagingRetryItems: Number(row?.stagingRetryItems || 0),
     stagingBytes,
     stagingItemLimit: ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK,
     stagingByteLimit,
@@ -374,6 +380,7 @@ export function formatAtsDistributedTelemetry(
     `Boards ${telemetry.cohortSwept}/${telemetry.cohortTotal}`,
     `Ready ${telemetry.cohortReadyNow}`,
     `Staging ${telemetry.stagingItems}/${telemetry.stagingItemLimit}`,
+    ...(telemetry.stagingRetryItems !== undefined ? [`Retryitems ${telemetry.stagingRetryItems}`] : []),
     `Bytes ${telemetry.stagingBytes}/${telemetry.stagingByteLimit}`,
     `Held ${telemetry.stagingHeldBoards}`,
     `Intake ${telemetry.admissionReason || (telemetry.stagingBlocked ? 'capacity' : 'open')}`,

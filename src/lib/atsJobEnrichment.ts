@@ -1,7 +1,8 @@
 import { parseAdditionalDetail } from './additionalPublicAts';
 import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
 import { smartRecruitersPostingCompany } from './smartRecruitersCompany';
-import { expandedPostingIdentity, parseCornerstonePosting, polymerDetailRequest, parsePolymerDetail } from './expandedPublicAts';
+import { expandedPostingIdentity, polymerDetailRequest, parsePolymerDetail } from './expandedPublicAts';
+import { readCornerstoneBody, readCornerstonePosting, type CornerstoneEvidenceReader } from './cornerstonePosting';
 import { readAtsRetryReason, withAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
 import { createAtsDetailRequestSession, AtsDetailHttpError, AtsDetailResponseError, AtsEnrichmentControlError, isAbortError } from './atsDetailRequest';
 import { publishedEmployerName } from './publicAtsEmployer';
@@ -141,7 +142,7 @@ type DetailPlan = { kind: 'employer'; fields: EnrichmentFields } | {
   transport: 'fetch' | 'safe_fetch';
   fields: EnrichmentFields;
   parse: (response: Response, dependencies: AtsJobEnrichmentDependencies) => Promise<EnrichmentFields>;
-  complete?: (fetchPage: (url: string) => Promise<Response>) => Promise<EnrichmentFields>;
+  complete?: (fetchPage: CornerstoneEvidenceReader) => Promise<EnrichmentFields>;
 };
 
 async function readDetailJson(response: Response): Promise<unknown> {
@@ -469,17 +470,17 @@ function preparedDetailPlan(input: {
     if (identity?.platform !== platform || identity.slug !== slug || identity.id !== stringValue(job.publicAtsPostingId)) {
       throw new AtsDetailResponseError('Cornerstone listing lacks exact posting identity');
     }
+    let body = '';
     return { plan: { url, transport: 'safe_fetch', fields, parse: async response => {
       const landed = expandedPostingIdentity(response.url || url);
       if (landed?.platform !== platform || landed.slug !== slug || landed.id !== identity.id) throw new AtsDetailResponseError('Cornerstone detail changed posting identity');
       // Read transport failures outside the parser boundary: they still belong
       // to provider protection. Invalid evidence belongs only to this posting.
-      const body = await response.text();
-      let detail: Record<string, unknown>;
-      try { detail = parseCornerstonePosting(body, url, stringValue(job.title)); }
-      catch (error) {
-        throw new AtsDetailResponseError(error instanceof Error ? error.message : String(error), error);
-      }
+      body = await readCornerstoneBody(response);
+      return fields;
+    }, complete: async read => {
+      // Follow-up requests begin after the initial provider fence is released.
+      const detail = await readCornerstonePosting(body, url, read, { expectedTitle: stringValue(job.title), now: input.dependencies.now() });
       return { ...fields, company: stringValue(detail.company), location: stringValue(detail.location) || fields.location,
         description: stringValue(detail.description) };
     } }, reason: '', fields };
@@ -1040,9 +1041,10 @@ export async function enrichAtsListingJob(
   try {
     await session.request(plan.url, { transport: plan.transport,
       inspect: async response => { parsedFields = await plan.parse(response.clone(), dependencies); } });
-    if (plan.complete) parsedFields = await plan.complete(url => session.request(url, {
+    if (plan.complete) parsedFields = await plan.complete((url, options) => session.request(url, {
       vendorRequest: new URL(url).hostname === new URL(plan.url).hostname,
       allowMissing: true,
+      ...options,
     }));
     session.assertWithinDeadline();
     const fields = parsedFields || prepared.fields;

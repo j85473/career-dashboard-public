@@ -72,6 +72,8 @@ export function createAtsDetailRequestSession(input: EnrichAtsListingJobInput,
       transport?: 'fetch' | 'safe_fetch';
       vendorRequest?: boolean;
       allowMissing?: boolean;
+      headers?: HeadersInit;
+      redirect?: RequestRedirect;
       inspect?: (response: Response) => Promise<void>;
     } = {}): Promise<Response> {
       queueSignal.throwIfAborted();
@@ -119,6 +121,12 @@ export function createAtsDetailRequestSession(input: EnrichAtsListingJobInput,
           const init: RequestInit = { signal: networkSignal, headers: options.transport === 'fetch'
             ? { Accept: 'application/json' }
             : { 'User-Agent': dependencies.jsonLdFetchUserAgent, Accept: 'application/json,text/html' } };
+          if (options.headers) {
+            const headers = new Headers(init.headers);
+            new Headers(options.headers).forEach((value, key) => headers.set(key, value));
+            init.headers = headers;
+          }
+          if (options.redirect) init.redirect = options.redirect;
           return await (options.transport === 'fetch'
             ? fetchAtsJson(platform, url, init, dependencies)
             : dependencies.safeExternalFetch(url, init));

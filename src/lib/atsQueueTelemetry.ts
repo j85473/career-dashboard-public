@@ -1,6 +1,8 @@
 import { Prisma } from './prismaClient';
 import { readAtsCapacityTelemetry } from './atsCapacityTelemetry';
 import { prisma } from './prisma';
+import { readAtsRetainedInventory } from './atsRetainedInventory';
+import { atsEmployerVerificationHoldSql } from './atsEmployerRetry';
 import { firstCollectionHealth } from './atsFirstCollectionAdmission';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import type { AtsQueueHold, AtsQueueSnapshot } from './atsQueueSnapshot';
@@ -12,6 +14,7 @@ export function summarizeAtsHoldReason(error: string | null, fallback: string): 
   if (/temporarily unavailable:|\bHTTP\s+(?:408|425|5\d\d)\b/i.test(error)) return 'Temporary service failure; waiting to retry';
   if (/returned text\/html instead of the expected payload format/i.test(error)) return 'Feed returned a web page instead of job data; waiting to retry';
   if (/awaits a verified employer|no authoritative employer/i.test(error)) return 'Employer identity could not be verified';
+  if (/Cornerstone exact posting lacks unique structured evidence/i.test(error)) return 'Exact posting page has no single structured job record; employer evidence remains unverified';
   if (/ledger page .*changed after it was committed/i.test(error)) return 'Listing page changed after it was saved';
   if (/schema|posting identity|expected payload|no title/i.test(error)) return 'Response format or posting identity is invalid';
   if (/429|rate.limit|platform circuit/i.test(error)) return 'Provider rate limit or cooldown';
@@ -49,7 +52,7 @@ export function groupAtsQueueHolds(rows: HoldRow[]): AtsQueueHold[] {
 async function queryAtsQueueTelemetry(): Promise<AtsQueueSnapshot> {
   const now = new Date();
   const nowUtc = Prisma.sql`(${now.toISOString()}::timestamptz AT TIME ZONE 'UTC')`;
-  const [policy, counts, rows] = await prisma.$transaction(async tx => {
+  const [policy, counts, rows, retained] = await prisma.$transaction(async tx => {
     await tx.$executeRaw`SET TRANSACTION READ ONLY`;
     await tx.$executeRaw`SET LOCAL statement_timeout = '8s'`;
     const policy = await tx.atsFirstCollectionPolicy.findUnique({ where: { id: 'new-providers' } });
@@ -61,10 +64,13 @@ async function queryAtsQueueTelemetry(): Promise<AtsQueueSnapshot> {
         (SELECT COUNT(*) FROM "AtsCompany" WHERE "firstCollectionState"='ready') AS ready,
         (SELECT COUNT(*) FROM "AtsCompany" WHERE "firstCollectionState"='ready' AND "acquisitionEngine"='legacy') AS "awaitingHandoff",
         (SELECT COUNT(*) FROM "AtsCompany" WHERE "firstCollectionState"='admitted') AS collecting,
-        (SELECT COALESCE(SUM(GREATEST("itemCount"-"processingOffset",0)),0) FROM "AtsIngestionSegment"
-          WHERE status='processing' OR (status='published' AND ("nextProcessAt" IS NULL OR "nextProcessAt" <= ${nowUtc}))) AS "persistenceDue",
-        (SELECT COALESCE(SUM(GREATEST("itemCount"-"processingOffset",0)),0) FROM "AtsIngestionSegment"
-          WHERE status='published' AND "nextProcessAt" > ${nowUtc}) AS "persistenceHeld",
+        (SELECT COALESCE(SUM(GREATEST("itemCount"-"processingOffset",0)),0) FROM "AtsIngestionSegment" segment
+          WHERE NOT ${atsEmployerVerificationHoldSql()} AND
+            (status='processing' OR (status='published' AND ("nextProcessAt" IS NULL OR "nextProcessAt" <= ${nowUtc})))) AS "persistenceDue",
+        (SELECT COALESCE(SUM(GREATEST("itemCount"-"processingOffset",0)),0) FROM "AtsIngestionSegment" segment
+          WHERE status='published' AND NOT ${atsEmployerVerificationHoldSql()} AND "nextProcessAt" > ${nowUtc}) AS "persistenceHeld",
+        (SELECT COALESCE(SUM(GREATEST("itemCount"-"processingOffset",0)),0) FROM "AtsIngestionSegment" segment
+          WHERE status IN ('published','processing') AND ${atsEmployerVerificationHoldSql()}) AS "persistenceEvidenceHeld",
         (SELECT COALESCE(SUM(GREATEST("jobCount"-"processingOffset",0)),0) FROM "AtsIngestionBatch"
           WHERE "writerMode"='legacy' AND (status='processing' OR (status='queued' AND ("nextProcessAt" IS NULL OR "nextProcessAt" <= ${nowUtc})))) AS "legacyPersistenceDue",
         (SELECT COALESCE(SUM(GREATEST("jobCount"-"processingOffset",0)),0) FROM "AtsIngestionBatch"
@@ -122,7 +128,7 @@ async function queryAtsQueueTelemetry(): Promise<AtsQueueSnapshot> {
           MIN(retry) AS "retryAt", MAX(retry) AS "lastRetryAt", MIN(example) AS example
         FROM holds GROUP BY stage,provider,reason,unit
     `);
-    return [policy, counts[0], rows] as const;
+    return [policy, counts[0], rows, await readAtsRetainedInventory(tx, now)] as const;
   }, { timeout: 25_000 });
   const health = await firstCollectionHealth(prisma, policy?.maxCatalogueJobs, policy?.maxResponseBytes, now);
   const admissionNote = !policy || policy.mode === 'held' ? 'First collections are paused by policy'
@@ -130,11 +136,12 @@ async function queryAtsQueueTelemetry(): Promise<AtsQueueSnapshot> {
     : policy.mode === 'capacity' ? `Capacity refill enabled · up to ${policy.maxUnfinished} unfinished collections · no daily quota`
     : `${policy.mode} admission · daily limit ${policy.dailyBoardLimit}`;
   const n = (key: string) => Number(counts?.[key] || 0);
-  return { observedAt: now.toISOString(), mode: policy?.mode || 'held', admissionNote,
+  return { observedAt: now.toISOString(), mode: policy?.mode || 'held', admissionNote, retained,
     capacity: await readAtsCapacityTelemetry(now),
     validationDue: n('validationDue'), validationHeld: n('validationHeld'), sizeReview: n('sizeReview'),
     ready: n('ready'), awaitingHandoff: n('awaitingHandoff'), collecting: n('collecting'),
-    persistenceDue: n('persistenceDue') + n('legacyPersistenceDue'), persistenceHeld: n('persistenceHeld') + n('legacyPersistenceHeld'), holds: groupAtsQueueHolds(rows) };
+    persistenceDue: n('persistenceDue') + n('legacyPersistenceDue'), persistenceHeld: n('persistenceHeld') + n('legacyPersistenceHeld'),
+    persistenceEvidenceHeld: n('persistenceEvidenceHeld'), holds: groupAtsQueueHolds(rows) };
 }
 
 // Shared single-flight refresh: the Dashboard polls every three seconds, but

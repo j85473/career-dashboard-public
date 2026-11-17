@@ -23,13 +23,26 @@ test('acquisition explains unfinished-board holds before the hard item limit and
   const detail = parseAtsAcquisitionDetail('State draining · Boards 1/2 · Lanes 8/8 · Staging 640/100000 · Bytes 1000/1500000000 · Intake unfinished_listings · Unfinished 32/32');
   assert.ok(detail?.kind === 'ats-acquisition');
   assert.equal(detail.stagingBlocked, false);
-  assert.match(atsAcquisitionNote(detail), /finishing 32 unfinished listings.*640 downloaded records.*can still add pages/);
-  assert.match(atsAcquisitionNote({ ...detail, admissionReason: 'staging', stagingItems: 50_000 }), /new boards paused.*50,000 downloaded records.*resume below 50,000 staged records/);
+  assert.match(atsAcquisitionNote(detail), /finishing 32 unfinished listings.*640 retained downloads.*can still add pages/);
+  assert.match(atsAcquisitionNote({ ...detail, admissionReason: 'staging', stagingItems: 50_000 }), /new boards paused.*50,000 retained downloads.*resume below 50,000 staged records/);
   for (const state of ['working', 'waiting', 'done', 'blocked', 'stopped'] as const) {
     const note = atsAcquisitionNote({ ...detail, state, admissionReason: 'open' });
-    assert.match(note, /640 downloaded records waiting/);
+    assert.match(note, /640 retained downloads/);
     assert.doesNotMatch(note, /nothing left today/);
   }
+});
+
+test('acquisition distinguishes retained downloads from scheduled retries without requiring a new producer', () => {
+  const base = 'State draining · Boards 1/2 · Lanes 8/8 · Staging 23000/100000 · Bytes 1000/1500000000 · Intake unfinished_listings';
+  const detail = parseAtsAcquisitionDetail(`${base} · Retryitems 19,000`);
+  assert.ok(detail?.kind === 'ats-acquisition');
+  assert.equal(detail.stagingRetryItems, 19000);
+  assert.match(atsAcquisitionNote(detail), /23,000 retained downloads.*19,000 scheduled for retry/);
+  assert.doesNotMatch(atsAcquisitionNote(detail), /23,000.*ready/);
+  const older = parseAtsAcquisitionDetail(base);
+  assert.ok(older?.kind === 'ats-acquisition');
+  assert.equal(older.stagingRetryItems, undefined);
+  assert.match(atsAcquisitionNote(older), /23,000 retained downloads/);
 });
 
 test('the ticker preserves entered text and rolls the newest update in next', () => {

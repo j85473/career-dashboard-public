@@ -38,6 +38,7 @@ export type PipelineStatusDetail = {
   weekCovered: number;
   weekActive: number;
   stagingItems?: number;
+  stagingRetryItems?: number;
   stagingItemLimit?: number;
   stagingBytes?: number;
   stagingByteLimit?: number;
@@ -119,6 +120,7 @@ export function parseAtsAcquisitionDetail(value: string): PipelineStatusDetail |
   const bytes = fields.get('Bytes')?.match(/^([\d,]+)\/([\d,]+)$/);
   return {
     kind: 'ats-acquisition',
+    ...(fields.has('Retryitems') ? { stagingRetryItems: telemetryNumber(fields.get('Retryitems')!) } : {}),
     ...(staging && bytes ? {
       stagingItems: telemetryNumber(staging[1]),
       stagingItemLimit: telemetryNumber(staging[2]),
@@ -182,8 +184,9 @@ const clockTime = (iso: string) => new Date(iso).toLocaleTimeString('en-US', {
 export function atsAcquisitionNote(detail: AtsAcquisitionDetail): string {
   const left = Math.max(0, detail.total - detail.swept);
   const unlock = detail.nextUnlockAt ? clockTime(detail.nextUnlockAt) : null;
-  const backlog = detail.stagingItems !== undefined
-    ? ` · ${count(detail.stagingItems)} downloaded records waiting` : '';
+  const downloaded = `${count(detail.stagingItems || 0)} retained downloads`
+    + (detail.stagingRetryItems !== undefined ? ` · ${count(detail.stagingRetryItems)} scheduled for retry` : ' · includes retry holds');
+  const backlog = detail.stagingItems !== undefined ? ` · ${downloaded}` : '';
   switch (detail.state) {
     case 'done':
       return `every ${detail.rotationDay} board swept${(detail.stagingItems || 0) > 0 ? backlog : ' · see new-board queue'}`;
@@ -193,7 +196,7 @@ export function atsAcquisitionNote(detail: AtsAcquisitionDetail): string {
       return `admissions are paused — no new boards are being claimed${backlog}`;
     case 'draining': {
       if (detail.admissionReason === 'unfinished_listings') {
-        return `new boards paused · finishing ${count(detail.unfinishedListings || 0)} unfinished listings · ${count(detail.stagingItems || 0)} downloaded records · continuation can still add pages`;
+        return `new boards paused · finishing ${count(detail.unfinishedListings || 0)} unfinished listings · ${downloaded} · continuation can still add pages`;
       }
       if (detail.admissionReason === 'staging') {
         const items = Math.floor((detail.stagingItemLimit || 0) / 2);
@@ -202,12 +205,12 @@ export function atsAcquisitionNote(detail: AtsAcquisitionDetail): string {
         if ((detail.stagingItems || 0) >= items && items > 0) limits.push(`${count(items)} staged records`);
         if ((detail.stagingBytes || 0) >= bytes && bytes > 0) limits.push(`${count(bytes)} bytes`);
         const threshold = limits.join(' and ') || `${count(items)} staged records`;
-        return `new boards paused · ${count(detail.stagingItems || 0)} downloaded records · intake can resume below ${threshold} · finishing acquired work; continuation can still add pages`;
+        return `new boards paused · ${downloaded} · intake can resume below ${threshold} · finishing acquired work; continuation can still add pages`;
       }
       const budget = (detail.stagingBytes ?? 0) >= (detail.stagingByteLimit || Number.POSITIVE_INFINITY)
         ? `${count(detail.stagingBytes || 0)} / ${count(detail.stagingByteLimit || 0)} bytes`
         : `${count(detail.stagingItems || 0)} / ${count(detail.stagingItemLimit || 0)} items`;
-      return `new boards paused · acquisition backlog ${budget} · finishing acquired work · continuation can still add pages · ${count(detail.stagingHeldBoards || 0)} due boards held`;
+      return `new boards paused · acquisition backlog ${budget} · ${downloaded} · continuation can still add pages · ${count(detail.stagingHeldBoards || 0)} due boards held`;
     }
     case 'stuck':
       if (detail.stagingBlocked || detail.admissionReason && detail.admissionReason !== 'open') return 'acquisition intake hold · no batch work progressed in over 30 minutes';

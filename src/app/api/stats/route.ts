@@ -30,6 +30,7 @@ import { currentScoreScope } from '@/lib/statsScoringScope';
 import { interviewedJobCountSql } from '@/lib/statsInterviewedJobs';
 import { readIndexerBoardStats } from '@/lib/statsIndexerBoards';
 import { readAtsFlowSnapshot } from '@/lib/atsFlowHealth';
+import { readAtsRetainedInventory } from '@/lib/atsRetainedInventory';
 import { isEnrichmentSubSource } from '@/lib/ingestionSourceKind';
 import { createLatestSuccessfulSnapshot, type SnapshotCacheStatus } from '@/lib/serverSnapshotCache';
 
@@ -135,6 +136,7 @@ async function buildStatsResponse() {
     const indexerBoards = readIndexerBoardStats(snapshotNow.getTime());
     const atsFlow = atsLedgerTelemetryAvailable && ingestionControlAvailable
       ? await readAtsFlowSnapshot(prisma, snapshotNow) : null;
+    const atsRetained = atsLedgerTelemetryAvailable ? await readAtsRetainedInventory(prisma, snapshotNow) : null;
 
     // Keep this small compatibility read ahead of the large operational
     // fan-out below. Adding it to the nested ATS Promise.all increased the
@@ -1401,6 +1403,7 @@ async function buildStatsResponse() {
       active: atsByStatus.active || 0,
       parked: atsByStatus.parked || 0,
       blacklisted: atsByStatus.blacklisted || 0,
+      recovery: atsRetained?.boards ?? null,
       byStatus: Object.entries(atsByStatus)
         .map(([name, count]) => ({ name, count }))
         .sort((a, b) => b.count - a.count),

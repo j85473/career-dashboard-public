@@ -12,6 +12,7 @@ export type AtsQueueHold = {
   example: string | null;
 };
 export type AtsQueueSnapshot = {
+  retained?: import('./atsRetainedInventory').AtsRetainedInventory;
   capacity?: Awaited<ReturnType<typeof import('./atsCapacityTelemetry').readAtsCapacityTelemetry>>;
   observedAt: string;
   mode: string;
@@ -24,6 +25,7 @@ export type AtsQueueSnapshot = {
   collecting: number;
   persistenceDue: number;
   persistenceHeld: number;
+  persistenceEvidenceHeld?: number;
   holds: AtsQueueHold[];
 };
 

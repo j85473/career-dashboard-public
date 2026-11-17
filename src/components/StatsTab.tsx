@@ -304,6 +304,7 @@ interface StatsData {
       active: number;
       parked: number;
       blacklisted: number;
+      recovery?: import('@/lib/atsRetainedInventory').AtsRetainedInventory['boards'] | null;
       byStatus: Array<{ name: string; count: number }>;
       dueForCheck: number;
       jobsFoundAtLastCheck: number;
@@ -1101,12 +1102,23 @@ export function StatsTab({ onOpenFailedQueue }: StatsTabProps) {
             note="new boards whose first scheduled check is still in the future"
           />
           <MetricCard
-            label="In error recovery"
-            value={number(boards.parked + boards.blacklisted)}
-            note={`${number(boards.parked)} parked · ${number(boards.blacklisted)} blacklisted · retried on their own backoff`}
+            label="Retained boards outside active rotation"
+            value={number(boards.recovery?.total ?? boards.parked + boards.blacklisted)}
+            note={boards.recovery
+              ? `${number(boards.recovery.withoutRecordedAttempt)} have no recorded collection attempt; the rest await retries`
+              : `${number(boards.parked)} parked · ${number(boards.blacklisted)} on longer retries · breakdown unavailable`}
             tone={boards.parked + boards.blacklisted > 0 ? 'warn' : 'good'}
           />
         </div>
+
+        {boards.recovery && <div className="ops-hero-grid" aria-label="Retained board breakdown">
+          <MetricCard label="No recorded collection attempt" value={number(boards.recovery.withoutRecordedAttempt)}
+            note="May have discovery validation; not counted as a failed collection" />
+          <MetricCard label="Board retries due" value={number(boards.recovery.retryDue)}
+            note="Retry date reached; attempts still depend on capacity and collection controls" />
+          <MetricCard label="Board retries scheduled later" value={number(boards.recovery.retryScheduled)}
+            note="Retained boards waiting for their next retry date" />
+        </div>}
 
         {coverage.breachReasons.length > 0 && (
           <div className="ops-trust-warning" role="note">

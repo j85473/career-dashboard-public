@@ -28,6 +28,15 @@ export function AtsQueuePanel({ snapshot, unavailable = false }: {
         <div><dt>Awaiting handoff</dt><dd>{count(snapshot.awaitingHandoff)}</dd></div>
         <div><dt>Unfinished collections</dt><dd>{count(snapshot.collecting)}</dd></div>
       </dl>
+      {snapshot.retained && <>
+        <h3>Downloaded records retained · {count(snapshot.retained.downloads.total)}</h3>
+        <dl className="ats-queue-metrics">
+          <div><dt>In batches being worked</dt><dd>{count(snapshot.retained.downloads.working)}</dd></div>
+          <div><dt>Scheduled for retry</dt><dd>{count(snapshot.retained.downloads.scheduledRetry)}</dd></div>
+          <div><dt>Other saved work</dt><dd>{count(snapshot.retained.downloads.other)}</dd></div>
+        </dl>
+        <p className="ats-queue-help">These three groups make up the retained API downloads, not new jobs or matches. Other saved work has no live batch claim or future batch retry; it still needs eligibility checks. Existing collections can add pages while intake is paused.</p>
+      </>}
       {snapshot.capacity && <details className="ats-queue-holds">
         <summary>Capacity and actual work</summary>
         <dl className="ats-queue-metrics">
@@ -69,7 +78,8 @@ export function AtsQueuePanel({ snapshot, unavailable = false }: {
         </summary>
         <p className="ats-queue-help">{snapshot.admissionNote}</p>
         <div className="ats-queue-persistence">
-          <span>Normalization &amp; persistence: <strong>{count(snapshot.persistenceDue)} runnable items</strong> · <strong>{count(snapshot.persistenceHeld)} held items</strong></span>
+          <span>Normalization &amp; persistence: <strong>{count(snapshot.persistenceDue)} ready or processing</strong> · <strong>{count(snapshot.persistenceHeld)} scheduled retries</strong>
+            {snapshot.persistenceEvidenceHeld !== undefined && <> · <strong>{count(snapshot.persistenceEvidenceHeld)} awaiting employer or location proof</strong></>}</span>
         </div>
         <p className="ats-queue-help">Each row counts its own stage; do not add these counts together. Validation due and Acquisition due retain failures after their retry time passes. Times are Central and show earliest eligibility, not a promised attempt. Due work also waits for worker and intake capacity and admission policy. Acquisition handoff is checked every five minutes.</p>
         <label className="ats-queue-filter">Show stage

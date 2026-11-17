@@ -46,6 +46,19 @@ test('capacity details distinguish eligible turns, actual work and bounded persi
   assert.doesNotMatch(html, /api-listing|coverage_idle_loan/);
 });
 
+test('retained downloads and employer-proof holds stay visible without inflating ready work', () => {
+  const html = renderToStaticMarkup(React.createElement(AtsQueuePanel, { snapshot: {
+    ...queueFixture, persistenceDue: 25, persistenceHeld: 10, persistenceEvidenceHeld: 19000,
+    retained: { observedAt, boards: { total: 48000, withoutRecordedAttempt: 3000, retryDue: 12000, retryScheduled: 33000 },
+      downloads: { total: 23185, working: 100, scheduledRetry: 19535, other: 3550 } },
+  } }));
+  for (const text of ['23,185', '19,535', '3,550', 'Other saved work', '25 ready or processing', '19,000', 'awaiting employer or location proof']) {
+    assert.ok(html.includes(text), text);
+  }
+  assert.doesNotMatch(html, /19,000 runnable/);
+  assert.match(summarizeAtsHoldReason('Cornerstone exact posting lacks unique structured evidence', ''), /employer evidence remains unverified/);
+});
+
 test('grouped holds preserve every stage count, remaining item and retry range', () => {
   const base = { stage: 'Acquisition' as const, provider: 'oracle', unit: 'batches' as const, count: BigInt(1), items: BigInt(43),
     retryAt: new Date('2026-10-13T05:01:00Z'), lastRetryAt: new Date('2026-10-13T05:01:00Z'), example: 'board-a' };
@@ -121,7 +134,7 @@ export const queueFixture: AtsQueueSnapshot = {
 test('the Dashboard exposes new-board readiness and timed holds even while nothing is runnable', () => {
   const html = renderToStaticMarkup(React.createElement(AtsQueuePanel, { snapshot: queueFixture }));
   for (const label of ['Ready for validation', '3,679', 'First-collection queue', 'Awaiting handoff',
-    '0 runnable items', '2,921 held items', 'Employer', 'older retry reason not recorded', 'Oct 13, 12:01 AM Central',
+    '0 ready or processing', '2,921 scheduled retries', 'Employer', 'older retry reason not recorded', 'Oct 13, 12:01 AM Central',
     'Review required · no automatic retry', 'within five minutes']) {
     assert.ok(html.toLowerCase().includes(label.toLowerCase()), label);
   }
