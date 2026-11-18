@@ -1,4 +1,5 @@
 import { ADDITIONAL_PUBLIC_ATS } from './additionalPublicAts';
+import { atsListingPositionsConsumed } from './gr8PeopleBoard';
 import { assertAtsServiceAvailable, AtsTemporaryUnavailableError, isAtsTemporaryFailure } from './atsTemporaryFailure';
 import { atsRotationCohortWhere } from './atsRotationCohort';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
@@ -163,7 +164,7 @@ export const ATS_ACQUISITION_ATTEMPT_LEASE_MS = boundedInteger(
 
 const WORKDAY_PAGE_SIZE = 20;
 const SMARTRECRUITERS_PAGE_SIZE = 100;
-const PAGINATED_PLATFORMS = new Set(['cornerstone', 'hireology', 'symphony', 'workday', 'smartrecruiters', 'eightfold', 'teamtailor', 'oracle', 'ukg', 'manatal', 'clearcompany', 'hirehive']);
+const PAGINATED_PLATFORMS = new Set(['cornerstone', 'hireology', 'gr8people', 'symphony', 'workday', 'smartrecruiters', 'eightfold', 'teamtailor', 'oracle', 'ukg', 'manatal', 'clearcompany', 'hirehive']);
 const SAME_DAY_RETRY_DELAYS_MS = [15 * 60_000, 60 * 60_000] as const;
 const PROCESSING_RETRY_DELAYS_MS = [5 * 60_000, 30 * 60_000] as const;
 const ATS_OBSERVATION_LOOKUP_CHUNK_SIZE = 500;
@@ -1642,13 +1643,14 @@ export async function acquireAtsBoardBatch(
         listingComplete = true;
       } else {
         total = cursor.total ?? result.total;
-        nextOffset = offset + result.jobs.length;
+        const positions = atsListingPositionsConsumed(board.platform, result.metadata, result.jobs.length);
+        nextOffset = offset + positions;
         const pageSize = atsListingPageSize(board.platform)!;
         listingComplete = typeof result.metadata.listingHasMore === 'boolean'
           ? !result.metadata.listingHasMore
-          : result.jobs.length < pageSize || (total != null && nextOffset >= total);
-        if (result.metadata.listingHasMore === true && result.jobs.length !== pageSize) {
-          throw new Error('Teamtailor returned an incomplete page with a continuation');
+          : positions < pageSize || (total != null && nextOffset >= total);
+        if (result.metadata.listingHasMore === true && positions !== pageSize) {
+          throw new Error(`${board.platform} returned an incomplete page with a continuation`);
         }
       }
       cursor = {

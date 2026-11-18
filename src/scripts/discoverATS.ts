@@ -1,4 +1,5 @@
 import { ADDITIONAL_PUBLIC_ATS, additionalBoardSlug } from '../lib/additionalPublicAts';
+import { GR8_PEOPLE_DISCOVERY_PATTERNS, gr8PeopleBoardSlugFromUrl } from '../lib/gr8PeopleBoard';
 import { FUTURE_ATS_DISCOVERY_PATTERNS } from '../lib/atsDiscoveryBacklog';
 import { browserAtsDiscoveryAdapters, isBrowserAtsPlatform, browserAtsBoardFromUrl } from '../lib/browserAtsBoards';
 import { isFirstCollectionPlatform, reserveJobScoreFeedRequest } from '../lib/atsFirstCollectionAdmission';
@@ -96,6 +97,7 @@ export const PLATFORMS = {
   hireology: { cc_pattern: ['careers.hireology.com/*', '*.hireology.careers/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'hireology'), test_api: '', get_jobs: (_data: unknown) => [] },
   polymer: { cc_pattern: ['jobs.polymer.co/*', 'api.polymer.co/v1/hire/organizations/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'polymer'), test_api: '', get_jobs: (_data: unknown) => [] },
   ...browserAtsDiscoveryAdapters,
+  gr8people: { cc_pattern: GR8_PEOPLE_DISCOVERY_PATTERNS, extract_slug: gr8PeopleBoardSlugFromUrl, test_api: '', get_jobs: (_data: unknown) => [] },
   symphony: { cc_pattern: SYMPHONY_DISCOVERY_PATTERNS, extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'symphony'), test_api: '', get_jobs: (_data: any) => [] },
   kula: { cc_pattern: 'careers.kula.ai/*', extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'kula'), test_api: '', get_jobs: (_data: any) => [] },
   gem: { cc_pattern: ['jobs.gem.com/*', 'api.gem.com/job_board/v0/*'], extract_slug: (url: string) => publicAtsBoardSlugFromUrl(url, 'gem'), test_api: '', get_jobs: (_data: any) => [] },

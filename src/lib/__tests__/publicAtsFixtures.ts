@@ -5,12 +5,21 @@ export const publicAtsTestSlugs: Record<string, string> = {
   ukg: 'recruiting2.ultipro.com::dre1001dryg::6ca32cd1-ca64-4d8f-82e7-f65b3aaa0e9b',
   comeet: 'port::59.004', successfactors: 'career5.successfactors.eu::C0001122692P::default',
   zohorecruit: 'thinkbridge.zohorecruit.in::Careers',
+  gr8people: 'careers.teradata.com',
   gem: 'example', jobscore: 'example', jazzhr: 'example', manatal: 'example', hirehive: 'example', kula: 'example',
   clearcompany: 'adc5441f-f521-a46d-ad4d-ad46a1954fcc',
 };
 export const ukgOpportunityId = '728fb6e4-c49c-48f8-9099-28eb36d8a552';
 export const kulaTestFeed = '<rss version="2.0" xmlns:job="https://kula.ai/rss"><channel><title>Example Inc</title><link>https://careers.kula.ai/example</link><item><title>Channel Manager</title><link>https://careers.kula.ai/example/123/apply</link><guid>https://careers.kula.ai/example/123/apply</guid><description><![CDATA[<p>Full description</p>]]></description><job:location><job:city>Austin</job:city><job:state>TX</job:state><job:country>United States</job:country><job:remote>true</job:remote></job:location></item></channel></rss>';
 export const publicAtsTestFixtures: Record<string, unknown> = {
+  gr8people: { data: { searchJobs: { results: { totalCount: 1, pageInfo: { hasNextPage: false }, nodes: [{
+    key: '220925', number: '220925', status: 'OPEN', postType: 'INT_EXT', title: 'Senior Manager Partner Operations',
+    descriptionHTML: '<p>Partner operations and onboarding.</p>', workplaceType: 'REMOTE',
+    primaryPlace: { name: 'United States' }, currencyCode: 'USD', payRangeType: 'ANNUAL', payRangeLow: 132900, payRangeHigh: 199300,
+    structuredDataJSON: JSON.stringify({ '@type': 'JobPosting', title: 'Senior Manager Partner Operations', identifier: '220925',
+      hiringOrganization: { name: 'Teradata' }, datePosted: '2026-11-16T21:14:19.633Z',
+      jobLocation: { address: { addressLocality: 'San Diego', addressRegion: 'California', addressCountry: 'United States' } } }),
+  }] } } } },
   cornerstone: { status: 'Success', data: { totalCount: 1, requisitions: [{ requisitionId: 123, displayJobTitle: 'Channel Manager',
     externalDescription: '<p>Full description</p>', locations: [{ city: 'Austin', state: 'TX', country: 'US' }] }] } },
   hireology: { count: 1, page: 1, page_size: 20, data: [{ id: 123, name: 'Channel Manager', job_description: '<p>Full description</p>',

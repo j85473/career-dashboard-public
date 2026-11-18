@@ -9,6 +9,7 @@ import { atsContinuationEligibilityWhere, atsContinuationServiceWhere, ATS_API_S
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import { nextAtsProcessingContinuationAt } from './atsProcessingSchedule';
 import { reserveFirstCollection } from './atsFirstCollectionAdmission';
+import { atsListingPositionsConsumed } from './gr8PeopleBoard';
 import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 
@@ -953,7 +954,8 @@ export function isAtsV2RetryableEmptyPage(platform: string, page: {
   responseItemCount: number; requestedOffset: number; providerTotal: number | null;
   metadata: unknown; materializationCompleteAt: Date | null;
 }): boolean {
-  if (platform === 'oracle' || page.responseItemCount !== 0 || !page.materializationCompleteAt) return false;
+  if (platform === 'oracle' || !page.materializationCompleteAt
+    || atsListingPositionsConsumed(platform, page.metadata, page.responseItemCount) !== 0) return false;
   const hasMore = page.metadata && typeof page.metadata === 'object'
     ? (page.metadata as Record<string, unknown>).listingHasMore : undefined;
   return typeof hasMore === 'boolean' ? hasMore
@@ -980,7 +982,7 @@ async function earlierMatchingPage(
 
 export async function commitAtsV2ListingPage(input: AtsLedgerPageInput): Promise<AtsLedgerPageCommit> {
   const hashes = pageHashes(input);
-  const nextOffset = input.requestedOffset + input.jobs.length;
+  const nextOffset = input.requestedOffset + atsListingPositionsConsumed(input.claim.platform, input.metadata, input.jobs.length);
   const now = new Date();
   const inlineObservations = input.jobs.length <= ATS_LEDGER_OBSERVATION_CHUNK_SIZE;
 
@@ -1006,7 +1008,7 @@ export async function commitAtsV2ListingPage(input: AtsLedgerPageInput): Promise
     }
     // These newly admitted paged APIs must not count an earlier page toward
     // their advertised total. Retain the current cursor for retry/review.
-    if (['cornerstone', 'hireology'].includes(input.claim.platform) && input.requestedOffset > 0 && input.jobs.length
+    if (['cornerstone', 'hireology', 'gr8people'].includes(input.claim.platform) && input.requestedOffset > 0 && input.jobs.length
       && await earlierMatchingPage(transaction, input.claim.batchId, input.claim.listingGeneration,
         input.requestedOffset, hashes.identityMultisetHash)) {
       throw new Error(`${input.claim.platform} returned an earlier listing page at a new offset`);

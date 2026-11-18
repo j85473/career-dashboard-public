@@ -5,7 +5,7 @@ import { symphonyBoardSlugFromUrl, symphonyBoardRequest, parseSymphonyConfig, pa
 import { buildAtsBoardRequest, parseAtsListingPayload } from '../atsAcquisition';
 import { identifyAts } from '../atsUtils';
 import { discoveredAtsBoardFromJobUrl } from '../atsBoardDiscovery';
-import { isFirstCollectionPlatform, FIRST_COLLECTION_PLATFORMS } from '../atsFirstCollectionAdmission';
+import { isFirstCollectionPlatform } from '../atsFirstCollectionAdmission';
 import { planAtsV2PageCompletion } from '../atsAcquisitionDispatcherV2';
 import { publicAtsTestFixtures } from './publicAtsFixtures';
 
@@ -99,7 +99,8 @@ test('only complete pages continue and final pages reconcile against the total',
 test('database admission fences cover Symphony without changing existing data or operator settings', () => {
   const sql = readFileSync('prisma/migrations/20261019170000_symphony_talent_acquisition/migration.sql', 'utf8');
   for (const platforms of sql.matchAll(/NEW\.platform (?:NOT )?IN \(([^)]+)\)/g)) {
-    assert.deepEqual([...platforms[1].matchAll(/'([^']+)'/g)].map(match => match[1]).sort(), FIRST_COLLECTION_PLATFORMS.filter(platform => !['cornerstone', 'hireology', 'polymer', 'homerun', 'softgarden', 'dvinci', 'flatchr'].includes(platform)).sort());
+    assert.deepEqual([...platforms[1].matchAll(/'([^']+)'/g)].map(match => match[1]).sort(),
+      ['clearcompany', 'gem', 'hirehive', 'jazzhr', 'jobscore', 'kula', 'manatal', 'symphony', 'zohorecruit']);
   }
   assert.match(sql, /reserved_batch = NEW.id/);
   assert.match(sql, /FOR SHARE/);

@@ -34,6 +34,7 @@ export const DISCOVERABLE_ATS_PLATFORM_BY_LABEL: Readonly<Record<string, string>
   BambooHR: 'bamboohr',
   Breezy: 'breezy',
   Greenhouse: 'greenhouse',
+  'GR8 People': 'gr8people',
   Eightfold: 'eightfold',
   Dayforce: 'dayforce',
   'Oracle Cloud': 'oracle',

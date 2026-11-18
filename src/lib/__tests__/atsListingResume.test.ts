@@ -317,6 +317,44 @@ test('a repeated Workday response is saved once and closes the listing phase', a
   assert.deepEqual(writes, ['compaction']);
 });
 
+test('GR8 People checkpoints unavailable search positions without counting phantom observations', async t => {
+  const claim = fixture('gr8people').claim;
+  const pages: Array<{ responseItemCount: number; metadata: unknown }> = [];
+  const batches: Array<{ listingOffset: number; rawObservationCount: { increment: number } }> = [];
+  const tx = {
+    atsIngestionBatch: {
+      findUniqueOrThrow: async () => ({
+        id: claim.batchId, writerMode: 'v2', ledgerVersion: 2,
+        activeLedgerGeneration: 1, acquisitionClaimToken: claim.claimToken,
+        acquisitionClaimFence: claim.claimFence, acquisitionLeaseExpiresAt: new Date(Date.now() + 60_000),
+        acquisitionPhase: 'listing', listingOffset: 0,
+      }),
+      updateMany: async ({ data }: { data: typeof batches[number] }) => { batches.push(data); return { count: 1 }; },
+    },
+    atsIngestionPage: {
+      findFirst: async () => null,
+      create: async ({ data }: { data: typeof pages[number] }) => { pages.push(data); },
+    },
+    atsListingObservation: { createMany: async () => {} },
+    atsAcquisitionWorkReceipt: { update: async () => {} },
+  };
+  mockPrismaTransaction(t, prisma, async (run: (client: Prisma.TransactionClient) => Promise<unknown>) =>
+    run(tx as unknown as Prisma.TransactionClient));
+  const metadata = { listingHasMore: true, listingUnavailableSlots: [5] };
+  const result = await commitAtsV2ListingPage({
+    claim, requestedOffset: 0, requestedLimit: 40, providerTotal: 41,
+    jobs: Array.from({ length: 39 }, (_, i) => ({ id: String(i) })),
+    metadata, requestedAt: new Date(), respondedAt: new Date(), httpStatus: 200,
+    listingComplete: false,
+  });
+  assert.equal(result.nextOffset, 40);
+  assert.equal(result.listingComplete, false);
+  assert.equal(pages[0].responseItemCount, 39);
+  assert.deepEqual(pages[0].metadata, metadata);
+  assert.equal(batches[0].listingOffset, 40);
+  assert.equal(batches[0].rawObservationCount.increment, 39);
+});
+
 test('Workday retains or recovers its positive total while preserving literal page evidence and listing completion', async t => {
   const claim = { ...fixture('workday').claim, listingOffset: 20 };
   const batch = { id: claim.batchId, writerMode: 'v2', ledgerVersion: 2, activeLedgerGeneration: 1,

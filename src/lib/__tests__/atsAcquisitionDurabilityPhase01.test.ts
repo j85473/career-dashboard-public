@@ -115,7 +115,8 @@ test('legacy characterization: pagination freezes the first total and accepts a 
     source.indexOf('if (!cursor.listingComplete)'),
   );
   assert.match(listing, /cursor\.total \?\? result\.total/);
-  assert.match(listing, /result\.jobs\.length < pageSize/);
+  assert.match(listing, /atsListingPositionsConsumed\(board\.platform, result\.metadata, result\.jobs\.length\)/);
+  assert.match(listing, /positions < pageSize/);
 });
 
 test('Phase 0B explicitly bounds marker transactions and isolates internal failures', () => {

@@ -41,6 +41,7 @@ test('link-only updates learn every schedulable public ATS board', () => {
     ['Lever', 'lever', 'acme', 'https://jobs.lever.co/acme/e7bf85c7-642f'],
     ['Personio', 'personio', 'acme', 'https://acme.jobs.personio.de/job/1834171'],
     ['Pinpoint', 'pinpoint', 'acme', 'https://acme.pinpointhq.com/en/postings/caa511ae'],
+    ['GR8 People', 'gr8people', 'careers.teradata.com', 'https://careers.teradata.com/jobs/220925/senior-manager-partner-operations'],
     ['Recruitee', 'recruitee', 'acme', 'https://acme.recruitee.com/o/channel-manager'],
     ['Rippling', 'rippling', 'acme', 'https://ats.rippling.com/acme/jobs/2f0674e6-f01f'],
     ['SmartRecruiters', 'smartrecruiters', 'AcmeCorp', 'https://jobs.smartrecruiters.com/AcmeCorp/744000'],

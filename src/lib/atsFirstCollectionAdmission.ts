@@ -8,7 +8,7 @@ import { firstCollectionProductiveWorkSql } from './atsFirstCollectionWork';
 import { REVIEWED_FIRST_COLLECTION_POLICY_ID, PROVIDER_BACKLOG_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionWhere,
   reviewedFirstCollectionReserveJobs, reviewedFirstCollectionMaximumJobs } from './atsReviewedFirstCollection';
 
-export const FIRST_COLLECTION_PLATFORMS = [...ADDITIONAL_PUBLIC_ATS, ...EXPANDED_PUBLIC_ATS, 'symphony', 'zohorecruit', ...TENANT_ATS_PLATFORMS] as const;
+export const FIRST_COLLECTION_PLATFORMS = [...ADDITIONAL_PUBLIC_ATS, ...EXPANDED_PUBLIC_ATS, 'gr8people', 'symphony', 'zohorecruit', ...TENANT_ATS_PLATFORMS] as const;
 export const isFirstCollectionPlatform = (platform: string): boolean =>
   (FIRST_COLLECTION_PLATFORMS as readonly string[]).includes(platform);
 export const FIRST_COLLECTION_POLICY_ID = 'new-providers';

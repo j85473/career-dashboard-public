@@ -20,6 +20,7 @@ import { publishedEmployerName } from './publicAtsEmployer';
 import { dayforcePostingIdentity, isDayforcePostingHost, resolveDayforceObservation } from './dayforcePostingIdentity';
 import { recoverRetainedAtsEmployerEvidence } from './atsEmployerRecovery';
 import { isPublicAtsPlatform, buildPublicAtsBoardRequest } from './publicAtsBoards';
+import { atsListingPositionsConsumed, gr8PeoplePostingIdentity } from './gr8PeopleBoard';
 import { eightfoldSearchUrl, eightfoldPostingUrl, eightfoldLocation } from './eightfoldBoard';
 import { newJSearchProgress, readJSearchProgress, runJSearchPages, type JSearchProgress } from './jsearch';
 import { paidSearchAgeParams, parseIndeedListing, readPaidSearchResponse } from './paidSearchResponse';
@@ -1003,6 +1004,8 @@ function workdayRequisitionKey(pathSegments: readonly string[]): string | null {
 
 function requisitionIdentity(value: string | null | undefined): { host: string; key: string } | null {
   if (!value) return null;
+  const gr8People = gr8PeoplePostingIdentity(value);
+  if (gr8People) return gr8People;
   try {
     const url = new URL(value);
     const host = url.hostname.toLowerCase();
@@ -5464,11 +5467,12 @@ export async function ingestJobs(
               const page = await fetchAtsBoardPage(board, offset, atsTurnSignal);
               data = page.metadata;
               jobs.push(...page.jobs as AtsJob[]);
-              offset += page.jobs.length;
+              const positions = atsListingPositionsConsumed(board.platform, page.metadata, page.jobs.length);
+              offset += positions;
               const pageSize = atsListingPageSize(board.platform);
               if (typeof page.metadata.listingHasMore === 'boolean' ? !page.metadata.listingHasMore
-                : pageSize === null || (page.total !== null && offset === page.total) || page.jobs.length < pageSize) break;
-              if (!page.jobs.length || offset >= 100000) throw new Error(`${board.platform} pagination did not reach completion`);
+                : pageSize === null || (page.total !== null && offset === page.total) || positions < pageSize) break;
+              if (!positions || offset >= 100000) throw new Error(`${board.platform} pagination did not reach completion`);
             }
           } else {
             throwIfAtsInterrupted();
@@ -6213,7 +6217,7 @@ export async function ingestJobs(
                   sourceId,
                   postedAt,
                   postedCompensationOverride: ripplingCompensation || breezyCompensation
-                    || (board.platform === 'kula' ? atsEnrichmentMarker?.compensation || job.postedCompensation : null),
+                    || (['kula', 'gr8people'].includes(board.platform) ? atsEnrichmentMarker?.compensation || job.postedCompensation : null),
                   authoritativePrefilterReason:
                     teamtailorLocationAvailability?.passes === false
                       ? teamtailorLocationAvailability.reason

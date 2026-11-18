@@ -5,7 +5,7 @@ import { kulaBoardSlugFromUrl, parseKulaRssListing } from '../kulaRssBoard';
 import { kulaTestFeed } from './publicAtsFixtures';
 import { buildAtsBoardRequest, parseAtsListingPayload, responseMatchesPlatform, isAtsProviderWideError } from '../atsAcquisition';
 import { atsListingSourceId } from '../atsPrequeueCompaction';
-import { isFirstCollectionPlatform, FIRST_COLLECTION_PLATFORMS } from '../atsFirstCollectionAdmission';
+import { isFirstCollectionPlatform } from '../atsFirstCollectionAdmission';
 import { atsAuthFailureIsPlatformWide, atsResponseSchemaFailureIsPlatformWide, identifyAts } from '../atsUtils';
 import { planAtsRequest } from '../atsRequestConcurrency';
 import { atsRequestSpacingMs } from '../atsRequestPacing';
@@ -150,7 +150,8 @@ test('Kula uses existing first-collection capacity, board failure isolation and 
 test('the database migration protects Kula admissions and catalogues only the two verified employers', () => {
   const sql = readFileSync('prisma/migrations/20261012230000_kula_rss_acquisition/migration.sql', 'utf8');
   for (const platforms of sql.matchAll(/NEW\.platform (?:NOT )?IN \(([^)]+)\)/g)) {
-    assert.deepEqual([...platforms[1].matchAll(/'([^']+)'/g)].map(match => match[1]).sort(), FIRST_COLLECTION_PLATFORMS.filter(platform => !['symphony', 'cornerstone', 'hireology', 'polymer', 'homerun', 'softgarden', 'dvinci', 'flatchr'].includes(platform)).sort());
+    assert.deepEqual([...platforms[1].matchAll(/'([^']+)'/g)].map(match => match[1]).sort(),
+      ['clearcompany', 'gem', 'hirehive', 'jazzhr', 'jobscore', 'kula', 'manatal', 'zohorecruit']);
   }
   assert.match(sql, /reserved_batch = NEW.id/);
   assert.match(sql, /FOR SHARE/);

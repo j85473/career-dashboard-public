@@ -2,6 +2,7 @@ import { ADDITIONAL_PUBLIC_ATS, isAdditionalPublicAts, additionalBoardSlug, addi
 import { symphonyBoardSlugFromUrl, symphonyBoardUrl, symphonyBoardRequest, parseSymphonyConfig, parseSymphonyListing, SYMPHONY_PAGE_SIZE } from './symphonyAtsBoard';
 import { EXPANDED_PUBLIC_ATS, isExpandedPublicAts, expandedBoardSlug, expandedBoardUrl, expandedConfig, expandedRequest, parseExpandedListing, type ExpandedAtsConfig } from './expandedPublicAts';
 import { clearCompanyPageUrl } from './clearcompanyBoard';
+import { GR8_PEOPLE_PAGE_SIZE, gr8PeopleBoardSlugFromUrl, gr8PeopleBoardUrl, gr8PeopleListingRequest, parseGr8PeopleListing } from './gr8PeopleBoard';
 import { TENANT_ATS_PLATFORMS, isTenantAtsPlatform, tenantAtsBoardSlugFromUrl, tenantAtsBoardUrl, tenantAtsPageSize, tenantAtsRequest, tenantAtsConfig, tenantAtsListingSlug, parseTenantAtsListing } from './tenantAtsBoards';
 import * as cheerio from 'cheerio';
 import { successFactorsBrandedEmployer } from './successFactorsPosting';
@@ -10,7 +11,7 @@ import { oracleBrandedEmployer, ukgBoardBranding } from './publicAtsEmployer';
 import { zohoRecruitBoardSlugFromUrl, zohoRecruitBoardUrl, zohoRecruitBoardRequest, parseZohoRecruitBoardConfig, parseZohoRecruitListing } from './zohoRecruitBoard';
 
 type RecordValue = Record<string, unknown>;
-export const PUBLIC_ATS_PLATFORMS = [...ADDITIONAL_PUBLIC_ATS, ...EXPANDED_PUBLIC_ATS, 'symphony', 'dayforce', 'oracle', 'ukg', 'comeet', 'successfactors', 'zohorecruit', ...TENANT_ATS_PLATFORMS] as const;
+export const PUBLIC_ATS_PLATFORMS = [...ADDITIONAL_PUBLIC_ATS, ...EXPANDED_PUBLIC_ATS, 'gr8people', 'symphony', 'dayforce', 'oracle', 'ukg', 'comeet', 'successfactors', 'zohorecruit', ...TENANT_ATS_PLATFORMS] as const;
 export type PublicAtsPlatform = typeof PUBLIC_ATS_PLATFORMS[number];
 export type PublicAtsConfig = ExpandedAtsConfig;
 export const isPublicAtsPlatform = (platform: string): platform is PublicAtsPlatform =>
@@ -42,6 +43,7 @@ export function publicAtsBoardSlugFromUrl(value: string, platform: PublicAtsPlat
   if (isAdditionalPublicAts(platform)) return additionalBoardSlug(platform, value);
   if (isExpandedPublicAts(platform)) return expandedBoardSlug(platform, value);
   if (platform === 'symphony') return symphonyBoardSlugFromUrl(value);
+  if (platform === 'gr8people') return gr8PeopleBoardSlugFromUrl(value);
   if (isTenantAtsPlatform(platform)) return tenantAtsBoardSlugFromUrl(value, platform);
   if (platform === 'zohorecruit') return zohoRecruitBoardSlugFromUrl(value);
   try {
@@ -78,6 +80,7 @@ export function publicAtsBoardUrl(platform: PublicAtsPlatform, slug: string): st
   if (isAdditionalPublicAts(platform)) return additionalBoardUrl(platform, slug);
   if (isExpandedPublicAts(platform)) return expandedBoardUrl(platform, slug);
   if (platform === 'symphony') return symphonyBoardUrl(slug);
+  if (platform === 'gr8people') return gr8PeopleBoardUrl(slug);
   if (isTenantAtsPlatform(platform)) return tenantAtsBoardUrl(platform, slug);
   if (platform === 'zohorecruit') return zohoRecruitBoardUrl(slug);
   const [first, second, third] = slug.split('::');
@@ -96,6 +99,7 @@ export function publicAtsBoardUrl(platform: PublicAtsPlatform, slug: string): st
 }
 
 export function publicAtsPageSize(platform: string): number | null {
+  if (platform === 'gr8people') return GR8_PEOPLE_PAGE_SIZE;
   if (platform === 'cornerstone' || platform === 'hireology') return 20;
   return platform === 'symphony' ? SYMPHONY_PAGE_SIZE : platform === 'oracle' ? 25 : platform === 'ukg' ? 20 : tenantAtsPageSize(platform);
 }
@@ -105,6 +109,7 @@ export function buildPublicAtsBoardRequest(platform: PublicAtsPlatform, slug: st
   if (isAdditionalPublicAts(platform)) return additionalRequest(platform, slug, offset);
   if (isExpandedPublicAts(platform)) return expandedRequest(platform, slug, offset, config);
   if (platform === 'symphony') return symphonyBoardRequest(slug, offset);
+  if (platform === 'gr8people') return gr8PeopleListingRequest(slug, offset);
   if (isTenantAtsPlatform(platform)) return tenantAtsRequest(platform, tenantAtsListingSlug(platform, slug, config), offset);
   if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid ATS listing offset');
   if (platform === 'zohorecruit') {
@@ -201,6 +206,7 @@ export function parsePublicAtsListing(platform: PublicAtsPlatform, slug: string,
   if (isAdditionalPublicAts(platform)) return parseAdditionalListing(platform, slug, parsed, bodyText);
   if (isExpandedPublicAts(platform)) return parseExpandedListing(platform, slug, parsed, config, offset);
   if (platform === 'symphony') return parseSymphonyListing(slug, parsed, offset);
+  if (platform === 'gr8people') return parseGr8PeopleListing(slug, parsed, offset);
   if (isTenantAtsPlatform(platform)) return parseTenantAtsListing(platform, slug, parsed, bodyText, config, offset);
   if (platform === 'zohorecruit') {
     const feed = parseZohoRecruitListing(slug, parsed, config.company);

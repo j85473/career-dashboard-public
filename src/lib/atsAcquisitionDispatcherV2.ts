@@ -3,6 +3,7 @@ import { atsTemporaryRetryDelayMs, isAtsTemporaryFailure } from './atsTemporaryF
 import { storageAllows } from './storagePressure';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import { firstCollectionSelection } from './atsFirstCollectionAdmission';
+import { atsListingPositionsConsumed } from './gr8PeopleBoard';
 import { Prisma, type AtsCompany } from './prismaClient';
 
 import {
@@ -668,7 +669,7 @@ export async function runAtsV2ListingQuantum(
     const completion = checkpoint.latestPage && planAtsV2PageCompletion({
       platform: claim.platform,
       requestedOffset: checkpoint.latestPage.requestedOffset,
-      responseCount: checkpoint.latestPage.responseItemCount,
+      responseCount: atsListingPositionsConsumed(claim.platform, checkpoint.latestPage.metadata, checkpoint.latestPage.responseItemCount),
       providerTotal: checkpoint.latestPage.providerTotal,
       listingHasMore: (checkpoint.latestPage.metadata as Record<string, unknown> | null)?.listingHasMore,
     });
@@ -750,7 +751,7 @@ export async function runAtsV2ListingQuantum(
       const completion = planAtsV2PageCompletion({
         platform: claim.platform,
         requestedOffset,
-        responseCount: result.jobs.length,
+        responseCount: atsListingPositionsConsumed(claim.platform, result.metadata, result.jobs.length),
         providerTotal: result.total,
         listingHasMore: result.metadata.listingHasMore,
       });
