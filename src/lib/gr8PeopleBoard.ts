@@ -1,3 +1,4 @@
+import { load } from 'cheerio';
 import { AtsTemporaryUnavailableError } from './atsTemporaryFailure';
 import { extractStructuredBaseCompensation } from './postedCompensation';
 import { publishedEmployerName } from './publicAtsEmployer';
@@ -6,8 +7,9 @@ export const GR8_PEOPLE_PAGE_SIZE = 40;
 export const GR8_PEOPLE_DISCOVERY_PATTERNS = ['*.gr8people.com/jobs*', 'careers.teradata.com/jobs*'];
 
 const teradataHost = 'careers.teradata.com';
-const nonPublicTenant = /^(?:www\d*|api|app|assets|cdn|dev(?:elopers?)?|docs|help|services|status|support|t|test|demo|training)(?:-|$)|internal(?:-|$)/i;
+const nonPublicTenant = /^(?:www\d*|api|apps?|assets|cdn|dev(?:elopers?)?|docs|help|services|status|support|t|test|demo|training)(?:-|$)|internal(?:-|$)/i;
 const publicJobsPath = /^\/jobs(?:\/([1-9]\d*)(?:\/[^/]+)?)?\/?$/;
+const nonOpenStatuses = new Set(['CANCELED', 'CLOSED', 'ON_HOLD']);
 
 export function gr8PeopleBoardSlugFromUrl(value: string): string | null {
   try {
@@ -32,6 +34,17 @@ export function gr8PeopleBoardUrl(slug: string): string {
   const url = `https://${slug}/jobs`;
   if (gr8PeopleBoardSlugFromUrl(url) !== slug) throw new Error('Invalid GR8 People board identity');
   return url;
+}
+
+export function isGr8PeoplePublicBoardPage(slug: string, landedUrl: string, html: string): boolean {
+  if (landedUrl.replace(/\/$/, '') !== gr8PeopleBoardUrl(slug)) return false;
+  const $ = load(html);
+  try {
+    const data = JSON.parse($('script#__NEXT_DATA__[type="application/json"]').text());
+    return data?.page === '/jobs' && data?.assetPrefix === 'https://assets.gr8people.com/builds/app-career-site';
+  } catch {
+    return false;
+  }
 }
 
 export function gr8PeopleListingRequest(slug: string, offset: number): { url: string; init: RequestInit } {
@@ -65,7 +78,7 @@ type Row = Record<string, unknown>;
 const record = (value: unknown): Row => value && typeof value === 'object' && !Array.isArray(value) ? value as Row : {};
 const text = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
 
-/** An explicitly missing GraphQL node occupies a search position but has no posting identity. */
+/** Missing and non-open nodes occupy search positions without becoming intake items. */
 export function atsListingPositionsConsumed(platform: string, metadata: unknown, jobCount: number): number {
   if (platform !== 'gr8people') return jobCount;
   const slots = record(metadata).listingUnavailableSlots;
@@ -123,30 +136,38 @@ export function parseGr8PeopleListing(slug: string, response: unknown, offset: n
   }
 
   const keys = new Set<string>();
-  const jobs = nodes.filter((_, index) => !unavailable.has(index)).map((node): Row => {
+  const nonOpenPostings: Array<{ key: string; status: string }> = [];
+  const jobs = nodes.flatMap((node, index): Row[] => {
+    if (unavailable.has(index)) return [];
     const row = record(node);
     const key = text(row.key);
+    const status = text(row.status);
+    if (!/^[1-9]\d*$/.test(key) || keys.has(key)) throw new Error('GR8 People job search returned an unverified posting');
+    keys.add(key);
+    if (nonOpenStatuses.has(status)) {
+      unavailable.add(index);
+      nonOpenPostings.push({ key, status });
+      return [];
+    }
     const title = text(row.title);
     const description = text(row.descriptionHTML);
     const structured = record(JSON.parse(text(row.structuredDataJSON) || '{}'));
     const company = publishedEmployerName(record(structured.hiringOrganization).name);
     // The public URL key and the employer's requisition number can differ.
     const structuredIdentifier = text(structured.identifier) || text(record(structured.identifier).value);
-    if (!/^[1-9]\d*$/.test(key) || keys.has(key) || !title || !description || !company
-      || row.status !== 'OPEN' || !['EXTERNAL', 'INT_EXT'].includes(text(row.postType))
+    if (!title || !description || !company || status !== 'OPEN' || !['EXTERNAL', 'INT_EXT'].includes(text(row.postType))
       || structured['@type'] !== 'JobPosting' || text(structured.title) !== title
       || !structuredIdentifier || structuredIdentifier !== text(row.number)
       || (slug === teradataHost && company !== 'Teradata')) {
       throw new Error('GR8 People job search returned an unverified posting');
     }
-    keys.add(key);
     const postedCompensation = extractStructuredBaseCompensation([{
       currency: text(row.currencyCode),
       frequency: row.payRangeType === 'ANNUAL' ? 'YEAR' : undefined,
       rangeStart: typeof row.payRangeLow === 'number' ? row.payRangeLow : undefined,
       rangeEnd: typeof row.payRangeHigh === 'number' ? row.payRangeHigh : undefined,
     }]);
-    return {
+    return [{
       id: `${slug}::${key}`,
       publicAtsPostingId: key,
       title, company, description,
@@ -155,11 +176,15 @@ export function parseGr8PeopleListing(slug: string, response: unknown, offset: n
       workplaceType: text(row.workplaceType),
       createdAt: text(structured.datePosted) || text(row.postedOn),
       postedCompensation,
-    };
+    }];
   });
   return {
     jobs,
-    metadata: { listingHasMore: hasNextPage, ...(unavailable.size ? { listingUnavailableSlots: [...unavailable].sort((a, b) => a - b) } : {}) },
+    metadata: {
+      listingHasMore: hasNextPage,
+      ...(unavailable.size ? { listingUnavailableSlots: [...unavailable].sort((a, b) => a - b) } : {}),
+      ...(nonOpenPostings.length ? { listingNonOpenPostings: nonOpenPostings } : {}),
+    },
     total: totalCount,
   };
 }

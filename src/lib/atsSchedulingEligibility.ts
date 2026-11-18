@@ -26,8 +26,13 @@ export function atsContinuationEligibilityWhere(now: Date, paused: readonly stri
     writerMode: 'v2', platform: { notIn: NON_API_ATS_PLATFORMS },
     status: { in: [...ATS_OPEN_BATCH_STATUSES] }, acquisitionPhase: { in: [...ATS_CONTINUATION_PHASES] },
     OR: [{ nextAcquireAt: null }, { nextAcquireAt: { lte: now } }],
-    AND: [atsListingPauseWhere(paused), { OR: [{ acquisitionClaimToken: null }, { acquisitionLeaseExpiresAt: { lte: now } }] }],
+    AND: [atsListingPauseWhere(paused), gr8PeopleListingBoardWhere(), { OR: [{ acquisitionClaimToken: null }, { acquisitionLeaseExpiresAt: { lte: now } }] }],
   };
+}
+
+/** An excluded GR8 People site cannot supply more pages. Its saved data can still be processed. */
+export function gr8PeopleListingBoardWhere(): Prisma.AtsIngestionBatchWhereInput {
+  return { NOT: { platform: 'gr8people', acquisitionPhase: 'listing', board: { status: 'excluded' } } };
 }
 
 const boardRecovery: Prisma.AtsCompanyWhereInput = { OR: [

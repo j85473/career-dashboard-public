@@ -5,7 +5,7 @@ import { atsRetryColumns, readAtsRetryReason, type AtsRetryReason } from './atsR
 import { retainedAtsDetailRetryAt } from './atsDetailRetryPolicy';
 import { storageAllows } from './storagePressure';
 import { reserveAtsServiceTurn, finishAtsServiceTurn, ATS_SERVICE_MAX_WAIT_MS, type AtsServiceTurn } from './atsServiceScheduling';
-import { atsContinuationEligibilityWhere, atsContinuationServiceWhere, ATS_API_SERVICE_CLASSES, ATS_DRAIN_PHASES } from './atsSchedulingEligibility';
+import { atsContinuationEligibilityWhere, atsContinuationServiceWhere, ATS_API_SERVICE_CLASSES, ATS_DRAIN_PHASES, gr8PeopleListingBoardWhere } from './atsSchedulingEligibility';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import { nextAtsProcessingContinuationAt } from './atsProcessingSchedule';
 import { reserveFirstCollection } from './atsFirstCollectionAdmission';
@@ -698,7 +698,7 @@ async function claimAtsContinuationCandidate(
           { acquisitionClaimToken: null },
           { acquisitionLeaseExpiresAt: { lte: now } },
         ],
-      }],
+      }, gr8PeopleListingBoardWhere()],
     },
     data: {
       acquisitionClaimToken: claimToken,

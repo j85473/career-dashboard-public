@@ -16,6 +16,8 @@ const slug = 'careers.teradata.com';
 const postingUrl = `https://${slug}/jobs/220925/senior-manager-partner-operations`;
 type Fixture = { data: { searchJobs: { results: { nodes: Array<Record<string, unknown> | null>; totalCount: number; pageInfo: { hasNextPage: boolean } } } }; errors?: unknown[] };
 const fixture = (): Fixture => structuredClone(publicAtsTestFixtures.gr8people) as Fixture;
+const boardHtml = '<script type="application/json" id="__NEXT_DATA__">{"page":"/jobs","assetPrefix":"https://assets.gr8people.com/builds/app-career-site"}</script>';
+const postingHtml = '<script type="application/ld+json">{"@type":"JobPosting","title":"Senior Manager Partner Operations","hiringOrganization":{"name":"Teradata"}}</script>';
 
 test('GR8 People public listing and posting URLs identify schedulable boards', () => {
   assert.equal(identifyAts({ url: postingUrl }), 'GR8 People');
@@ -39,11 +41,16 @@ test('acquisition and validation share the same bounded GR8 People search', asyn
   assert.equal(request.init.redirect, 'error');
   assert.equal(JSON.parse(request.init.body as string).variables.start, 40);
   assert.throws(() => buildAtsBoardRequest({ platform, slug }, 39), /offset/);
+  const requested: string[] = [];
   assert.deepEqual(await validateSlug(platform, slug, undefined, async (url, init) => {
+    requested.push(url);
+    if (url === `https://${slug}/jobs`) return new Response(boardHtml);
+    if (url === `https://${slug}/jobs/220925`) return new Response(postingHtml.replace('Teradata', 'Teradata.'));
     assert.equal(url, request.url);
     assert.equal(JSON.parse(init?.body as string).variables.start, 0);
     return Response.json(fixture());
   }), { success: true, jobsFound: 1 });
+  assert.deepEqual(requested, [`https://${slug}/jobs`, request.url, `https://${slug}/jobs/220925`]);
   const page = parseAtsListingPayload(platform, fixture(), null, { platform, slug });
   const [job] = page.jobs;
   assert.equal(job.id, `${slug}::220925`);
@@ -52,6 +59,34 @@ test('acquisition and validation share the same bounded GR8 People search', asyn
   assert.equal(job.postedCompensation, '$132,900–$199,300 base');
   assert.equal(generatePostingIdentity({ url: String(job.url) }), generatePostingIdentity({ url: postingUrl }));
   assert.notEqual(generatePostingIdentity({ url: String(job.url) }), generatePostingIdentity({ url: `https://${slug}/jobs/220926` }));
+});
+
+test('GR8 People defers a missing public board or a board with no usable sample posting', async () => {
+  assert.deepEqual(await validateSlug(platform, 'att.gr8people.com', undefined, async url => {
+    assert.equal(url, 'https://att.gr8people.com/jobs');
+    return new Response(null, { status: 404 });
+  }), { success: false, transient: true, reason: 'Public career board HTTP 404' });
+
+  assert.deepEqual(await validateSlug(platform, slug, undefined, async url => {
+    if (url.endsWith('/jobs')) return new Response(boardHtml);
+    if (url.endsWith('/graphql')) return Response.json(fixture());
+    return new Response(postingHtml.replace('Teradata', 'Other Employer'));
+  }), { success: false, transient: true, reason: 'GR8 People feed has no verified public posting in its sample' });
+});
+
+test('known non-open rows advance the saved offset without becoming jobs', () => {
+  const response = fixture();
+  const results = response.data.searchJobs.results;
+  const first = results.nodes[0]!;
+  results.nodes = [first, { key: '220926', status: 'CANCELED' }, { key: '220927', status: 'CLOSED' }, { key: '220928', status: 'ON_HOLD' }];
+  results.totalCount = 44;
+  const page = parseGr8PeopleListing(slug, response, 40);
+  assert.equal(page.jobs.length, 1);
+  assert.deepEqual(page.metadata.listingUnavailableSlots, [1, 2, 3]);
+  assert.deepEqual(page.metadata.listingNonOpenPostings?.map(row => row.status), ['CANCELED', 'CLOSED', 'ON_HOLD']);
+  assert.equal(atsListingPositionsConsumed(platform, page.metadata, page.jobs.length), 4);
+  results.nodes[1] = { key: '220926', status: 'UNRECOGNIZED' };
+  assert.throws(() => parseGr8PeopleListing(slug, response, 40), /unverified posting/);
 });
 
 test('a confirmed unavailable GR8 People search slot advances pagination without creating a posting', () => {

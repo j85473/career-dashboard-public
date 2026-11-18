@@ -1,11 +1,12 @@
 import { ADDITIONAL_PUBLIC_ATS, additionalBoardSlug } from '../lib/additionalPublicAts';
-import { GR8_PEOPLE_DISCOVERY_PATTERNS, gr8PeopleBoardSlugFromUrl } from '../lib/gr8PeopleBoard';
+import { GR8_PEOPLE_DISCOVERY_PATTERNS, gr8PeopleBoardSlugFromUrl, gr8PeopleBoardUrl, gr8PeoplePostingIdentity, isGr8PeoplePublicBoardPage } from '../lib/gr8PeopleBoard';
 import { FUTURE_ATS_DISCOVERY_PATTERNS } from '../lib/atsDiscoveryBacklog';
 import { browserAtsDiscoveryAdapters, isBrowserAtsPlatform, browserAtsBoardFromUrl } from '../lib/browserAtsBoards';
 import { isFirstCollectionPlatform, reserveJobScoreFeedRequest } from '../lib/atsFirstCollectionAdmission';
 import { readBoundedAtsBody, AtsFirstCollectionSizeError } from '../lib/tenantAtsBoards';
 import { SYMPHONY_DISCOVERY_PATTERNS } from '../lib/symphonyAtsBoard';
-import { resolveUkgBoardEmployer } from '../lib/publicAtsEmployer';
+import { publishedEmployerName, resolveUkgBoardEmployer } from '../lib/publicAtsEmployer';
+import { employerAliasKey } from '../lib/employerIdentity';
 import { isPublicAtsPlatform, publicAtsBoardSlugFromUrl, publicAtsBoardUrl, parsePublicAtsConfig, buildPublicAtsBoardRequest, parsePublicAtsListing, publicAtsNeedsConfig, atsListingUsesXml } from '../lib/publicAtsBoards';
 export {};
 import { PrismaClient } from '../lib/prismaClient';
@@ -453,6 +454,15 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
   if (isPublicAtsPlatform(platformKey)) {
     try {
       let config;
+      const publicPageInit = () => ({ signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'Mozilla/5.0' } });
+      if (platformKey === 'gr8people') {
+        const url = gr8PeopleBoardUrl(slug);
+        const page = await sendRequest(url, publicPageInit());
+        if (!page.ok) return { success: false, transient: true, reason: `Public career board HTTP ${page.status}` };
+        if (!isGr8PeoplePublicBoardPage(slug, page.url || url, await readBoundedAtsBody(page, maximumBytes))) {
+          return { success: false, transient: true, reason: 'GR8 People public career board could not be verified' };
+        }
+      }
       if (publicAtsNeedsConfig(platformKey, slug)) {
         const boardUrl = publicAtsBoardUrl(platformKey, slug);
         const page = await sendRequest(boardUrl, { signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'Mozilla/5.0' } });
@@ -472,6 +482,26 @@ export async function validateSlug(platformKey: keyof typeof PLATFORMS, slug: st
       const xml = atsListingUsesXml(platformKey);
       let feed = parsePublicAtsListing(platformKey, slug, xml ? {} : body === null ? await response.json() : JSON.parse(body),
         xml ? body ?? await response.text() : null, config);
+      if (platformKey === 'gr8people' && feed.total) {
+        const { extractJsonLdJobPosting, jsonLdCompanyName } = await import('../lib/atsApi');
+        let verified = false;
+        for (const job of feed.jobs.slice(0, 3)) {
+          const url = String(job.url);
+          const page = await sendRequest(url, publicPageInit());
+          if (page.status === 404 || page.status === 410) continue;
+          if (!page.ok) break;
+          const identity = gr8PeoplePostingIdentity(page.url || url);
+          if (identity?.host !== slug || identity.key !== job.publicAtsPostingId) continue;
+          const posting = extractJsonLdJobPosting(await readBoundedAtsBody(page, maximumBytes));
+          const company = publishedEmployerName(jsonLdCompanyName(posting?.hiringOrganization));
+          if (typeof posting?.title === 'string' && posting.title.trim() === job.title && company
+            && employerAliasKey(company) === employerAliasKey(String(job.company))) {
+            verified = true;
+            break;
+          }
+        }
+        if (!verified) return { success: false, transient: true, reason: 'GR8 People feed has no verified public posting in its sample' };
+      }
       if (platformKey === 'cornerstone' || platformKey === 'polymer') {
         // Size review precedes follow-up reads; discovery never downloads an
         // arbitrarily large catalogue while estimating its first collection.
