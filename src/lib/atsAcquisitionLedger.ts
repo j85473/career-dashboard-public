@@ -37,7 +37,7 @@ import { atsRotationCohortSql } from './atsRotationCohort';
 import { isAtsBoardInRotationCohort, nextAtsBoardCheckDateForBoard, apiRotationDayFor as rotationDayFor } from './atsRotation';
 import { ATS_COHORT_PRESSURE_LISTING_CONCURRENCY, withAtsListingCapacity } from './atsContinuationCapacity';
 import { evaluateAtsAcquisitionPressure } from './atsAcquisitionPressure';
-import { atsListingAdmissionReservationSql, atsSegmentPersistenceCapacitySql } from './atsAdmissionCapacity';
+import { atsStagingVolumeSql, atsListingAdmissionReservationSql, atsSegmentPersistenceCapacitySql } from './atsAdmissionCapacity';
 import { atsPersistenceAllocation } from './atsPersistenceAllocation';
 import { atsEmployerVerificationHoldWhere, isAtsEmployerVerificationHold, type AtsEmployerRetryMode } from './atsEmployerRetry';
 import { pausedAtsListingPlatforms, readAtsListingPauses } from './atsListingPause';
@@ -361,7 +361,8 @@ export async function admitAtsV2Board(input: {
     return await runListingClaimTransaction(async (transaction) => {
       await transaction.$executeRaw`SET LOCAL lock_timeout = '3s'`;
       await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('ats-v2-board-admission', 0))`;
-      const pressure = await atsV2StagingSnapshot(transaction, now);
+      const observedAt = input.now ?? new Date();
+      const pressure = await atsV2StagingSnapshot(transaction, observedAt);
       const board = await transaction.atsCompany.findUnique({
         where: { slug_platform: { slug: input.slug, platform: input.platform } },
         select: { acquisitionEngine: true, nextCheckDate: true, status: true, checkDay: true, firstCollectionHoldReason: true },
@@ -400,7 +401,7 @@ export async function admitAtsV2Board(input: {
       });
       if (active) return null;
       const claim = async (): Promise<AtsLedgerClaim | null> => {
-        if (!await reserveFirstCollection(transaction, input, batchId, now)) return null;
+        if (!await reserveFirstCollection(transaction, input, batchId, observedAt)) return null;
 
         const selectionTier = board.status === 'parked' || board.status === 'blacklisted'
           ? 'cooldown'
@@ -475,7 +476,7 @@ export async function admitAtsV2Board(input: {
       // New coverage shares the producer cap with listing continuations. The
       // board-admission lock also makes the cohort allowance atomic across hosts.
       return pressure.admissionBlocked
-        ? withAtsListingCapacity(transaction, now, ATS_COHORT_PRESSURE_LISTING_CONCURRENCY, claim)
+        ? withAtsListingCapacity(transaction, observedAt, ATS_COHORT_PRESSURE_LISTING_CONCURRENCY, claim)
         : claim();
     });
   } catch (error) {
@@ -2850,15 +2851,12 @@ export async function atsV2StagingSnapshot(
   now = new Date(),
 ) {
   const rows = await client.$queryRaw<Array<{
-    items: bigint | number | string; bytes: bigint | number | string;
+    items: bigint | number | string; retryHeldItems: bigint; bytes: bigint | number | string;
     unfinishedListings: bigint | number | string;
     cohortUnfinishedListings: bigint | number | string;
   }>>(Prisma.sql`
     SELECT
-      COALESCE(SUM(GREATEST(
-        batch."rawObservationCount" - batch."compactedOccurrenceCount" - batch."publishedItemCount", 0
-      )), 0) AS items,
-      COALESCE(SUM(batch."acquisitionBytes"), 0) AS bytes,
+      ${atsStagingVolumeSql(now)},
       COUNT(*) FILTER (WHERE ${atsListingAdmissionReservationSql(now)})
         AS "unfinishedListings",
       COUNT(*) FILTER (WHERE ${atsListingAdmissionReservationSql(now)}
@@ -2871,7 +2869,7 @@ export async function atsV2StagingSnapshot(
       AND batch.status IN ('fetching', 'partial', 'synchronized')
   `);
   return evaluateAtsAcquisitionPressure({
-    items: Number(rows[0]?.items || 0), bytes: BigInt(rows[0]?.bytes || 0),
+    items: Number(rows[0]?.items || 0), retryHeldItems: Number(rows[0]?.retryHeldItems || 0), bytes: BigInt(rows[0]?.bytes || 0),
     unfinishedListings: Number(rows[0]?.unfinishedListings || 0),
     cohortUnfinishedListings: Number(rows[0]?.cohortUnfinishedListings ?? rows[0]?.unfinishedListings ?? 0),
   });

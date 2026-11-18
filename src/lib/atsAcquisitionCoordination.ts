@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 
 import { prisma } from './prisma';
+import { controlPrisma } from './controlPrisma';
+import { Prisma } from './prismaClient';
 
 export const ATS_DISTRIBUTED_WORKER_VERSION = 1;
 /**
@@ -225,18 +227,94 @@ export async function heartbeatAtsWorkerSlots(
 ): Promise<boolean> {
   if (leases.length === 0) return true;
   const leaseExpiresAt = new Date(now.getTime() + ATS_WORKER_SLOT_LEASE_MS);
-  const results = await prisma.$transaction(leases.map((lease) => (
-    prisma.atsAcquisitionWorkerSlot.updateMany({
-      where: {
-        slotNumber: lease.slotNumber,
-        leaseToken: lease.leaseToken,
-        leaseFence: lease.leaseFence,
-        leaseExpiresAt: { gt: now },
-      },
-      data: { heartbeatAt: now, leaseExpiresAt },
-    })
-  )));
-  return results.every((result) => result.count === 1);
+  const ownedSlots = leases.map(lease =>
+    Prisma.sql`(${lease.slotNumber}::int, ${lease.leaseToken}::text, ${lease.leaseFence}::bigint)`);
+  // Lock the group before testing the database clock. A busy row can retry,
+  // but an expired lease or a replacement owner must never be renewed.
+  const renewed = await controlPrisma.$executeRaw(Prisma.sql`
+    WITH owned AS MATERIALIZED (
+      SELECT slot."slotNumber", slot."leaseExpiresAt"
+      FROM "AtsAcquisitionWorkerSlot" slot
+      JOIN (VALUES ${Prisma.join(ownedSlots)}) AS expected(number, token, fence)
+        ON slot."slotNumber" = expected.number AND slot."leaseToken" = expected.token
+          AND slot."leaseFence" = expected.fence
+      ORDER BY slot."slotNumber" FOR NO KEY UPDATE OF slot NOWAIT
+    )
+    UPDATE "AtsAcquisitionWorkerSlot" slot
+       SET "heartbeatAt" = (${now.toISOString()}::timestamptz AT TIME ZONE 'UTC'),
+           "leaseExpiresAt" = (${leaseExpiresAt.toISOString()}::timestamptz AT TIME ZONE 'UTC'),
+           "updatedAt" = clock_timestamp() AT TIME ZONE 'UTC'
+      FROM owned
+     WHERE slot."slotNumber" = owned."slotNumber"
+       AND (SELECT count(*) = ${leases.length} AND min("leaseExpiresAt") > (clock_timestamp() AT TIME ZONE 'UTC') FROM owned)
+  `);
+  return renewed === leases.length;
+}
+
+/** A failed checkout provides no new authority. Retry only inside the last
+ * confirmed lease, with a separate expiry timer even if PostgreSQL hangs. */
+export function maintainAtsWorkerSlots(
+  leases: readonly AtsWorkerSlotLease[], signal: AbortSignal, onLost: (reason: Error) => void,
+  renew = heartbeatAtsWorkerSlots,
+): () => Promise<void> {
+  if (leases.length === 0 || signal.aborted) return async () => {};
+  let expiresAt = Math.min(...leases.map(lease => lease.leaseExpiresAt.getTime()));
+  let stopped = false;
+  let pending: Promise<void> | undefined;
+  let nextBeat: ReturnType<typeof setTimeout>;
+  let expiry: ReturnType<typeof setTimeout>;
+
+  function cancel() {
+    stopped = true;
+    clearTimeout(nextBeat);
+    clearTimeout(expiry);
+  }
+  function lose(message: string) {
+    if (stopped || signal.aborted) return;
+    cancel();
+    onLost(new Error(message));
+  }
+  function expire() {
+    lose('ATS worker slot renewal did not complete before the confirmed lease expired.');
+  }
+  function armExpiry() {
+    clearTimeout(expiry);
+    expiry = setTimeout(expire, Math.max(0, expiresAt - Date.now()));
+  }
+  function schedule(delay: number) {
+    nextBeat = setTimeout(() => { pending = beat(); }, delay);
+  }
+  async function beat() {
+    if (stopped || signal.aborted) return;
+    const started = new Date();
+    if (started.getTime() >= expiresAt) return expire();
+    try {
+      const retained = await renew(leases, started);
+      if (stopped || signal.aborted) return;
+      if (!retained) return lose('ATS worker no longer owns its capacity leases.');
+      if (Date.now() >= expiresAt) return expire();
+      expiresAt = started.getTime() + ATS_WORKER_SLOT_LEASE_MS;
+      armExpiry();
+      schedule(ATS_WORKER_SLOT_HEARTBEAT_MS);
+    } catch (error) {
+      if (stopped || signal.aborted) return;
+      if (Date.now() >= expiresAt) return expire();
+      console.warn('ATS worker slot renewal failed. Retrying within the confirmed lease.', error instanceof Error ? error.message : String(error));
+      schedule(5_000);
+    }
+  }
+
+  signal.addEventListener('abort', cancel, { once: true });
+  if (expiresAt <= Date.now()) expire();
+  else {
+    armExpiry();
+    schedule(Math.min(ATS_WORKER_SLOT_HEARTBEAT_MS, (expiresAt - Date.now()) / 2));
+  }
+  return async () => {
+    signal.removeEventListener('abort', cancel);
+    cancel();
+    await pending;
+  };
 }
 
 export async function releaseAtsWorkerSlots(

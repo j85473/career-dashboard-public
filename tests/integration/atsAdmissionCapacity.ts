@@ -17,13 +17,13 @@ const fixtures = `
 "AtsIngestionBatch" AS (
   SELECT 'fixture'::text AS slug, 'workday'::text AS platform, 'v2'::text AS "writerMode",
     'fetching'::text AS status, 'listing'::text AS "acquisitionPhase", 24 AS "rawObservationCount",
-    0 AS "compactedOccurrenceCount", 0 AS "publishedItemCount", 100::bigint AS "acquisitionBytes",
+    0 AS "compactedOccurrenceCount", 0 AS "publishedItemCount", 0 AS "terminalItemCount", 100::bigint AS "acquisitionBytes",
     'HTTP 500'::text AS "lastError", TIMESTAMP '2026-10-11 16:00' AS "nextAcquireAt",
     NULL::text AS "acquisitionClaimToken", NULL::timestamp AS "acquisitionLeaseExpiresAt",
     0 AS "jobCount", 0 AS "processingOffset", NULL::timestamp AS "nextProcessAt"
   FROM generate_series(1,40)
   UNION ALL
-  SELECT 'fixture','workday','v2','fetching',phase,raw,0,0,100,err,retry,claim,lease,0,0,NULL
+  SELECT 'fixture','workday','v2','fetching',phase,raw,0,0,LEAST(raw, 6),100,err,retry,claim,lease,0,0,NULL
   FROM (VALUES
     ('listing',20,NULL::text,TIMESTAMP '2026-10-11 16:00',NULL::text,NULL::timestamp),
     ('listing',20,NULL,NULL,NULL,NULL),
@@ -34,7 +34,7 @@ const fixtures = `
     ('enrichment',20,NULL,NULL,NULL,NULL)
   ) AS cases(phase,raw,err,retry,claim,lease)
   UNION ALL
-  SELECT 'fixture','workday','legacy',state,'listing',0,0,0,0,NULL,NULL,NULL,NULL,jobs,0,retry
+  SELECT 'fixture','workday','legacy',state,'listing',0,0,0,0,0,NULL,NULL,NULL,NULL,jobs,0,retry
   FROM (VALUES ('queued',80,TIMESTAMP '2026-10-11 16:00'),
     ('queued',2000,TIMESTAMP '2026-10-11 18:00'),
     ('processing',30,TIMESTAMP '2026-10-11 18:00'),
@@ -100,10 +100,10 @@ async function main() {
       if (!bound) console.log(`SET LOCAL TIME ZONE '${zone}';`);
       for (const [label, query, expected, fixture = fixtures] of [
         ['public crawlers use runnable persistence independently of staged listings',publicHealth,"persistence=305 AND gate='open'"],
-        ['failed downloads retained; only productive due listings and live claims reserve capacity',pressure,'items=1080 AND "unfinishedListings"=4 AND "cohortUnfinishedListings"=0'],
+        ['failed downloads retained; only productive due listings and live claims reserve capacity',pressure,'items=1080 AND "retryHeldItems"=14 AND "unfinishedListings"=4 AND "cohortUnfinishedListings"=0'],
         ['publication counts due segments and every processing segment',persistence,'remaining=195'],
-        ['pilot capacity excludes future holds, including legacy, while reporting all retained work',health,'items=1080 AND persistence=305 AND "totalPersistence"=4305'],
-        ['held work consumes pilot capacity exactly when its retry becomes due',dueHealth,'persistence=4305 AND "totalPersistence"=4305'],
+        ['pilot capacity excludes future holds, including legacy, while reporting all retained work',health,'items=1080 AND "retryHeldItems"=14 AND persistence=305 AND "totalPersistence"=4305'],
+        ['held work consumes pilot capacity exactly when its retry becomes due',dueHealth,'"retryHeldItems"=0 AND persistence=4305 AND "totalPersistence"=4305'],
         ['operator telemetry applies the same rule using its statement UTC clock',telemetryPressure,'reservations=4'],
         ['thousands of due employer retries reserve only 100 jobs; every processing segment and ordinary error counts fully',persistence,'remaining=370',employerFixtures],
         ['public crawlers remain open behind a large employer retry backlog',publicHealth,"persistence=480 AND gate='open'",employerFixtures],

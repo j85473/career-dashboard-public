@@ -4,6 +4,22 @@ import { ATS_EMPLOYER_RETRY_CAPACITY_JOBS, atsEmployerVerificationHoldSql } from
 // Prisma 7's pg adapter removes the offset from Date parameters. Bind an ISO
 // string when SQL needs an instant so Chicago sessions cannot add five hours.
 
+/** A future batch retry frees soft item capacity only for unfinished downloads.
+ * Already-terminal items can feed sealing/publication independently. Every
+ * retained record and byte still counts toward physical storage limits.
+ */
+export function atsStagingVolumeSql(now: Date | Prisma.Sql): Prisma.Sql {
+  const utc = now instanceof Date ? Prisma.sql`(${now.toISOString()}::timestamptz AT TIME ZONE 'UTC')` : now;
+  return Prisma.sql`
+    COALESCE(SUM(GREATEST(batch."rawObservationCount" - batch."compactedOccurrenceCount" - batch."publishedItemCount", 0)), 0)::bigint AS items,
+    COALESCE(SUM(GREATEST(batch."rawObservationCount" - batch."compactedOccurrenceCount"
+      - GREATEST(batch."terminalItemCount", batch."publishedItemCount"), 0)) FILTER (
+        WHERE batch."nextAcquireAt" > ${utc}
+          AND (batch."acquisitionClaimToken" IS NOT NULL AND batch."acquisitionLeaseExpiresAt" > ${utc}) IS NOT TRUE
+      ), 0)::bigint AS "retryHeldItems",
+    COALESCE(SUM(batch."acquisitionBytes"), 0)::bigint AS bytes`;
+}
+
 /** Retained failed downloads still count toward volume, but reserve a listing
  * slot only while a worker is serving them. Successful due traversals reserve
  * a slot between quanta so concurrent admissions cannot overfill the allowance.

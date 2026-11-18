@@ -51,6 +51,7 @@ async function main() {
   const telemetry = await readAtsDistributedTelemetry();
   assert.equal(telemetry.stagingItems, 100);
   assert.equal(telemetry.stagingRetryItems, 60);
+  assert.equal(telemetry.stagingAdmissionItems, 40);
   assert.match(formatAtsDistributedTelemetry(telemetry), /Retryitems 60/);
   const queues = await readAtsQueueTelemetry();
   assert.equal(queues.persistenceDue, 25);

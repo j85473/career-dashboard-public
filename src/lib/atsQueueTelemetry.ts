@@ -144,7 +144,7 @@ async function queryAtsQueueTelemetry(): Promise<AtsQueueSnapshot> {
   }, { timeout: 25_000 });
   const health = await firstCollectionHealth(prisma, policy?.maxCatalogueJobs, policy?.maxResponseBytes, now);
   const admissionNote = !policy || policy.mode === 'held' ? 'First collections are paused by policy'
-    : !health.healthy ? `First collections await intake capacity: ${health.items.toLocaleString('en-US')} staged items and ${health.persistence.toLocaleString('en-US')} runnable persistence items`
+    : !health.healthy ? `First collections await intake capacity: ${health.admissionItems.toLocaleString('en-US')} of ${health.items.toLocaleString('en-US')} retained downloads count toward intake, with ${health.persistence.toLocaleString('en-US')} runnable persistence items`
     : policy.mode === 'capacity' ? `Capacity refill enabled · up to ${policy.maxUnfinished} unfinished collections · no daily quota`
     : `${policy.mode} admission · daily limit ${policy.dailyBoardLimit}`;
   const n = (key: string) => Number(counts?.[key] || 0);

@@ -2,7 +2,7 @@ import { atsRotationCohortSql } from './atsRotationCohort';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import { prisma } from './prisma';
 import { Prisma } from './prismaClient';
-import { atsListingAdmissionReservationSql } from './atsAdmissionCapacity';
+import { atsStagingVolumeSql, atsListingAdmissionReservationSql } from './atsAdmissionCapacity';
 import { ATS_API_ROTATION_DAY_NAMES as ATS_ROTATION_DAY_NAMES, ATS_API_ROTATION_DAYS } from './atsRotation';
 import { ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK, ATS_LEDGER_STAGING_BYTE_HIGH_WATERMARK, evaluateAtsAcquisitionPressure } from './atsAcquisitionPressure';
 
@@ -67,6 +67,7 @@ export type AtsDistributedTelemetry = {
   weekCoveredBoards: number;
   stagingItems: number;
   stagingRetryItems?: number;
+  stagingAdmissionItems?: number;
   stagingBytes: number;
   stagingItemLimit: number;
   stagingByteLimit: number;
@@ -80,7 +81,7 @@ export type AtsDistributedTelemetry = {
   observedAt: Date;
 };
 
-type Row = Omit<AtsDistributedTelemetry, 'observedAt' | 'stagingItemLimit' | 'stagingByteLimit' | 'stagingBlocked' | 'stagingHeldBoards' | 'unfinishedListingLimit' | 'admissionBlocked' | 'admissionReason'>;
+type Row = Omit<AtsDistributedTelemetry, 'observedAt' | 'stagingItemLimit' | 'stagingByteLimit' | 'stagingBlocked' | 'stagingHeldBoards' | 'unfinishedListingLimit' | 'admissionBlocked' | 'admissionReason' | 'stagingAdmissionItems'> & { retryHeldItems: bigint };
 
 export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelemetry> {
   /**
@@ -132,11 +133,10 @@ export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelem
     ),
     staging AS (
       SELECT
-        COALESCE(SUM(GREATEST("rawObservationCount" - "compactedOccurrenceCount" - "publishedItemCount", 0)), 0) AS items,
+        ${atsStagingVolumeSql(Prisma.sql`day.now_utc`)},
         COALESCE(SUM(GREATEST("rawObservationCount" - "compactedOccurrenceCount" - "publishedItemCount", 0))
           FILTER (WHERE "nextAcquireAt">day.now_utc AND NOT
             ("acquisitionClaimToken" IS NOT NULL AND "acquisitionLeaseExpiresAt">day.now_utc) IS TRUE),0) AS retry_items,
-        COALESCE(SUM("acquisitionBytes"), 0) AS bytes,
         COUNT(*) FILTER (WHERE ${atsListingAdmissionReservationSql(Prisma.sql`day.now_utc`)})
           AS unfinished_listings,
         COUNT(*) FILTER (WHERE ${atsListingAdmissionReservationSql(Prisma.sql`day.now_utc`)}
@@ -149,6 +149,7 @@ export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelem
     SELECT
       (SELECT items FROM staging) AS "stagingItems",
       (SELECT retry_items FROM staging) AS "stagingRetryItems",
+      (SELECT "retryHeldItems" FROM staging) AS "retryHeldItems",
       (SELECT bytes FROM staging) AS "stagingBytes",
       (SELECT unfinished_listings FROM staging) AS "unfinishedListings",
       (SELECT cohort_unfinished_listings FROM staging) AS "cohortUnfinishedListings",
@@ -268,7 +269,7 @@ export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelem
   const stagingBytes = Number(row?.stagingBytes || 0);
   const stagingByteLimit = Number(ATS_LEDGER_STAGING_BYTE_HIGH_WATERMARK);
   const pressure = evaluateAtsAcquisitionPressure({
-    items: stagingItems, bytes: BigInt(String(row?.stagingBytes || 0)),
+    items: stagingItems, retryHeldItems: Number(row?.retryHeldItems ?? 0), bytes: BigInt(String(row?.stagingBytes || 0)),
     unfinishedListings: Number(row?.unfinishedListings || 0),
     cohortUnfinishedListings: Number(row?.cohortUnfinishedListings ?? row?.unfinishedListings ?? 0),
   });
@@ -296,6 +297,7 @@ export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelem
     weekActiveBoards: Number(row?.weekActiveBoards || 0),
     weekCoveredBoards: Number(row?.weekCoveredBoards || 0),
     stagingItems,
+    stagingAdmissionItems: pressure.admissionItems,
     stagingRetryItems: Number(row?.stagingRetryItems || 0),
     stagingBytes,
     stagingItemLimit: ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK,
@@ -380,6 +382,7 @@ export function formatAtsDistributedTelemetry(
     `Boards ${telemetry.cohortSwept}/${telemetry.cohortTotal}`,
     `Ready ${telemetry.cohortReadyNow}`,
     `Staging ${telemetry.stagingItems}/${telemetry.stagingItemLimit}`,
+    ...(telemetry.stagingAdmissionItems !== undefined ? [`Intakeitems ${telemetry.stagingAdmissionItems}`] : []),
     ...(telemetry.stagingRetryItems !== undefined ? [`Retryitems ${telemetry.stagingRetryItems}`] : []),
     `Bytes ${telemetry.stagingBytes}/${telemetry.stagingByteLimit}`,
     `Held ${telemetry.stagingHeldBoards}`,

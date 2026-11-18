@@ -3,7 +3,7 @@ import { Prisma, type AtsFirstCollectionPolicy } from './prismaClient';
 import { EXPANDED_PUBLIC_ATS } from './expandedPublicAts';
 import { storageAllows } from './storagePressure';
 import { TENANT_ATS_PLATFORMS, AtsFirstCollectionSizeError } from './tenantAtsBoards';
-import { atsRunnableLegacyBatchSql, atsSegmentPersistenceCapacitySql } from './atsAdmissionCapacity';
+import { atsStagingVolumeSql, atsRunnableLegacyBatchSql, atsSegmentPersistenceCapacitySql } from './atsAdmissionCapacity';
 import { firstCollectionProductiveWorkSql } from './atsFirstCollectionWork';
 import { REVIEWED_FIRST_COLLECTION_POLICY_ID, PROVIDER_BACKLOG_POLICY_ID, isReviewedFirstCollection, reviewedFirstCollectionWhere,
   reviewedFirstCollectionReserveJobs, reviewedFirstCollectionMaximumJobs } from './atsReviewedFirstCollection';
@@ -191,12 +191,9 @@ export async function firstCollectionSelection(client: Client, now = new Date(),
 }
 
 export async function firstCollectionHealth(client: Pick<Client, '$queryRaw'>, reserveJobs = 250, reserveBytes = 5242880, now = new Date(), persistenceWatermark: 'low' | 'high' = 'low') {
-  const [snapshot] = await client.$queryRaw<Array<{ items: bigint; bytes: bigint; persistence: bigint; totalPersistence: bigint; gate: string }>>(Prisma.sql`
+  const [snapshot] = await client.$queryRaw<Array<{ items: bigint; retryHeldItems: bigint; bytes: bigint; persistence: bigint; totalPersistence: bigint; gate: string }>>(Prisma.sql`
     SELECT
-      COALESCE((SELECT SUM(GREATEST("rawObservationCount"-"compactedOccurrenceCount"-"publishedItemCount",0))
-        FROM "AtsIngestionBatch" WHERE "writerMode"='v2' AND status IN ('fetching','partial','synchronized')),0)::bigint AS items,
-      COALESCE((SELECT SUM("acquisitionBytes") FROM "AtsIngestionBatch"
-        WHERE "writerMode"='v2' AND status IN ('fetching','partial','synchronized')),0)::bigint AS bytes,
+      volume.*,
       (COALESCE((${atsSegmentPersistenceCapacitySql(now)}),0)
        + COALESCE((SELECT SUM(GREATEST(batch."jobCount"-batch."processingOffset",0)) FROM "AtsIngestionBatch" batch
         WHERE ${atsRunnableLegacyBatchSql(now)}),0))::bigint AS persistence,
@@ -205,20 +202,26 @@ export async function firstCollectionHealth(client: Pick<Client, '$queryRaw'>, r
        + COALESCE((SELECT SUM(GREATEST("jobCount"-"processingOffset",0)) FROM "AtsIngestionBatch"
         WHERE "writerMode"='legacy' AND status IN ('queued','processing')),0))::bigint AS "totalPersistence",
       (SELECT "admissionState" FROM "AtsAcquisitionRuntimeGate" WHERE id='global') AS gate
+    FROM (SELECT ${atsStagingVolumeSql(now)} FROM "AtsIngestionBatch" batch
+      WHERE "writerMode"='v2' AND status IN ('fetching','partial','synchronized')) volume
   `);
   const limit = (value: string | undefined, fallback: number) => value && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : fallback;
-  const itemLimit = Math.min(limit(process.env.ATS_LEDGER_STAGING_ITEM_LOW_WATERMARK, 50000), limit(process.env.ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK, 100000));
+  const hardItemLimit = limit(process.env.ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK, 100000);
+  const itemLimit = Math.min(limit(process.env.ATS_LEDGER_STAGING_ITEM_LOW_WATERMARK, 50000), hardItemLimit);
   const byteLimit = Math.min(limit(process.env.ATS_LEDGER_STAGING_BYTE_LOW_WATERMARK, 750000000), limit(process.env.ATS_LEDGER_STAGING_BYTE_HIGH_WATERMARK, 1500000000));
   const persistenceLimit = persistenceWatermark === 'high'
     ? limit(process.env.ATS_ACQUISITION_JOB_HIGH_WATERMARK, 2000)
     : limit(process.env.ATS_ACQUISITION_JOB_LOW_WATERMARK, 1000);
   // Reserve every bounded page, not just the first response, for a paged catalogue.
   const catalogueByteReserve = reserveBytes * Math.max(1, Math.ceil(reserveJobs / 20));
+  const items = Number(snapshot?.items ?? 0);
+  const admissionItems = items - Number(snapshot?.retryHeldItems ?? 0);
   const healthy = storageAllows('collection') && !!snapshot && snapshot.gate === 'open'
-    && Number(snapshot.items) + reserveJobs < itemLimit
+    && items + reserveJobs < hardItemLimit
+    && admissionItems + reserveJobs < itemLimit
     && Number(snapshot.bytes) + catalogueByteReserve < byteLimit
     && Number(snapshot.persistence) + reserveJobs < persistenceLimit;
-  return { healthy, items: Number(snapshot?.items || 0), bytes: Number(snapshot?.bytes || 0), persistence: Number(snapshot?.persistence || 0),
+  return { healthy, items, admissionItems, bytes: Number(snapshot?.bytes || 0), persistence: Number(snapshot?.persistence || 0),
     heldPersistence: Math.max(0, Number(snapshot?.totalPersistence || 0) - Number(snapshot?.persistence || 0)),
     limits: { stagedItems: itemLimit, stagedBytes: byteLimit, persistenceJobs: persistenceLimit },
     reservation: { jobs: reserveJobs, catalogueBytes: catalogueByteReserve } };

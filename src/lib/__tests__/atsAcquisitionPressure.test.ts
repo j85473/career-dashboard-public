@@ -122,3 +122,12 @@ test('old backlog leaves a bounded current-cohort opportunity without bypassing 
   const volumeHeld = planAtsV2RuntimeCapacity(shadow, pressure(0, ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK / 2), 8);
   assert.equal(volumeHeld.coverageSlots, 0); assert.equal(volumeHeld.listingConcurrencyLimit, 1);
 });
+
+test('future retry volume frees soft capacity and still counts toward every hard limit', () => {
+  const batch = { items: 55000, retryHeldItems: 20000, bytes: BigInt(350000000), unfinishedListings: 31 };
+  assert.equal(evaluateAtsAcquisitionPressure(batch).admissionReason, 'open');
+  assert.equal(evaluateAtsAcquisitionPressure({ ...batch, retryHeldItems: 5000 }).admissionReason, 'staging');
+  assert.equal(evaluateAtsAcquisitionPressure({ ...batch, unfinishedListings: 32 }).cohortAdmissionAllowed, false);
+  assert.equal(evaluateAtsAcquisitionPressure({ ...batch, items: 100000, retryHeldItems: 90000 }).admissionReason, 'capacity');
+  assert.equal(evaluateAtsAcquisitionPressure({ ...batch, bytes: BigInt(750000000) }).admissionReason, 'staging');
+});

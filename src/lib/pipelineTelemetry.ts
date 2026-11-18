@@ -39,6 +39,7 @@ export type PipelineStatusDetail = {
   weekActive: number;
   stagingItems?: number;
   stagingRetryItems?: number;
+  stagingAdmissionItems?: number;
   stagingItemLimit?: number;
   stagingBytes?: number;
   stagingByteLimit?: number;
@@ -120,6 +121,7 @@ export function parseAtsAcquisitionDetail(value: string): PipelineStatusDetail |
   const bytes = fields.get('Bytes')?.match(/^([\d,]+)\/([\d,]+)$/);
   return {
     kind: 'ats-acquisition',
+    ...(fields.has('Intakeitems') ? { stagingAdmissionItems: telemetryNumber(fields.get('Intakeitems')!) } : {}),
     ...(fields.has('Retryitems') ? { stagingRetryItems: telemetryNumber(fields.get('Retryitems')!) } : {}),
     ...(staging && bytes ? {
       stagingItems: telemetryNumber(staging[1]),
@@ -185,7 +187,8 @@ export function atsAcquisitionNote(detail: AtsAcquisitionDetail): string {
   const left = Math.max(0, detail.total - detail.swept);
   const unlock = detail.nextUnlockAt ? clockTime(detail.nextUnlockAt) : null;
   const downloaded = `${count(detail.stagingItems || 0)} retained downloads`
-    + (detail.stagingRetryItems !== undefined ? ` · ${count(detail.stagingRetryItems)} scheduled for retry` : ' · includes retry holds');
+    + (detail.stagingRetryItems !== undefined ? ` · ${count(detail.stagingRetryItems)} scheduled for retry` : ' · includes retry holds')
+    + (detail.stagingAdmissionItems !== undefined ? ` · ${count(detail.stagingAdmissionItems)} count toward intake` : '');
   const backlog = detail.stagingItems !== undefined ? ` · ${downloaded}` : '';
   switch (detail.state) {
     case 'done':
@@ -202,7 +205,9 @@ export function atsAcquisitionNote(detail: AtsAcquisitionDetail): string {
         const items = Math.floor((detail.stagingItemLimit || 0) / 2);
         const bytes = Math.floor((detail.stagingByteLimit || 0) / 2);
         const limits = [];
-        if ((detail.stagingItems || 0) >= items && items > 0) limits.push(`${count(items)} staged records`);
+        if ((detail.stagingAdmissionItems ?? detail.stagingItems ?? 0) >= items && items > 0) {
+          limits.push(detail.stagingAdmissionItems === undefined ? `${count(items)} staged records` : `${count(items)} records counting toward intake`);
+        }
         if ((detail.stagingBytes || 0) >= bytes && bytes > 0) limits.push(`${count(bytes)} bytes`);
         const threshold = limits.join(' and ') || `${count(items)} staged records`;
         return `new boards paused · ${downloaded} · intake can resume below ${threshold} · finishing acquired work; continuation can still add pages`;

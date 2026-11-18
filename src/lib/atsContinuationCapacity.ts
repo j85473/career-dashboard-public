@@ -1,8 +1,8 @@
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import type { Prisma } from './prismaClient';
 import { atsContinuationEligibilityWhere } from './atsSchedulingEligibility';
-import { ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK, ATS_LEDGER_STAGING_BYTE_HIGH_WATERMARK, ATS_V2_MAX_UNFINISHED_LISTINGS } from './atsAcquisitionPressure';
-import { atsListingAdmissionReservationSql } from './atsAdmissionCapacity';
+import { evaluateAtsAcquisitionPressure } from './atsAcquisitionPressure';
+import { atsStagingVolumeSql, atsListingAdmissionReservationSql } from './atsAdmissionCapacity';
 
 export const ATS_PRESSURE_LISTING_CONCURRENCY = 1;
 // One bounded coverage producer can run alongside a continuing listing while
@@ -30,9 +30,8 @@ export async function withAtsListingCapacity<T>(
   });
   if (!drain) {
     const { Prisma } = await import('./prismaClient');
-    const [volume] = await transaction.$queryRaw<Array<{ items: bigint; bytes: bigint; unfinished: bigint }>>(Prisma.sql`
-      SELECT COALESCE(SUM(GREATEST("rawObservationCount"-"compactedOccurrenceCount"-"publishedItemCount",0)),0)::bigint AS items,
-        COALESCE(SUM("acquisitionBytes"),0)::bigint AS bytes,
+    const [volume] = await transaction.$queryRaw<Array<{ items: bigint; retryHeldItems: bigint; bytes: bigint; unfinished: bigint }>>(Prisma.sql`
+      SELECT ${atsStagingVolumeSql(now)},
         COUNT(*) FILTER(WHERE ${atsListingAdmissionReservationSql(now)})::bigint AS unfinished
       FROM "AtsIngestionBatch" batch WHERE "writerMode"='v2'
         AND platform NOT IN (${Prisma.join(NON_API_ATS_PLATFORMS)})
@@ -40,10 +39,13 @@ export async function withAtsListingCapacity<T>(
     // The unfinished-board allowance limits opening new collections, not
     // finishing saved ones. Existing listings may borrow otherwise idle worker
     // capacity below the volume thresholds; provider/worker leases still bind.
-    // Held work remains charged, and new intake keeps its admission allowance.
-    if (volume && Number(volume.items) < ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK / 2
-      && volume.bytes < ATS_LEDGER_STAGING_BYTE_HIGH_WATERMARK / BigInt(2)
-      && (options.existingListing || Number(volume.unfinished) < ATS_V2_MAX_UNFINISHED_LISTINGS)) return claim();
+    if (volume) {
+      const pressure = evaluateAtsAcquisitionPressure({
+        items: Number(volume.items), retryHeldItems: Number(volume.retryHeldItems ?? 0), bytes: volume.bytes,
+        unfinishedListings: options.existingListing ? 0 : Number(volume.unfinished),
+      });
+      if (!pressure.admissionBlocked) return claim();
+    }
   }
   const liveListings = await transaction.atsIngestionBatch.count({
     where: {

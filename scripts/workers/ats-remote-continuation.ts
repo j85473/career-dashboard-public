@@ -1,8 +1,7 @@
 import {
   ATS_DISTRIBUTED_WORKERS_ENABLED,
-  ATS_WORKER_SLOT_HEARTBEAT_MS,
   claimAtsWorkerSlots,
-  heartbeatAtsWorkerSlots,
+  maintainAtsWorkerSlots,
   readAtsCoordinationGate,
   releaseAtsWorkerSlots,
   validateAtsCoordinationGate,
@@ -152,20 +151,10 @@ async function runLeasedDispatcher(): Promise<void> {
       }
     }).catch(() => { /* a transient read must not drop the lanes */ });
   }, 5_000);
-  let heartbeatInFlight: Promise<void> | null = null;
-  const heartbeat = setInterval(() => {
-    if (heartbeatInFlight || signal.aborted) return;
-    heartbeatInFlight = heartbeatAtsWorkerSlots(leases)
-      .then((retained) => {
-        if (!retained && !leaseController.signal.aborted) {
-          leaseController.abort(new Error('Remote continuation worker lost its global capacity lease.'));
-        }
-      })
-      .catch((error) => {
-        if (!leaseController.signal.aborted) leaseController.abort(error);
-      })
-      .finally(() => { heartbeatInFlight = null; });
-  }, ATS_WORKER_SLOT_HEARTBEAT_MS);
+  const stopHeartbeat = maintainAtsWorkerSlots(leases, signal, reason => {
+    console.warn(reason.message);
+    leaseController.abort(reason);
+  });
   let promotionInFlight: Promise<void> | null = null;
   const promotion = setInterval(() => {
     if (promotionInFlight || signal.aborted || workerDrainRequested()) return;
@@ -200,9 +189,8 @@ async function runLeasedDispatcher(): Promise<void> {
     });
   } finally {
     clearInterval(stopPoll);
-    clearInterval(heartbeat);
     clearInterval(promotion);
-    if (heartbeatInFlight) await heartbeatInFlight;
+    await stopHeartbeat();
     if (promotionInFlight) await promotionInFlight;
     await releaseAtsWorkerSlots(leases);
   }

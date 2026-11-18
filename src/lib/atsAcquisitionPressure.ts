@@ -17,6 +17,7 @@ export const ATS_V2_MAX_UNFINISHED_LISTINGS = bounded(
 
 export function evaluateAtsAcquisitionPressure(input: {
   items: number;
+  retryHeldItems?: number;
   bytes: bigint;
   unfinishedListings: number;
   /** Due downloaded work and live claims belonging to today's active cohort. */
@@ -24,21 +25,22 @@ export function evaluateAtsAcquisitionPressure(input: {
 }) {
   const itemAdmissionLimit = Math.floor(ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK / 2);
   const byteAdmissionLimit = ATS_LEDGER_STAGING_BYTE_HIGH_WATERMARK / BigInt(2);
+  const admissionItems = input.items - (input.retryHeldItems ?? 0);
   const blocked = input.items >= ATS_LEDGER_STAGING_ITEM_HIGH_WATERMARK
     || input.bytes >= ATS_LEDGER_STAGING_BYTE_HIGH_WATERMARK;
   const admissionReason = blocked ? 'capacity'
-    : input.items >= itemAdmissionLimit || input.bytes >= byteAdmissionLimit ? 'staging'
+    : admissionItems >= itemAdmissionLimit || input.bytes >= byteAdmissionLimit ? 'staging'
       : input.unfinishedListings >= ATS_V2_MAX_UNFINISHED_LISTINGS ? 'unfinished_listings' : 'open';
   // An older cohort (including retained recovery downloads) may exceed the
   // listing allowance for hours. Give today's active cohort its own bounded
   // allowance, but never bypass either staging volume admission threshold.
   const cohortUnfinishedListings = input.cohortUnfinishedListings ?? input.unfinishedListings;
   const cohortAdmissionAllowed = !blocked
-    && input.items < itemAdmissionLimit && input.bytes < byteAdmissionLimit
+    && admissionItems < itemAdmissionLimit && input.bytes < byteAdmissionLimit
     && cohortUnfinishedListings < ATS_V2_MAX_UNFINISHED_LISTINGS;
   return {
     ...input, cohortUnfinishedListings, cohortAdmissionAllowed, blocked, admissionBlocked: admissionReason !== 'open', admissionReason,
-    itemAdmissionLimit, byteAdmissionLimit,
+    admissionItems, itemAdmissionLimit, byteAdmissionLimit,
     unfinishedListingLimit: ATS_V2_MAX_UNFINISHED_LISTINGS,
   };
 }

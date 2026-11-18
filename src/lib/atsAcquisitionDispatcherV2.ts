@@ -1044,6 +1044,7 @@ async function runAtsV2ClaimWork(claim: AtsLedgerClaim, signal?: AbortSignal): P
   // Never hold the process open for a renewal timer.
   heartbeat.unref?.();
   try {
+    signal?.throwIfAborted();
     outcome = claim.acquisitionPhase === 'listing'
       ? await runAtsV2ListingQuantum(claim, signal)
       : await runAtsV2ContinuationQuantum(claim, signal);
@@ -1261,7 +1262,7 @@ export async function runAtsV2ContinuousDispatcher(input: {
         // Reuse durable reads briefly, but merge local throttles on every turn.
         // A newly refused request must stop claims immediately, not after cache expiry.
         const pausedPlatforms = pausedAtsListingPlatforms(await readPauses());
-        if ((input.shouldDrain || workerDrainRequested)()) continue;
+        if (input.signal.aborted || (input.shouldDrain || workerDrainRequested)()) continue;
         const lane: AtsV2Lane = continuationOnly
           ? 'continuation'
           : workerIndex < plan.coverageSlots ? 'coverage' : 'continuation';
@@ -1271,7 +1272,7 @@ export async function runAtsV2ContinuousDispatcher(input: {
         let effectiveLane = lane;
         const mayBorrowOtherLane = !continuationOnly
           && (lane === 'coverage' || plan.coverageSlots > 0);
-        if (!claim && mayBorrowOtherLane) {
+        if (!claim && mayBorrowOtherLane && !input.signal.aborted) {
           effectiveLane = lane === 'coverage' ? 'continuation' : 'coverage';
           claim = effectiveLane === 'coverage'
             ? await dependencies.claimNextAtsV2Coverage(new Date(), pausedPlatforms)

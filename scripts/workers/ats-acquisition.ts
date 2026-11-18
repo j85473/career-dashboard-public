@@ -104,8 +104,7 @@ async function main(): Promise<void> {
   ]);
   const compatibilityGate = await compatibilityModule.assertAtsAcquisitionWriterCompatibility();
   let coordinationLeases: Awaited<ReturnType<typeof coordinationModule.claimAtsWorkerSlots>> = [];
-  let coordinationHeartbeat: ReturnType<typeof setInterval> | null = null;
-  let coordinationHeartbeatInFlight: Promise<void> | null = null;
+  let stopHeartbeat: (() => Promise<void>) | undefined;
   if (coordinationModule.ATS_DISTRIBUTED_WORKERS_ENABLED) {
     const gate = await coordinationModule.readAtsCoordinationGate();
     const baseValidation = coordinationModule.validateAtsCoordinationGate(gate);
@@ -146,15 +145,7 @@ async function main(): Promise<void> {
           `Local acquisition worker claimed ${coordinationLeases.length} of ${gate.localSlotReserve} reserved global slots.`,
         );
       }
-      coordinationHeartbeat = setInterval(() => {
-        if (coordinationHeartbeatInFlight || controller.signal.aborted) return;
-        coordinationHeartbeatInFlight = coordinationModule.heartbeatAtsWorkerSlots(coordinationLeases)
-          .then((retained) => {
-            if (!retained) reportFatal(new Error('Local acquisition worker lost a global capacity lease.'));
-          })
-          .catch(reportFatal)
-          .finally(() => { coordinationHeartbeatInFlight = null; });
-      }, coordinationModule.ATS_WORKER_SLOT_HEARTBEAT_MS);
+      stopHeartbeat = coordinationModule.maintainAtsWorkerSlots(coordinationLeases, controller.signal, reportFatal);
     }
   }
   let telemetryPressureActive = false;
@@ -260,8 +251,7 @@ async function main(): Promise<void> {
     finishing = true;
     if (telemetryTimer) clearInterval(telemetryTimer);
     if (telemetryInFlight) await telemetryInFlight;
-    if (coordinationHeartbeat) clearInterval(coordinationHeartbeat);
-    if (coordinationHeartbeatInFlight) await coordinationHeartbeatInFlight;
+    await stopHeartbeat?.();
     await coordinationModule.releaseAtsWorkerSlots(coordinationLeases).catch(() => undefined);
     await Promise.allSettled([
       prismaModule.prisma.$disconnect(),

@@ -393,3 +393,11 @@ test('early intake holds state the actual resumption threshold instead of only t
   assert.match(atsAcquisitionNote({ ...detail, stagingItems: 500, stagingBytes: 800_000_000 }), /below 750,000,000 bytes/);
   assert.match(atsAcquisitionNote({ ...detail, stagingBytes: 800_000_000 }), /below 50,000 staged records and 750,000,000 bytes/);
 });
+
+test('intake holds use the charged record count while showing the full retained inventory', () => {
+  const detail = parseAtsAcquisitionDetail('State draining · Boards 1/2 · Lanes 8/8 · Intake staging · Staging 60000/100000 · Retryitems 20000 · Intakeitems 40000 · Bytes 800000000/1500000000');
+  assert.ok(detail?.kind === 'ats-acquisition');
+  const note = atsAcquisitionNote(detail);
+  assert.match(note, /60,000 retained downloads.*40,000 count toward intake.*below 750,000,000 bytes/);
+  assert.doesNotMatch(note, /below 50,000/);
+});

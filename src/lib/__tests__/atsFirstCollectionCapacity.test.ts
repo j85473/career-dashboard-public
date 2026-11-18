@@ -19,12 +19,13 @@ test('operator intake telemetry uses the scheduler reservation rule and reports 
   let captured: Prisma.Sql | undefined;
   prisma.$queryRaw = (async (query: Prisma.Sql) => {
     captured = query;
-    return [{ stagingItems: 1080, stagingBytes: 5000, unfinishedListings: 4,
+    return [{ stagingItems: 55000, retryHeldItems: 20000, stagingBytes: 5000, unfinishedListings: 4,
       cohortUnfinishedListings: 0, cohortReadyNow: 10, admissionState: 'open' }];
   }) as typeof prisma.$queryRaw;
   try {
     const telemetry = await readAtsDistributedTelemetry();
     assert.equal(telemetry.admissionReason, 'open');
+    assert.equal(telemetry.stagingAdmissionItems, 35000);
     assert.equal(telemetry.admissionBlocked, false);
     assert.equal(telemetry.cohortReadyNow, 10);
     assert.equal(telemetry.unfinishedListings, 4);
@@ -45,4 +46,20 @@ test('first collection keeps catalogue headroom, volume limits and the global ga
   assert.equal((await firstCollectionHealth(client)).healthy, false);
   snapshot = { ...snapshot, bytes: BigInt(0), gate: 'draining' };
   assert.equal((await firstCollectionHealth(client)).healthy, false);
+});
+
+test('a new catalogue fits beside future retries only within total item and byte headroom', async () => {
+  const row = { items: 55000, retryHeldItems: 20000, bytes: 1000, persistence: 0, gate: 'open' };
+  const db = { $queryRaw: async () => [row] } as unknown as Parameters<typeof firstCollectionHealth>[0];
+  const read = () => firstCollectionHealth(db, 250, 1024);
+  assert.equal((await read()).healthy, true);
+  row.retryHeldItems = 0;
+  assert.equal((await read()).healthy, false);
+  row.items = 99750;
+  row.retryHeldItems = 90000;
+  assert.equal((await read()).healthy, false);
+  row.items--;
+  assert.equal((await read()).healthy, true);
+  row.bytes = 750000000;
+  assert.equal((await read()).healthy, false);
 });

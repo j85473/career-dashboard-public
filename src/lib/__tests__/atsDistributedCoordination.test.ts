@@ -12,6 +12,8 @@ import {
   ATS_DISTRIBUTED_WORKER_VERSION,
   ATS_PI_LOCAL_SLOT_RESERVE,
   validateAtsCoordinationGate,
+  maintainAtsWorkerSlots,
+  type AtsWorkerSlotLease,
 } from '../atsAcquisitionCoordination';
 import {
   atsCutoverSnapshotHash,
@@ -383,4 +385,70 @@ test('the operator ticker reports remote acquisition from durable rows', () => {
   // worth having; it is simply not a measure of rotation progress.
   assert.match(ledger, /selectionTier,[\s\S]*?state: 'admitted'/);
   assert.match(schema, /selectionTier\s+String\s+@default\("unclassified"\)/);
+});
+
+function eightLeases(): AtsWorkerSlotLease[] {
+  return Array.from({ length: 8 }, (_, i) => ({
+    slotNumber: i + 1, leaseOwner: 'fixture', leaseToken: String(i), leaseFence: BigInt(1),
+    workerKind: 'mac-continuation', releaseId: 'fixture', leaseExpiresAt: new Date(Date.now() + 180000),
+  }));
+}
+
+test('a timed-out renewal retries all eight owned slots, and confirmed ownership loss stops the session', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const controller = new AbortController();
+  let attempts = 0;
+  const stop = maintainAtsWorkerSlots(eightLeases(), controller.signal, reason => controller.abort(reason), async leases => {
+    assert.equal(leases.length, 8);
+    attempts++;
+    if (attempts === 1) throw Error('timeout exceeded when trying to connect');
+    return attempts === 2;
+  });
+  t.mock.timers.tick(30000);
+  await Promise.resolve();
+  assert.equal(controller.signal.aborted, false);
+  t.mock.timers.tick(5000);
+  await Promise.resolve();
+  assert.equal(controller.signal.aborted, false);
+  t.mock.timers.tick(30000);
+  await Promise.resolve();
+  assert.equal(attempts, 3);
+  assert.match(controller.signal.reason.message, /no longer owns/);
+  await stop();
+});
+
+test('a hanging renewal cannot extend a confirmed lease, even after a late success', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const controller = new AbortController();
+  const renewal = Promise.withResolvers<boolean>();
+  let attempts = 0;
+  const stop = maintainAtsWorkerSlots(eightLeases(), controller.signal, reason => controller.abort(reason),
+    () => { attempts++; return renewal.promise; });
+  t.mock.timers.tick(30000);
+  t.mock.timers.tick(149999);
+  assert.equal(controller.signal.aborted, false);
+  t.mock.timers.tick(1);
+  assert.match(controller.signal.reason.message, /expired/);
+  renewal.resolve(true);
+  await stop();
+  t.mock.timers.tick(180000);
+  assert.equal(attempts, 1);
+});
+
+test('only acknowledged renewals advance the expiry deadline', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  const controller = new AbortController();
+  const later = Promise.withResolvers<boolean>();
+  let attempts = 0;
+  const stop = maintainAtsWorkerSlots(eightLeases(), controller.signal, reason => controller.abort(reason),
+    () => ++attempts === 1 ? Promise.resolve(true) : later.promise);
+  t.mock.timers.tick(30000);
+  await Promise.resolve();
+  t.mock.timers.tick(150000);
+  assert.equal(controller.signal.aborted, false, 'the first renewal extended the original deadline');
+  t.mock.timers.tick(30000);
+  assert.match(controller.signal.reason.message, /expired/);
+  later.resolve(true);
+  await stop();
+  assert.equal(attempts, 2);
 });

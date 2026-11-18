@@ -63,6 +63,18 @@ async function main() {
   const before = calls;
   await tickFirstCollections(async () => { calls++; return { success: true, jobsFound: 1 }; }, new Date(), db);
   assert.equal(calls, before, 'validation pauses while staging is full');
+  const retryAt = new Date(Date.now() + 3600000);
+  await db.atsIngestionBatch.update({ where: { id: 'capacity-batch-0' }, data: { nextAcquireAt: retryAt } });
+  // Roll back only the fixture reservation so the remaining pause/refill checks
+  // can exercise the same ready board.
+  const rollback = new Error('undo fixture reservation');
+  await assert.rejects(db.$transaction(async tx => {
+    assert.equal(await reserveFirstCollection(tx, extra, 'beside-delayed-retry'), true);
+    const saved = await tx.atsIngestionBatch.findUniqueOrThrow({ where: { id: 'capacity-batch-0' } });
+    assert.equal(saved.nextAcquireAt?.getTime(), retryAt.getTime());
+    assert.equal(saved.rawObservationCount, 50000);
+    throw rollback;
+  }), error => error === rollback);
   await db.atsIngestionBatch.updateMany({ data: { rawObservationCount: 0 } });
   await db.atsAcquisitionRuntimeGate.update({ where: { id: 'global' }, data: { admissionState: 'draining' } });
   assert.equal(await db.$transaction(tx => reserveFirstCollection(tx, extra, 'paused')), false, 'operator admission pause still controls starts');
