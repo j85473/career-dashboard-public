@@ -63,9 +63,13 @@ test('a prefetched ATS item consumes its marker and skips generic network fallba
   const processingIndex = ingestion.indexOf('// Process jobs', markerValidationIndex);
   assert.ok(markerValidationIndex >= 0 && processingIndex > markerValidationIndex);
   assert.match(ingestion.slice(markerValidationIndex, processingIndex), /throw new Error\(/);
-  for (const override of ['description', 'company', 'location', 'compensation']) {
-    assert.match(ingestion, new RegExp(`atsEnrichmentMarker\\?\\.${override}`));
+  assert.match(ingestion, /let listingDetail = atsEnrichmentMarker/);
+  for (const override of ['description', 'company', 'location']) {
+    assert.match(ingestion, new RegExp(`listingDetail\\?\\.${override}`));
   }
+  assert.match(ingestion, /atsEnrichmentMarker\?\.compensation/);
+  assert.match(ingestion, /let rawDescription = listingDetail\?\.description \?\? \(\s*board\.platform === 'pinpoint' \? ''/,
+    'retained Pinpoint listings without page details must not pass the feed introduction to scoring');
 
   assert.match(ingestion, /const parentAtsNetworkAllowed = !options\.prefetchedAtsBatch/);
   for (const platform of [
@@ -83,8 +87,8 @@ test('a prefetched ATS item consumes its marker and skips generic network fallba
       `${platform} detail adapter must be unreachable for a prefetched batch`,
     );
   }
-  assert.match(ingestion, /if \(parentAtsNetworkAllowed && \(board\.platform === 'eightfold' \|\| isPublicAtsPlatform\(board\.platform\)\)\)/,
-    'new public adapters and Eightfold must be unreachable for prefetched batches');
+  assert.match(ingestion, /if \(parentAtsNetworkAllowed && \(board\.platform === 'eightfold' \|\| board\.platform === 'pinpoint' \|\| isPublicAtsPlatform\(board\.platform\)\)\)/,
+    'public adapters, Eightfold and Pinpoint must be unreachable for prefetched batches');
   const legacyDetailEnd = ingestion.indexOf('if (board.platform === "lever")', processingIndex);
   const legacyDetailBlock = ingestion.slice(processingIndex, legacyDetailEnd);
   assert.equal(legacyDetailBlock.match(/fetchAtsPlatformResponse\(board\.platform/g)?.length, 7);

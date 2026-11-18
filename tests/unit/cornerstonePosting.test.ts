@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { cornerstoneJobAdEmployer, readCornerstonePosting, type CornerstoneEvidenceReader } from '../../src/lib/cornerstonePosting';
 import { enrichAtsListingJob, readAtsJobEnrichmentMarker, type AtsJobEnrichmentDependencies } from '../../src/lib/atsJobEnrichment';
+import { evaluateAuthoritativeMetadata } from '../../src/lib/authoritativeMetadataGate';
 import { fetchExpandedAtsPosting } from '../../src/lib/expandedAtsPosting';
 
 const slug = 'fixture.csod.com::4::default';
@@ -12,11 +13,15 @@ const html = `<meta property="og:title" content="${title}"><script>var csodPlaye
 csod.context=${JSON.stringify({ corp: 'fixture', user: -103, cultureID: 1, cultureName: 'en-US', token, endpoints: { cloud: 'https://us.api.csod.com/' } })};</script>`;
 const ad = '<p>Employer: Example Manufacturing</p><p>Manage the partner channel and distributor relationships across the assigned territory. Develop account plans with the sales team.</p>';
 const legacy = (fields: unknown) => ({ status: 200, totalRecords: 1, data: [{ items: [{ fields }] }] });
-const fixture = () => ({
+type Worksite = { city: string; state: string | null; country: string; title?: string };
+const fixture = (
+  primaryLocation: Worksite = { city: 'Austin', state: 'TX', country: 'US' },
+  additionalLocations: Worksite[] = [{ city: 'Dallas', state: 'TX', country: 'US' }],
+) => ({
   apply: legacy({ applyStatus: 2 }),
   publication: { status: 0, data: { postings: [{ careerSiteId: 4, postingUrl: `${url}?c=fixture`, startDate: '2026-11-01T00:00:00', endDate: null }] } },
   details: { status: 0, data: { displayTitle: title, ref: 'req123', allowApply: true, requisitionStatusId: 2, defaultCultureId: 1, availableCultures: [1],
-    primaryLocation: { city: 'Austin', state: 'TX', country: 'US' }, additionalLocations: [{ city: 'Dallas', state: 'TX', country: 'US' }] } },
+    primaryLocation, additionalLocations } },
   ad: legacy({ id: 123, reqId: 'req123', title, ad }),
 });
 const now = new Date('2026-11-17T02:00:00Z');
@@ -41,6 +46,16 @@ test('shell-only public evidence verifies employer, exact ID, title, site, full 
   assert.equal(calls.length, 4);
   assert.ok(calls.every(target => !target.includes(token)));
   assert.ok(!JSON.stringify(result).includes(token));
+});
+
+test('worksite names only fill country-only US addresses with a concrete city and state', async () => {
+  const data = fixture({ city: 'Austin', state: 'TX', country: 'US', title: 'Bristol, IN (Main)' }, [
+    { city: '', state: null, country: 'US', title: 'Minneapolis, MN' },
+    { city: '', state: null, country: 'US', title: 'Distribution Center' },
+    { city: '', state: null, country: 'CA', title: 'Montreal, CA' },
+  ]);
+  const result = await readCornerstonePosting(html, url, reader(data), { now });
+  assert.equal(result.location, 'Austin, TX, US; Minneapolis, MN, US; US; CA');
 });
 
 test('employer proof reads recruiting statements in each ad, including different brands on a shared tenant', () => {
@@ -149,6 +164,20 @@ test('saved raw listings gain a verified enrichment marker without rewriting ori
   assert.equal(readAtsJobEnrichmentMarker(raw), null);
   assert.equal(budgets, 10); assert.equal(requests, 5); assert.equal(receipts, 5);
   assert.ok(!JSON.stringify(enriched).includes(token));
+});
+
+test('the Bristol worksite reaches geography triage before scoring', async () => {
+  const data = fixture({ city: '', state: null, country: 'US', title: 'Bristol, IN (Main)' }, []);
+  data.ad = legacy({ id: 123, reqId: 'req123', title, ad: `<div>${title} | Bristol, IN (Main)</div>${ad}` });
+  const enriched = await enrichAtsListingJob({ platform: 'cornerstone', slug, job: raw, requestTimeoutMs: 1000 },
+    dependencies(reader(data)));
+  const marker = readAtsJobEnrichmentMarker(enriched);
+  assert.ok(marker);
+  assert.equal(marker.location, 'Bristol, IN (Main), US');
+  assert.deepEqual(evaluateAuthoritativeMetadata({ title, company: marker.company, location: marker.location, url }), {
+    passes: false,
+    reason: 'Locally triaged out: Location outside the searched geographies (Bristol, IN (Main), US)',
+  });
 });
 
 test('classic publication URLs and explicit default-language fallback retain exact identity checks', async () => {

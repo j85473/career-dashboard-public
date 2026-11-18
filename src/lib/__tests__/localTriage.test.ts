@@ -56,6 +56,13 @@ test('2020 Companies is excluded by exact known employer aliases', () => {
   }
 });
 
+test('a resolved canonical Workable posting identifies DSI Systems during local triage', () => {
+  assert.deepEqual(localTriageVerdict({
+    company: 'DSI', title: 'Account Sales Manager - EDM', location: 'United States', capRationale: '',
+    url: 'https://example.com/jobs/123', canonicalUrl: 'https://apply.workable.com/dsi-systems/j/B90E49489D/',
+  }), { pass: false, reason: 'Employer excluded from local scoring (DSI Systems)' });
+});
+
 test('Goodwill affiliates and ATS labels are excluded with exact normalized employer matching', () => {
   for (const company of [
     'Goodwill',

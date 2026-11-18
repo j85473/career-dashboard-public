@@ -1,5 +1,6 @@
 import { load } from 'cheerio';
 import { expandedBoardSlug, expandedConfig, expandedPostingIdentity, parseCornerstonePosting } from './expandedPublicAts';
+import { US_STATE_LOCATION_PATTERN } from './postingLocation';
 import { publishedEmployerName } from './publicAtsEmployer';
 import { AtsDetailHttpError, AtsDetailResponseError } from './atsDetailRequest';
 import { AtsFirstCollectionSizeError, readBoundedAtsBody } from './tenantAtsBoards';
@@ -19,6 +20,21 @@ const rows = (v: unknown): Row[] => {
 const requireEvidence = (condition: unknown, message: string): void => {
   if (!condition) throw new AtsDetailResponseError(`Cornerstone ${message}`);
 };
+const US_COUNTRY = /^(?:US|USA|United States(?: of America)?)$/i;
+const US_WORKSITE_TITLE = new RegExp(
+  `^\\p{L}[\\p{L} .’'-]*,\\s*${US_STATE_LOCATION_PATTERN}(?:\\s+\\((?:main|hq|headquarters|office|plant|site)\\))?$`,
+  'iu',
+);
+
+function cornerstoneWorksiteLocation(worksite: Row): string {
+  const [city, state, country] = [worksite.city, worksite.state, worksite.country].map(text);
+  const title = text(worksite.title);
+  // Some tenants publish the city and state only in the worksite's display name.
+  if (!city && !state && US_COUNTRY.test(country) && US_WORKSITE_TITLE.test(title)) {
+    return `${title}, ${country}`;
+  }
+  return [city, state, country].filter(Boolean).join(', ');
+}
 
 export async function readCornerstoneBody(response: Response): Promise<string> {
   try { return await readBoundedAtsBody(response); }
@@ -176,8 +192,8 @@ export async function readCornerstonePosting(html: string, requested: string, re
     && !/^Description too Large\./i.test(description), 'job ad lacks a full description');
   const company = cornerstoneJobAdEmployer(description, requested, pageTitle, text(fields.reqId));
   if (!company) throw new AtsDetailResponseError('Cornerstone exact job ad has no unambiguous employer statement', undefined, 'employer_unverified');
-  const locations = [row(detail.primaryLocation), ...rows(detail.additionalLocations)].map(location =>
-    [location.city, location.state, location.country].map(text).filter(Boolean).join(', ')).filter(Boolean);
+  const locations = [row(detail.primaryLocation), ...rows(detail.additionalLocations)]
+    .map(cornerstoneWorksiteLocation).filter(Boolean);
   return { title: pageTitle, company, description, location: [...new Set(locations)].join('; '), url: requested };
 }
 

@@ -1176,6 +1176,8 @@ export async function scoreJobs(
             company: newCompany,
             title: newTitle,
             location: newLocation,
+            url: currentJob.url,
+            canonicalUrl: resolved.canonicalUrl || currentJob.canonicalUrl,
           })
         : { pass: false, reason: gateReason };
       const deterministicallyRejected = !triage.pass && !lifecycleProtected;

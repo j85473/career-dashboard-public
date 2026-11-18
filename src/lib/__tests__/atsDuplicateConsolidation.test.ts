@@ -144,9 +144,10 @@ test('existing copies consolidate transactionally and retain both stored score s
   let leased = false;
   let aggregateOnlyScoreEvent = false;
   const tx = {
-    $queryRaw: async () => [], $executeRaw: async () => 0,
+    $queryRaw: async (sql: TemplateStringsArray) => sql[0].includes('WITH prefix AS') ? [saved.get('ats')] : [],
+    $executeRaw: async () => 0,
     job: {
-      findMany: async ({ where }: { where: { id: { in?: string[] } } }) => where.id.in ? [...saved.values()] : [saved.get('ats')],
+      findMany: async () => [...saved.values()],
       findUnique: async ({ where }: { where: { id: string } }) => saved.get(where.id),
       update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
         writes.push(data); saved.set(where.id, { ...saved.get(where.id)!, ...data }); return saved.get(where.id);

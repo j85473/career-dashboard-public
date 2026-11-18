@@ -40,7 +40,7 @@ function snapshot(files, rules = policy()) {
 }
 
 test('EI paths, condensed copies, runtime exports and renamed inventory filenames stay private', () => {
-  for (const name of ['docs/Candidate_Evidence_Inventory_-_Core_v1.md', '.agents/minified_evidence.json', 'src/Candidate Evidence Inventory.xlsx', 'data/runtime/state.json', 'docs/interview-prep/private.md', '.env.production']) {
+  for (const name of ['docs/Candidate_Evidence_Inventory_-_Core_v1.md', '.agents/minified_evidence.json', 'src/Candidate Evidence Inventory.xlsx', 'data/runtime/state.json', 'data/writing/writing-as-joe-v1.3.2.md', 'docs/interview-prep/private.md', '.env.production']) {
     assert.equal(isPrivatePath(name), true, name);
   }
   assert.equal(isPrivatePath('.env.example'), false);

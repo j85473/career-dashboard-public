@@ -35,12 +35,17 @@ function fixture(rows: Job[], scoreRows: Array<Record<string, unknown>> = []) {
   const scoreEvents: Array<Record<string, unknown>> = [];
   const movedSources: unknown[] = [];
   const movedAttachments: unknown[] = [];
-  let query: unknown;
+  let query: string | undefined;
   const tx = {
-    $queryRaw: async () => scoreRows,
+    $queryRaw: async (sql: TemplateStringsArray | Prisma.Sql) => {
+      if (!Array.isArray(sql) || !sql[0].includes('WITH prefix AS')) return scoreRows;
+      query = sql.join('');
+      return rows.filter(r => r.id !== 'copy');
+    },
     $executeRaw: async () => 0,
     job: {
-      findMany: async (args: unknown) => { query = args; return rows.filter(r => r.id !== 'copy'); },
+      findMany: async ({ where }: { where: { id: { in: string[] } } }) =>
+        where.id.in.map(id => saved.get(id)).filter(Boolean),
       findUnique: async ({ where }: { where: { id: string } }) => saved.get(where.id),
       update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
         writes.push({ id: where.id, data });
@@ -124,7 +129,7 @@ test('an applied match survives spacing differences and retains both records sco
   assert.equal(f.events[0].eventType, 'user_lifecycle');
   assert.equal((f.events[0].details as Record<string, unknown>).duplicateOfJobId, 'applied');
   assert.equal(f.movedSources.length, 2);
-  assert.ok(!JSON.stringify(f.query()).includes('createdAt'), 'old applications must remain eligible');
+  assert.doesNotMatch(f.query()!, /createdAt/, 'old applications must remain eligible');
 });
 
 test('same URL with conflicting US/UK locations refuses all changes', async () => {

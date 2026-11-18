@@ -255,6 +255,7 @@ type Harness = {
 type HarnessInput = {
   body?: unknown;
   status?: number;
+  responseUrl?: string;
   jsonLd?: {
     found: boolean;
     descriptionIsString: boolean;
@@ -295,7 +296,9 @@ function createHarness(input: HarnessInput = {}): Harness {
 
   const fetchResponse = async (request: string | URL | Request) => {
     urls.push(request instanceof Request ? request.url : String(request));
-    return responseWithFencedClone(body, status, responseFence);
+    const response = responseWithFencedClone(body, status, responseFence);
+    if (input.responseUrl) Object.defineProperty(response, 'url', { value: input.responseUrl });
+    return response;
   };
   const dependencies: Partial<AtsJobEnrichmentDependencies> = {
     fetch: fetchResponse,
@@ -542,6 +545,62 @@ test('bounded marker planning resolves every no-request item without touching de
   assert.deepEqual(result.jobs[1], inputJobs[1]);
   assert.equal(Object.hasOwn(inputJobs[0], ATS_JOB_ENRICHMENT_KEY), false);
   assert.equal(Object.hasOwn(inputJobs[2], ATS_JOB_ENRICHMENT_KEY), false);
+});
+
+const pinpointListing = {
+  id: '12345',
+  title: 'Channel Account Manager',
+  url: 'https://acme.pinpointhq.com/en/postings/a3a9f50c-cf22-43c5-b74b-590fa4328bad',
+  description: `<p>${'Develop partner relationships and find new wholesale opportunities with regional sellers. '.repeat(10)}</p>`,
+};
+
+function pinpointPage(url?: string): string {
+  return `<script type="application/ld+json">${JSON.stringify({
+    '@type': 'JobPosting', title: pinpointListing.title, url,
+    description: `<p>${'Build a qualified partner pipeline and coordinate the technical resources to close channel opportunities. '.repeat(7)}</p>`
+      + '<h2>Key Responsibilities</h2><ul><li>Lead quarterly partner reviews.</li></ul>'
+      + '<h2>Qualifications</h2><ul><li>Three years of technology-services sales experience.</li></ul>',
+  })}</script>`;
+}
+
+test('Pinpoint fetches the whole canonical posting even when the feed introduction looks scorable', async () => {
+  const input = { platform: 'pinpoint', slug: 'acme', job: pinpointListing, requestTimeoutMs: 2000 };
+  const harness = createHarness({ body: pinpointPage() });
+  const fetchDetail = harness.dependencies.safeExternalFetch!;
+  harness.dependencies.safeExternalFetch = (url, init) => {
+    assert.equal(new Headers(init?.headers).get('accept'), 'text/html');
+    return fetchDetail(url, init);
+  };
+  const planned = markAtsListingsWithoutDetail({ ...input, jobs: [input.job] }, harness.dependencies);
+  assert.equal(planned.markedCount, 0);
+
+  const result = await enrichAtsListingJob(input, harness.dependencies);
+  const marker = readAtsJobEnrichmentMarker(result);
+  assert.equal(marker?.status, 'enriched');
+  assert.match(marker?.description ?? '', /Lead quarterly partner reviews/);
+  assert.match(marker?.description ?? '', /Three years of technology-services sales experience/);
+  assert.doesNotMatch(marker?.description ?? '', /regional sellers/);
+  assert.deepEqual(harness.urls, [pinpointListing.url]);
+  assert.deepEqual(harness.reservations, ['ATS-pinpoint', 'ATS-pinpoint Details']);
+  assert.equal(result.description, pinpointListing.description);
+});
+
+test('Pinpoint leaves the description for recovery when the requested posting cannot be verified', async () => {
+  const otherUrl = 'https://acme.pinpointhq.com/en/postings/another-posting';
+  const input = { platform: 'pinpoint', slug: 'acme', job: pinpointListing, requestTimeoutMs: 2000 };
+  for (const response of [
+    { status: 403 },
+    { body: '<p>Careers page</p>' },
+    { body: pinpointPage(otherUrl) },
+    { body: pinpointPage(), responseUrl: otherUrl },
+  ]) {
+    const harness = createHarness(response);
+    const result = await enrichAtsListingJob(input, harness.dependencies);
+    const marker = readAtsJobEnrichmentMarker(result);
+    assert.equal(marker?.status, 'unavailable');
+    assert.equal(marker?.description, null);
+    assert.deepEqual(harness.urls, [pinpointListing.url]);
+  }
 });
 
 test('all seven direct ATS adapters preserve URLs and parsed enrichment semantics', async (t) => {

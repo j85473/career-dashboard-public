@@ -43,6 +43,10 @@ import { isIndeedHost } from './indeedPostingUrl';
 import { fetchIndeedPosting } from './indeedPosting';
 import { isAppOneHost } from './apponePostingIdentity';
 import { fetchAppOnePosting } from './apponePosting';
+import { buildIcimsIframeUrl, ICIMS_FETCH_USER_AGENT, icimsPostingId, icimsPostingUrlsMatch } from './icimsPostingUrl';
+import { isPlaceholderEmployerName } from './companyIdentity';
+
+export { buildIcimsIframeUrl, ICIMS_FETCH_USER_AGENT } from './icimsPostingUrl';
 
 function isDomain(hostname: string, domain: string) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
@@ -56,6 +60,8 @@ export type AtsScrapeResult = {
   title?: string,
   company?: string,
   location?: string,
+  /** Employer-published compensation supplied separately from the description. */
+  postedCompensation?: string,
   /** Provider evidence without a verified opening must never reach a page-body fallback. */
   postingVerificationError?: string,
   /** Verified provider URL for retrieval only; never replaces the user's saved link. */
@@ -65,7 +71,6 @@ export type AtsScrapeResult = {
 type IcimsJobData = {
   idRaw?: number | string;
   title?: string;
-  company?: string;
   location?: {
     city?: string;
     state?: string;
@@ -97,14 +102,6 @@ export type ComeetPostingIdentity = {
   companyUid: string;
   positionUid: string;
 };
-
-const ICIMS_JOB_PATH_PATTERN = /^\/jobs\/(\d+)((?:\/[^/?#]+)*)\/(?:job|login)\/?$/i;
-
-// iCIMS returned HTTP 405 for the longer Chrome-identifying UA used by the
-// generic JSON-LD scraper while serving the same public iframe normally for
-// this minimal browser token. Keep this adapter's transport behavior isolated
-// from unrelated page scrapers so a future generic-UA change cannot break it.
-export const ICIMS_FETCH_USER_AGENT = 'Mozilla/5.0';
 
 export const COMEET_FETCH_USER_AGENT = 'Mozilla/5.0';
 
@@ -251,31 +248,6 @@ export async function scrapeComeetPosting(url: string): Promise<AtsScrapeResult 
 }
 
 /**
- * iCIMS' public job URL is usually an employer-branded wrapper. The wrapper
- * creates a same-origin iframe with `in_iframe=1`; that response is the actual
- * iCIMS job document and contains the posting fields without authentication or
- * browser rendering. Preserve tenant-specific query parameters and change only
- * the render-mode flag.
- */
-export function buildIcimsIframeUrl(value: string): URL | null {
-  try {
-    const url = new URL(value);
-    if (!['http:', 'https:'].includes(url.protocol)) return null;
-    if (!isDomain(url.hostname.toLowerCase(), 'icims.com')) return null;
-    const pathMatch = url.pathname.match(ICIMS_JOB_PATH_PATTERN);
-    if (!pathMatch) return null;
-    // Aggregators often store iCIMS' application/login route. The public job
-    // document uses the same id/slug at `/job`, so normalize before selecting
-    // iframe mode instead of scraping a login wall.
-    url.pathname = `/jobs/${pathMatch[1]}${pathMatch[2]}/job`;
-    url.searchParams.set('in_iframe', '1');
-    return url;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Read a JSON array assigned in an inline script without evaluating JavaScript.
  * iCIMS exposes useful job metadata through `dataLayer = [{ ... }]`, and a
  * balanced scanner safely tolerates nested arrays plus brackets inside quoted
@@ -330,22 +302,28 @@ function icimsJobData($: cheerio.CheerioAPI): IcimsJobData | null {
   return null;
 }
 
-function icimsLocation(job: IcimsJobData | null, $: cheerio.CheerioAPI): string | undefined {
-  const city = typeof job?.location?.city === 'string' ? job.location.city.trim() : '';
-  const state = typeof job?.location?.state === 'string' ? job.location.state.trim() : '';
-  if (city) return state ? `${city}, ${state}` : city;
-
-  const displayed = $('.iCIMS_JobsTable .header.left > span:not(.sr-only)').first().text().trim();
-  if (!displayed) return undefined;
-  return displayed
+function icimsLocation($: cheerio.CheerioAPI, job: IcimsJobData | null, posting: JsonLdJobPosting | null): string | undefined {
+  const labeled = $('dt.iCIMS_JobHeaderField').filter((_, label) => /^(?:Job )?Locations?$/i.test($(label).text().trim()))
+    .next('dd.iCIMS_JobHeaderData').first().text().trim();
+  const displayed = labeled || $('.iCIMS_JobsTable .header.left > span:not(.sr-only)').first().text().trim();
+  const visibleSites = displayed
     .split(/\s*\|\s*/)
     .map((part) => {
       const cityAndState = part.match(/^US-([A-Z]{2})-(.+)$/i);
       if (cityAndState) return `${cityAndState[2].trim()}, ${cityAndState[1].toUpperCase()}`;
       const stateOnly = part.match(/^US-([A-Z]{2})$/i);
       return stateOnly ? stateOnly[1].toUpperCase() : part;
-    })
-    .join(' | ');
+    }).filter(Boolean);
+  const structuredSites = jsonLdLocationString(posting?.jobLocation)?.split('; ') || [];
+  const sites = visibleSites.length > structuredSites.length ? visibleSites : structuredSites;
+  const remote = String(posting?.jobLocationType || '').toUpperCase() === 'TELECOMMUTE';
+  const location = postingLocations(sites[0], sites.slice(1), remote ? 'Remote' : undefined)
+    || (posting ? jsonLdPostingMetadata(posting).location : undefined);
+  if (location) return location;
+
+  const city = postingMetadataValue(job?.location?.city);
+  const state = postingMetadataValue(job?.location?.state);
+  return city && state ? `${city}, ${state}` : city;
 }
 
 /**
@@ -353,7 +331,7 @@ function icimsLocation(job: IcimsJobData | null, $: cheerio.CheerioAPI): string 
  * controls, cookie warnings, sharing widgets, and the employer-branded outer
  * page out of `text` prevents a long portal shell from masquerading as a JD.
  */
-export function parseIcimsPostingHtml(html: string, expectedJobId?: string): AtsScrapeResult | null {
+export function parseIcimsPostingHtml(html: string, expectedJobId?: string, expectedUrl?: string): AtsScrapeResult | null {
   if (!html) return null;
   let $: cheerio.CheerioAPI;
   try {
@@ -385,12 +363,17 @@ export function parseIcimsPostingHtml(html: string, expectedJobId?: string): Ats
   const text = sections.join('\n\n').trim();
   if (!text || !assessJobDescriptionQuality(text, { structuredSource: true }).scorable) return null;
 
-  const location = icimsLocation(job, $);
+  const posting = extractJsonLdJobPosting(html, expectedUrl);
+  const publishedCompany = jsonLdCompanyName(posting?.hiringOrganization);
+  // The analytics company field can name a branch or internal business unit.
+  const company = publishedCompany && !isPlaceholderEmployerName(publishedCompany) ? publishedCompany : undefined;
+  const location = icimsLocation($, job, posting);
   return {
     text,
     ats: 'iCIMS',
     platform: 'icims',
     title,
+    ...(company ? { company } : {}),
     ...(location ? { location } : {}),
   };
 }
@@ -399,9 +382,6 @@ export function parseIcimsPostingHtml(html: string, expectedJobId?: string): Ats
 export async function scrapeIcimsPosting(url: string): Promise<AtsScrapeResult | null> {
   const iframeUrl = buildIcimsIframeUrl(url);
   if (!iframeUrl) return null;
-  const jobId = iframeUrl.pathname.match(ICIMS_JOB_PATH_PATTERN)?.[1];
-  if (!jobId) return null;
-
   const response = await safeExternalFetch(iframeUrl, {
     headers: {
       'Accept': 'text/html,application/xhtml+xml',
@@ -409,8 +389,8 @@ export async function scrapeIcimsPosting(url: string): Promise<AtsScrapeResult |
     },
     signal: AbortSignal.timeout(15000),
   }).catch(() => null);
-  if (!response || !response.ok) return null;
-  return parseIcimsPostingHtml(await readSafeFetchText(response), jobId);
+  if (!response?.ok || !icimsPostingUrlsMatch(response.url || iframeUrl.href, iframeUrl.href)) return null;
+  return parseIcimsPostingHtml(await readSafeFetchText(response), icimsPostingId(iframeUrl), iframeUrl.href);
 }
 
 /** Compose the public CXS endpoint from either Workday posting URL family. */
@@ -817,6 +797,7 @@ export function extractJsonLdJobPosting(html: string, expectedUrl?: string): Jso
       if (types.some((t) => t === 'JobPosting')) {
         const postingUrl = (candidate as JsonLdJobPosting).url;
         if (expectedUrl && typeof postingUrl === 'string' && !postingUrlsMatch(postingUrl, expectedUrl)
+          && !icimsPostingUrlsMatch(postingUrl, expectedUrl)
           && !eightfoldPostingUrlsMatch(postingUrl, expectedUrl, html)) continue;
         return candidate as JsonLdJobPosting;
       }

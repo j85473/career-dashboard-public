@@ -20,11 +20,13 @@ import { generateV4Fingerprint } from '@/lib/jobIngestion';
 import { preferredJdSourceUrl } from '@/lib/jobSourceProvenance';
 import { assessJobDescriptionQuality } from '@/lib/jobDescriptionQuality';
 import { parseGustoReaderMarkdown } from '@/lib/gustoBoard';
+import { extractPostedCompensation } from '@/lib/postedCompensation';
 import { randomUUID } from 'node:crypto';
 import { userCanonicalJobUrlFields } from '@/lib/userCanonicalJobUrl';
 import { ukgReadyJobUrl, ukgReadyPage } from '@/lib/ukgReadyUrl';
 import { looksLikeCareersListingPage } from '@/lib/careersListingPage';
 import { symphonyPostingIdentity } from '@/lib/symphonyAtsBoard';
+import { buildIcimsIframeUrl } from '@/lib/icimsPostingUrl';
 import {
   automatedLifecycleIsProtected,
   manualImportCompanyValue,
@@ -70,7 +72,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid URL' }, { status: 400 });
   }
 
-  const resolvedUrl = await resolveRedirectUrl(url);
+  // An iCIMS outer page can redirect to a branded wrapper. The original
+  // requisition URL gives the adapter the public iframe with the posting data.
+  const resolvedUrl = buildIcimsIframeUrl(url) ? url : await resolveRedirectUrl(url);
   try {
     await assertSafeExternalUrl(resolvedUrl);
   } catch (error) {
@@ -312,6 +316,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       metadata: { title: newTitle, company: newCompany, location: newLocation },
     });
     descriptionText = descriptionResult.description;
+    // Retained descriptions cannot supply fresh pay evidence for a new link.
+    const postedCompensation = (descriptionResult.verified ? extractPostedCompensation(descriptionText) : null)
+      ?? atsResult?.postedCompensation;
+    const compensationChanged = postedCompensation !== undefined && postedCompensation !== claimedJob.postedCompensation;
     // Only the newly verified posting can narrow a remote label. A retained
     // description from the old URL cannot supply metadata for the pasted link.
     if (descriptionResult.verified) newLocation = descriptionWorkLocation(newLocation || claimedJob.location, descriptionText) || newLocation;
@@ -368,6 +376,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           url: canonicalLink.url,
           canonicalUrl: canonicalLink.url,
           description: descriptionText,
+          ...(compensationChanged ? { postedCompensation } : {}),
           manualAts: manualAts || undefined,
           jdBatchId: null,
           ...(newTitle ? { title: newTitle } : {}),
@@ -465,7 +474,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       rescoreQueued: !preserveScores,
       scoreInvalidated: mutation.invalidation.invalidatedEventIds.length > 0,
       linkOnly: linkOnly === true,
-      refreshedFields: changedFields,
+      refreshedFields: compensationChanged ? [...changedFields, 'posted compensation'] : changedFields,
       unverifiedFields: [!newCompany ? 'company' : null, !newLocation ? 'location' : null, !descriptionResult.verified ? 'job description' : null].filter(Boolean),
     });
 

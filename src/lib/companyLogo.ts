@@ -55,6 +55,7 @@ export const VERIFIED_COMPANY_WEBSITES = [
   { names: ['Medstra'], website: 'https://www.medstra.co/' },
   { names: ['Road Machinery and Supplies Co..', 'Road Machinery & Supplies Co.'], website: 'https://rmsequipment.com/contact/savage-mn/' },
   { names: ['Stanley Access Technologies'], website: 'https://www.stanleyaccess.com/' },
+  { names: ['Lennox International'], website: 'https://www.lennox.com/careers/' },
   // Reviewed against the employers' own sites, including nonliteral domains.
   { names: ['National Life Insurance Company', 'nationallifeinsurancecompany', 'National Life Group'], website: 'https://www.nationallife.com/' },
   { names: ['Yoodli', 'Yoodli Inc', 'yoodliinc', 'Yoodli AI Roleplays'], website: 'https://www.yoodli.ai/' },

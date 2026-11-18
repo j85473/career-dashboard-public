@@ -70,9 +70,8 @@ test('editing a Tower link cannot merge a Kwik Chek card, even when legacy hashe
   const rows = new Map([[current.id, structuredClone(current)], [unrelated.id, structuredClone(unrelated)]]);
   const before = structuredClone(unrelated);
   const tx = {
-    $queryRaw: async () => [], $executeRaw: async () => 0,
+    $queryRaw: async (sql: TemplateStringsArray) => sql[0].includes('WITH prefix AS') ? [rows.get('kwik')] : [],
     job: {
-      findMany: async () => [rows.get('kwik')],
       findUnique: async ({ where }: { where: { id: string } }) => rows.get(where.id),
       update: async ({ where, data }: { where: { id: string }; data: Partial<Job> }) => {
         assert.equal(where.id, 'tower');

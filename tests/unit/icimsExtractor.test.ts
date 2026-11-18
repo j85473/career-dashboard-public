@@ -121,12 +121,33 @@ test('parseIcimsPostingHtml falls back to the displayed location when dataLayer 
 
 test('parseIcimsPostingHtml normalizes each displayed multi-site location independently', () => {
   const html = withDisplayedLocation(
-    icimsFixture({ validDataLayer: false }),
+    icimsFixture(),
     'US-MN-Minneapolis/St. Paul | US-MN-Brainerd | US-MN-Rochester',
   );
   const result = parseIcimsPostingHtml(html, '8718');
   assert.ok(result);
-  assert.equal(result!.location, 'Minneapolis/St. Paul, MN | Brainerd, MN | Rochester, MN');
+  assert.equal(result!.location, 'Minneapolis/St. Paul, MN; Brainerd, MN; Rochester, MN');
+});
+
+test('iCIMS iframe metadata comes from the matching published posting and current location header', () => {
+  const url = 'https://uscareers-lennox.icims.com/jobs/8718/donor-recruitment-associate/job';
+  const listing = (postingUrl: string, company: string) => `<script type="application/ld+json">${JSON.stringify({
+    '@type': 'JobPosting', url: postingUrl, hiringOrganization: { name: company },
+    jobLocation: [{ address: { addressLocality: 'Charlotte', addressRegion: 'NC' } }],
+  })}</script>`;
+  const html = icimsFixture({ validDataLayer: false })
+    .replace(/<div class="col-xs-6 header left">.*?<\/div>/, `
+      <dl><div class="iCIMS_JobHeaderTag">
+        <dt class="iCIMS_JobHeaderField"><span class="sr-only">Job Locations</span></dt>
+        <dd class="iCIMS_JobHeaderData"><span>US-NC-Charlotte</span></dd>
+      </div></dl>`)
+    .replace('</head>', `${listing(url.replace('/8718/', '/9999/'), 'Other Employer')}${listing(url, 'Lennox International')}</head>`);
+
+  const result = parseIcimsPostingHtml(html, '8718', `${url}?_gl=tracking&in_iframe=1`);
+  assert.equal(result?.company, 'Lennox International');
+  assert.equal(result?.location, 'Charlotte, NC');
+  assert.equal(parseIcimsPostingHtml(html.replace('Lennox International', 'UNAVAILABLE'), '8718', url)?.company, undefined);
+  assert.equal(parseIcimsPostingHtml(html.replace(/<script type="application\/ld\+json">.*?<\/script>/g, ''), '8718', url)?.location, 'Charlotte, NC');
 });
 
 test('parseIcimsPostingHtml rejects a different embedded job and a portal shell', () => {

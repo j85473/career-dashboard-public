@@ -148,6 +148,7 @@ test('an unavailable posting still saves the exact user link while retaining det
   const { POST } = await import('../../src/app/api/jobs/[id]/scrape/route');
   const { prisma } = await import('../../src/lib/prisma');
   const old = { id: 'saved-card', title: 'Account Manager', company: 'Acme', description: 'Existing scored description',
+    postedCompensation: '$70,000–$80,000 base',
     url: 'https://old.example/jobs/12345', canonicalUrl: 'https://old.example/jobs/12345',
     status: 'applied', tailoringStaged: false, source: 'Manual Import', updatedAt: new Date(), observations: [],
     scoringStatus: 'scored', aimFitScore: 87, reqFitScore: 84, fitScore: 55, jdBatchId: null };
@@ -179,7 +180,7 @@ test('an unavailable posting still saves the exact user link while retaining det
   assert.equal(result.job.canonicalUrl, url);
   assert.equal(result.job.userCanonicalUrl, url);
   assert.match(result.refreshWarning, /Link saved/);
-  for (const key of ['title', 'company', 'description', 'status', 'tailoringStaged', 'scoringStatus', 'fitScore', 'aimFitScore', 'reqFitScore'] as const) {
+  for (const key of ['title', 'company', 'description', 'postedCompensation', 'status', 'tailoringStaged', 'scoringStatus', 'fitScore', 'aimFitScore', 'reqFitScore'] as const) {
     assert.equal(result.job[key], old[key]);
     assert.ok(writes.every(write => !(key in write)), `refresh must preserve ${key}`);
   }
@@ -190,7 +191,8 @@ test('a PDQ link refresh replaces republisher metadata and keeps the exact link 
   const { prisma } = await import('../../src/lib/prisma');
   const uuid = '7aa0e661-47d6-4bf7-92d5-d480d50129f4';
   const url = `https://ats.rippling.com/pdq/jobs/${uuid}?ref=joe#details`;
-  const description = 'Responsibilities: Enable existing partners, activate accounts and deliver partner training. Qualifications: Channel management experience. '.repeat(10);
+  const description = 'Responsibilities: Enable existing partners, activate accounts and deliver partner training. Qualifications: Channel management experience. '.repeat(10)
+    + '\nAnnual base salary range: $90,000–$120,000.';
   let saved: Record<string, unknown> = { id: 'saved-card', title: 'Partner Manager (m/f/d)', company: 'WFHSprint',
     description: 'Old scored description', url: 'https://wfhsprint.2q.unaux.com/job/partner-manager-7-2',
     status: 'applied', source: 'JSearch', updatedAt: new Date(), observations: [], scoringStatus: 'scored',
@@ -232,6 +234,8 @@ test('a PDQ link refresh replaces republisher metadata and keeps the exact link 
   assert.equal(result.job.company, 'PDQ');
   assert.equal(result.job.title, 'Partner Manager');
   assert.equal(result.job.description, description.trim());
+  assert.equal(result.job.postedCompensation, '$90,000–$120,000 base');
+  assert.ok(result.refreshedFields.includes('posted compensation'));
   assert.equal(result.job.url, url);
   assert.equal(result.job.canonicalUrl, url);
   assert.equal(result.job.aimFitScore, 67);
@@ -240,4 +244,67 @@ test('a PDQ link refresh replaces republisher metadata and keeps the exact link 
   assert.equal(result.rescoreQueued, false);
   assert.equal(result.scoreInvalidated, false);
   assert.ok(writes.every(write => !('aimFitScore' in write) && !('reqFitScore' in write)));
+});
+
+test('refreshing an ADP link fills a missing salary even when the description is unchanged', async t => {
+  const { POST } = await import('../../src/app/api/jobs/[id]/scrape/route');
+  const { prisma } = await import('../../src/lib/prisma');
+  const url = 'https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid=ea261afe-ec31-4ecf-90ed-ce151f1b5763&ccId=19000101_000001&jobId=587461&source=LR';
+  const description = 'Responsibilities: Manage dealer relationships, grow sales, and forecast territory performance. Qualifications: Two years of territory sales experience. '.repeat(10).trim()
+    + '\nMTI Distributing, Inc. is an equal opportunity employer.';
+  const body = {
+    requisitionTitle: 'RLC Territory Sales Representative',
+    requisitionDescription: `<p>${description.replace('\n', '</p><p>')}</p>`,
+    requisitionLocations: [{ nameCode: { shortName: 'Brooklyn Center, MN, US' } }],
+    customFieldGroup: { stringFields: [
+      { nameCode: { codeValue: 'ExternalJobID' }, stringValue: '587461' },
+      { nameCode: { codeValue: 'SalaryRange' }, stringValue: '80000.00 to 110000.00 (USD) Annually' },
+    ] },
+  };
+  let saved: Record<string, unknown> = {
+    id: 'saved-mti', title: body.requisitionTitle, company: 'MTI Distributing, Inc.', employer: 'MTI Distributing, Inc.',
+    description, postedCompensation: null, location: 'Brooklyn Center, MN, US', url,
+    status: 'inbox', source: 'JSearch', scoringStatus: 'scored', aimFitScore: 77, reqFitScore: 86,
+    manualAts: 'ADP', updatedAt: new Date(), observations: [],
+  };
+  t.mock.method(dns, 'lookup', async () => [{ address: '8.8.8.8', family: 4 }]);
+  t.mock.method(require('node:https'), 'request', (options: { servername: string; path: string }, callback: (body: Readable) => void) => {
+    assert.equal(options.servername, 'workforcenow.adp.com');
+    const detail = options.path.includes('/job-requisitions/587461?');
+    assert.ok(detail || options.path.startsWith('/mascsr/default/mdf/recruitment/recruitment.html?'));
+    return Object.assign(new EventEmitter(), { end() {
+      queueMicrotask(() => callback(Object.assign(Readable.from([Buffer.from(detail ? JSON.stringify(body) : '<html></html>')]),
+        { statusCode: 200, headers: {}, rawHeaders: ['Content-Type', detail ? 'application/json' : 'text/html'] })));
+    } });
+  });
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('The exact ADP posting supplies complete details'));
+  replace(t, prisma.job, 'findMany', async () => []);
+  replace(t, prisma.job, 'findUnique', async () => ({ ...saved }));
+  for (const method of ['update', 'updateMany'] as const) {
+    replace(t, prisma.job, method, async ({ data }: { data: Record<string, unknown> }) => {
+      saved = { ...saved, ...data };
+      return method === 'update' ? { ...saved } : { count: 1 };
+    });
+  }
+  replace(t, prisma, '$transaction', async (run: (client: unknown) => Promise<unknown>) => run(prisma));
+  replace(t, prisma, '$executeRaw', async () => 0);
+  replace(t, prisma, '$queryRaw', async () => [{ id: 'existing-score', jobId: 'saved-mti',
+    evaluationType: 'standard', family: 'legacy', schemaVersion: 'career-dashboard-fit-result-v1',
+    aimFitScore: 77, experienceFitScore: 86, passed: true, staleAt: null, staleReason: null, createdAt: new Date() }]);
+  replace(t, prisma.atsCompany, 'findMany', async () => [{ slug: url, platform: 'adp', status: 'active' }]);
+  replace(t, prisma.atsCompany, 'update', async () => ({}));
+  const response = await POST(new Request('http://localhost/api/jobs/saved-mti/scrape', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, linkOnly: true }),
+  }), { params: Promise.resolve({ id: 'saved-mti' }) });
+  const result = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(result));
+  assert.equal(saved.postedCompensation, '$80,000–$110,000 annually');
+  assert.equal(result.job.postedCompensation, saved.postedCompensation);
+  assert.equal(result.job.description, description);
+  assert.deepEqual(result.refreshedFields, ['posted compensation']);
+  assert.equal(result.job.status, 'inbox');
+  assert.equal(result.job.aimFitScore, 77);
+  assert.equal(result.job.reqFitScore, 86);
+  assert.equal(result.scoreInvalidated, false);
+  assert.equal(result.rescoreQueued, false);
 });

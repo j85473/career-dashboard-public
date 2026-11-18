@@ -4,6 +4,7 @@ import { employerAliasKey, employerNameRelation } from './employerIdentity';
 import { employerUrlKey } from './employerUrl';
 import { publishedEmployerName } from './publicAtsEmployer';
 import { assertSafeExternalNavigationUrl, safeExternalFetch } from './safeExternalFetch';
+import { buildIcimsIframeUrl, icimsPostingUrlsMatch } from './icimsPostingUrl';
 
 function externalUrl(value: unknown, base: string): string | null {
   if (typeof value !== 'string' || !value.trim()) return null;
@@ -27,6 +28,7 @@ export function postingLogo(html: string, pageUrl: string, company: string): str
   const matches = (name: unknown) => typeof name === 'string'
     && employerAliasKey(publishedEmployerName(name.replace(/\s+logo$/i, ''))) === key;
   const page = new URL(pageUrl);
+  const icims = buildIcimsIframeUrl(pageUrl);
   const workdayTenantMatches = /\.myworkdayjobs\.com$/.test(page.hostname)
     && page.hostname.split('.')[0].replace(/-/g, '') === key;
   const candidates = new Set<string>();
@@ -39,6 +41,7 @@ export function postingLogo(html: string, pageUrl: string, company: string): str
       for (const raw of rows) {
         const row = record(raw);
         if (![row['@type']].flat().includes('JobPosting')) continue;
+        if (icims && typeof row.url === 'string' && !icimsPostingUrlsMatch(row.url, pageUrl)) continue;
         const org = record(row.hiringOrganization);
         const websites = [org.sameAs, org.url].flat().filter((value): value is string => typeof value === 'string');
         const acronym = company.split(/[^a-z0-9]+/i).filter(Boolean).map(word => word[0]).join('').toLowerCase();

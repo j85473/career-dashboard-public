@@ -5696,22 +5696,25 @@ export async function ingestJobs(
               breezyCompensation = parseBreezySalaryRange(job.salary);
             }
 
-            let eightfoldMarker = board.platform === 'eightfold' ? atsEnrichmentMarker : null;
-            if (parentAtsNetworkAllowed && (board.platform === 'eightfold' || isPublicAtsPlatform(board.platform))) {
+            let listingDetail = atsEnrichmentMarker;
+            if (parentAtsNetworkAllowed && (board.platform === 'eightfold' || board.platform === 'pinpoint' || isPublicAtsPlatform(board.platform))) {
               const { enrichAtsListingJob } = await import('./atsJobEnrichment');
               const enriched = await enrichAtsListingJob({ platform: board.platform, slug: board.slug,
                 job: job as Record<string, unknown>, signal: atsTurnSignal, requestTimeoutMs: 15000 });
-              eightfoldMarker = readAtsJobEnrichmentMarker(enriched);
+              listingDetail = readAtsJobEnrichmentMarker(enriched);
             }
 
-            // Strip HTML tags for clean text to save tokens
-            let rawDescription = eightfoldMarker?.description ?? atsEnrichmentMarker?.description ?? (
-              job.content || job.description || job.descriptionPlain
+            // Pinpoint's feed description is just one section. Retained batches
+            // without page details also go through JD recovery before scoring.
+            let rawDescription = listingDetail?.description ?? (
+              board.platform === 'pinpoint' ? '' : (
+                job.content || job.description || job.descriptionPlain
                 // Teamtailor's feed item carries the posting body as content_html;
                 // Recruitee splits it across description and requirements.
                 || job.content_html
                 || [job.description, job.requirements].filter(Boolean).join('\n\n')
                 || ""
+              )
             );
             // Workday publishes no body on its list endpoint, so a posting
             // without this detail call reaches the local gate carrying only
@@ -5867,7 +5870,7 @@ export async function ingestJobs(
              * its stuck jobs all carry a zero-length description. The body
              * lives at `/careers/{id}/detail` under `result.jobOpening`.
              *
-             * Audited alongside this: greenhouse, lever, ashby, pinpoint and
+             * Audited alongside this: greenhouse, lever, ashby and
              * recruitee all do publish a body on the list item, so they need no
              * detail call. Teamtailor's feed item does too, via content_html
              * above. Breezy is the other confirmed gap (0ch descriptions), fixed
@@ -6088,7 +6091,7 @@ export async function ingestJobs(
 
             // Parse platform specifics
             if (isPublicAtsPlatform(board.platform)) {
-              company = eightfoldMarker?.company || atsEnrichmentMarker?.company || job.company || '';
+              company = listingDetail?.company || job.company || '';
               let recoveredPostingLocation: string | null = null;
               if (['oracle', 'ukg', 'zohorecruit'].includes(board.platform)) {
                 const recovered = await recoverRetainedAtsEmployerEvidence(board.platform, board.slug, { ...job, company });
@@ -6096,7 +6099,7 @@ export async function ingestJobs(
                 if (!cleanDescription && recovered?.description) cleanDescription = cleanHtmlText(recovered.description);
                 recoveredPostingLocation = recovered?.location || null;
               }
-              locationStr = eightfoldMarker?.location || atsEnrichmentMarker?.location || recoveredPostingLocation || locationText || 'Unknown Location';
+              locationStr = listingDetail?.location || recoveredPostingLocation || locationText || 'Unknown Location';
               url = job.url || '';
               if (board.platform === 'successfactors' && (!publishedEmployerName(company)
                 || /^(?:unknown(?: location)?|n\/a|not specified)$/i.test(locationStr))) {
@@ -6112,8 +6115,8 @@ export async function ingestJobs(
                 if (/^(?:unknown(?: location)?|n\/a|not specified)$/i.test(locationStr) && locations.length === 1 && locations[0]) locationStr = locations[0];
               }
             } else if (board.platform === "eightfold") {
-              company = eightfoldMarker?.company || job.eightfoldCompany || data.name || board.slug;
-              locationStr = eightfoldMarker?.location || eightfoldLocation(job as Record<string, unknown>) || 'Unknown Location';
+              company = listingDetail?.company || job.eightfoldCompany || data.name || board.slug;
+              locationStr = listingDetail?.location || eightfoldLocation(job as Record<string, unknown>) || 'Unknown Location';
               url = eightfoldPostingUrl(board.slug, job as Record<string, unknown>);
             } else if (board.platform === "lever") {
               company = decodeURIComponent(board.slug).split(/[-_ ]+/).map((word: string) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');

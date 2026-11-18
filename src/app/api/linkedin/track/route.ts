@@ -1,31 +1,16 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { LinkedInActionError, trackLinkedInDraft } from '@/lib/linkedinDraftStore';
 
 export async function POST(req: Request) {
-  try {
-    const { url, status } = await req.json();
-    
-    if (!url || !status) {
-      return NextResponse.json({ error: 'URL and status are required' }, { status: 400 });
-    }
-
-    // Normalize URL
-    let normalized = url.toLowerCase().trim();
-    if (normalized.endsWith('/')) {
-      normalized = normalized.slice(0, -1);
-    }
-
-    await prisma.usedArticle.upsert({
-      where: { url: normalized },
-      update: { status },
-      create: { url: normalized, status },
-    });
-
-    return NextResponse.json({ success: true });
-  } catch (error: unknown) {
-    console.error('Track error:', error);
-    return NextResponse.json({
-      error: error instanceof Error ? error.message : String(error),
-    }, { status: 500 });
+  let input;
+  try { input = await req.json(); } catch { return NextResponse.json({ error: 'Invalid request.' }, { status: 400 }); }
+  if (!input || typeof input.draftId !== 'string' || !['posted', 'passed', 'copy'].includes(input.action)
+    || (input.repeatCopiedAt !== undefined && typeof input.repeatCopiedAt !== 'string')) {
+    return NextResponse.json({ error: 'A saved draft and valid action are required. Reload the LinkedIn tab.' }, { status: 400 });
+  }
+  try { return NextResponse.json(await trackLinkedInDraft(input)); }
+  catch (error) {
+    return NextResponse.json({ error: error instanceof LinkedInActionError ? error.message : 'Could not save that action. Your draft is still available; try again.' },
+      { status: error instanceof LinkedInActionError ? error.status : 500 });
   }
 }

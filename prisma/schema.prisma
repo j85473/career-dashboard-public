@@ -241,6 +241,7 @@ model UsedArticle {
   url       String   @unique
   status    String
   createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 }
 
 model LinkedInDraft {
@@ -249,6 +250,8 @@ model LinkedInDraft {
   postText  String
   url       String
   createdAt DateTime @default(now())
+  copiedAt  DateTime?
+  source    Json?
 }
 
 model AtsCompany {

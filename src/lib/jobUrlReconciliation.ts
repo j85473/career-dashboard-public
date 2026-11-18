@@ -213,6 +213,48 @@ export async function lockJobUrlEdits(tx: Prisma.TransactionClient) {
 
 export type UrlReconciliation = { job: Job; consolidatedJobId: string | null };
 
+type UrlCandidate = Pick<Job, 'id' | 'postingIdentity' | 'url' | 'canonicalUrl'>;
+
+async function findUrlCandidates(
+  tx: Prisma.TransactionClient,
+  id: string,
+  postingIdentity: string,
+  pathPrefix: string,
+): Promise<UrlCandidate[]> {
+  // Use B-tree ranges for literal prefixes, including percent escapes and
+  // underscores. Under C collation, incrementing the last character gives
+  // the exclusive upper bound. Keep the indexed expressions in sync with
+  // the URL reconciliation migration. Recheck the full prefix for long URLs.
+  return tx.$queryRaw<UrlCandidate[]>`
+    WITH prefix AS (
+      SELECT lower(${pathPrefix}::text) AS full_prefix
+    ), key AS (
+      SELECT full_prefix, left(full_prefix, 512) AS start_key
+      FROM prefix
+    ), bounds AS (
+      SELECT full_prefix, start_key,
+        left(start_key, -1) || chr(ascii(right(start_key, 1)) + 1) AS end_key
+      FROM key
+    )
+    SELECT id, "postingIdentity", url, "canonicalUrl"
+    FROM "Job" CROSS JOIN bounds
+    WHERE id <> ${id}
+      AND (
+        "postingIdentity" = ${postingIdentity}
+        OR (
+          left(lower("canonicalUrl"), 512) COLLATE "C" >= start_key
+          AND left(lower("canonicalUrl"), 512) COLLATE "C" < end_key
+          AND starts_with(lower("canonicalUrl"), full_prefix)
+        )
+        OR (
+          left(lower(url), 512) COLLATE "C" >= start_key
+          AND left(lower(url), 512) COLLATE "C" < end_key
+          AND starts_with(lower(url), full_prefix)
+        )
+      )
+  `;
+}
+
 /** Caller owns the transaction and takes lockJobUrlEdits before other locks. */
 export async function reconcileJobUrlEdit(tx: Prisma.TransactionClient, input: {
   id: string;
@@ -234,17 +276,11 @@ export async function reconcileJobUrlEdit(tx: Prisma.TransactionClient, input: {
   // Matching is verified below; a path prefix is retrieval only, never proof.
   const parsed = new URL(url);
   const pathPrefix = `${parsed.origin}${parsed.pathname.replace(/\/(?:apply|application)\/?$/i, '').replace(/\/$/, '')}`;
-  const candidates = postingIdentity ? await tx.job.findMany({
-    where: { id: { not: input.id }, OR: [
-      { postingIdentity },
-      { canonicalUrl: { startsWith: pathPrefix, mode: 'insensitive' } },
-      { url: { startsWith: pathPrefix, mode: 'insensitive' } },
-    ] },
-  }) : [];
+  const candidates = postingIdentity ? await findUrlCandidates(tx, input.id, postingIdentity, pathPrefix) : [];
   // Employer-branded links may hide a verified provider identity. Fall back to
   // the stored key only in that case: a legacy key must never override URLs
   // that identify a different opening. Recheck the same proof after locking.
-  const matchesPosting = (candidate: Job) => {
+  const matchesPosting = (candidate: UrlCandidate) => {
     if (!postingIdentity) return false;
     const urlIdentities = [candidate.url, candidate.canonicalUrl]
       .map(value => value ? urlPostingIdentity(value) : null).filter(Boolean);

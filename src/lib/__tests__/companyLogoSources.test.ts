@@ -24,6 +24,26 @@ test('posting-published brand links can establish a non-com corporate candidate'
     'https://job-boards.greenhouse.io/examplebrand/jobs/42', 'Example Brand'), []);
 });
 
+test('iCIMS branding uses the exact public iframe and the named employer website', async () => {
+  const url = 'https://uscareers-example.icims.com/jobs/56870/sales-manager/job';
+  const iframe = `${url}?in_iframe=1`;
+  const html = ld({ name: 'Example Manufacturer', sameAs: 'www.examplemanufacturer.com' })
+    .replace('"@type":"JobPosting"', `"@type":"JobPosting","url":"${url}"`);
+  assert.deepEqual(postingCompanyWebsites(html, iframe, 'Example Manufacturer'), ['https://www.examplemanufacturer.com/']);
+  assert.deepEqual(postingCompanyWebsites(html, iframe, 'CoreTeam'), []);
+  assert.deepEqual(postingCompanyWebsites(html.replace('/56870/', '/123/'), iframe, 'Example Manufacturer'), []);
+
+  const requests: [string, string | undefined][] = [];
+  const iterator = companyLogoSources({ company: 'Example Manufacturer', canonicalUrl: url }, async (page, userAgent) => {
+    requests.push([page, userAgent]);
+    return new Response(html);
+  });
+  const logo = (await iterator.next()).value;
+  assert.equal(new URL(logo!).searchParams.get('domain'), 'examplemanufacturer.com');
+  assert.deepEqual(requests, [[iframe, 'Mozilla/5.0']]);
+  await iterator.return(undefined);
+});
+
 test('expired postings recover branding from the exact board home', async () => {
   const seen: string[] = [];
   const subject = { company: 'Example Labs', url: 'https://jobs.ashbyhq.com/example-brand/expired' };
@@ -64,6 +84,16 @@ test('corporate fallback reads actual published icons after confirming the emplo
 test('malformed or unrelated corporate organization logos cannot outrank the site icon', () => {
   const html = '<title>Example Brand</title><script type="application/ld+json">{"@type":"Organization","name":"Customer","url":"https://examplebrand.com/","logo":"/customer.png"}</script><link rel="icon" href="/brand.png">';
   assert.equal(corporateLogoSources(html, 'https://examplebrand.com/', 'https://examplebrand.com/', 'Example Brand')[0], 'https://examplebrand.com/brand.png');
+});
+
+test('a verified employer site can publish its logo in the page publisher', () => {
+  const url = 'https://www.lennox.com/careers/';
+  const html = `<script type="application/ld+json">${JSON.stringify({
+    '@type': 'WebPage', url,
+    publisher: { '@type': 'Organization', name: 'Lennox International', logo: ' /logo_international.svg' },
+  })}</script>`;
+  assert.equal(corporateLogoSources(html, url, url, 'Lennox International', true)[0], 'https://www.lennox.com/logo_international.svg');
+  assert.ok(!corporateLogoSources(html, url, url, 'Unrelated Employer', true).includes('https://www.lennox.com/logo_international.svg'));
 });
 
 test('Rippling branding must name the employer and match the saved board slug', () => {

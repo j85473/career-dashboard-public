@@ -15,6 +15,21 @@ export function adpPostingDetailUrl(value: string): string | null {
   return url.toString();
 }
 
+/** ADP publishes this display field separately from the description HTML. */
+function adpPostedCompensation(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const range = /^(\d+(?:\.\d{1,2})?)\s+to\s+(\d+(?:\.\d{1,2})?)\s+\(([a-z]{3})\)\s+(annually|hourly|daily|weekly|biweekly|monthly|semi-monthly)$/i.exec(value.trim());
+  if (!range) return undefined;
+  const [, minimum, maximum, currency, period] = range;
+  const low = Number(minimum);
+  const high = Number(maximum);
+  if (!Number.isFinite(low) || !Number.isFinite(high) || low <= 0 || high < low) return undefined;
+  const money = new Intl.NumberFormat('en-US', {
+    style: 'currency', currency, minimumFractionDigits: 0, maximumFractionDigits: 2,
+  });
+  return `${money.format(low)}–${money.format(high)} ${period.toLowerCase()}`;
+}
+
 /** Only authored employer sections or explicit named-employer EEO statements
  * supply identity. Editor wrappers, clients and conflicting names do not. */
 function authoredAdpEmployer($: cheerio.CheerioAPI): string | undefined {
@@ -66,7 +81,8 @@ export function parseAdpPosting(body: unknown, url: string) {
   const job = body as { requisitionTitle?: string; requisitionDescription?: string;
     customFieldGroup?: { stringFields?: Array<{ stringValue?: string; nameCode?: { codeValue?: string } }> };
     requisitionLocations?: Array<{ nameCode?: { shortName?: string } }> };
-  const id = job.customFieldGroup?.stringFields?.find(field => field.nameCode?.codeValue === 'ExternalJobID')?.stringValue;
+  const fields = job.customFieldGroup?.stringFields;
+  const id = fields?.find(field => field.nameCode?.codeValue === 'ExternalJobID')?.stringValue;
   if (id !== identity.jobId || !job.requisitionTitle?.trim() || typeof job.requisitionDescription !== 'string') return null;
   const $ = cheerio.load(job.requisitionDescription);
   $('script,style').remove();
@@ -74,8 +90,9 @@ export function parseAdpPosting(body: unknown, url: string) {
   $('p,div,li,h1,h2,h3,br').append('\n');
   const text = $.root().text().replace(/[\t ]+/g, ' ').replace(/\n\s*\n+/g, '\n\n').trim();
   const locations = [...new Set((job.requisitionLocations || []).map(place => place.nameCode?.shortName?.trim()).filter(Boolean))];
+  const postedCompensation = adpPostedCompensation(fields?.find(field => field.nameCode?.codeValue === 'SalaryRange')?.stringValue);
   return { ats: 'ADP', title: job.requisitionTitle.trim(), company,
-    location: locations.join('; ') || undefined, text };
+    location: locations.join('; ') || undefined, text, postedCompensation };
 }
 
 export async function fetchAdpPosting(url: string, fetchPage: typeof safeExternalFetch = safeExternalFetch) {

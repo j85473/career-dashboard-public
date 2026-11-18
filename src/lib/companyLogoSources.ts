@@ -4,8 +4,9 @@ import { postingLogo } from './companyLogoRecovery';
 import { companyWebsiteCandidate, corporateWebsiteLogo } from './companyWebsiteLogo';
 import { employerAliasKey } from './employerIdentity';
 import { assertSafeExternalNavigationUrl } from './safeExternalFetch';
+import { buildIcimsIframeUrl, ICIMS_FETCH_USER_AGENT, icimsPostingUrlsMatch } from './icimsPostingUrl';
 
-type FetchPage = (url: string) => Promise<Response>;
+type FetchPage = (url: string, userAgent?: string) => Promise<Response>;
 
 function external(value: unknown, base: string): string | null {
   if (typeof value !== 'string' || !value.trim()) return null;
@@ -61,6 +62,7 @@ export function companyLogoScope(subject: LogoSubject): string {
 export function postingCompanyWebsites(html: string, pageUrl: string, company: string): string[] {
   const key = employerAliasKey(company);
   if (!key) return [];
+  const icims = buildIcimsIframeUrl(pageUrl);
   const websites = new Set<string>();
   const add = (value: unknown) => {
     const url = external(value, pageUrl);
@@ -71,9 +73,13 @@ export function postingCompanyWebsites(html: string, pageUrl: string, company: s
   };
   for (const row of structuredRows(html)) {
     if (![row['@type']].flat().includes('JobPosting')) continue;
+    if (icims && typeof row.url === 'string' && !icimsPostingUrlsMatch(row.url, pageUrl)) continue;
     const org = record(row.hiringOrganization);
     if (typeof org.name !== 'string' || employerAliasKey(org.name) !== key) continue;
-    for (const value of [org.sameAs, org.url].flat()) add(value);
+    for (const value of [org.sameAs, org.url].flat()) {
+      // iCIMS sometimes writes a bare www host in the employer's website field.
+      add(icims && typeof value === 'string' && /^www\./i.test(value.trim()) ? `https://${value.trim()}` : value);
+    }
   }
   // A link published in the posting can corroborate the literal domain brand,
   // including .ai/.io/.org; no list of invented TLDs is needed.
@@ -98,12 +104,15 @@ export function corporateLogoSources(html: string, requestedUrl: string, respond
   const logos = new Set<string>();
   const add = (value: unknown) => { const url = external(value, respondedUrl); if (url) logos.add(url); };
   for (const row of structuredRows(html)) {
-    if (![row['@type']].flat().some(type => ['Organization', 'Corporation', 'LocalBusiness'].includes(String(type)))) continue;
     const declared = external(row.url, respondedUrl);
     if (!declared || host(new URL(declared)) !== host(responded)) continue;
-    if (typeof row.name !== 'string' || employerAliasKey(row.name) !== employerAliasKey(company)) continue;
-    const logo = record(row.logo);
-    add(typeof row.logo === 'string' ? row.logo : logo.contentUrl || logo.url);
+    const pageTypes = [row['@type']].flat();
+    const organization = verifiedWebsite && pageTypes.some(type => type === 'WebPage' || type === 'WebSite')
+      ? record(row.publisher) : row;
+    if (![organization['@type']].flat().some(type => ['Organization', 'Corporation', 'LocalBusiness'].includes(String(type)))) continue;
+    if (typeof organization.name !== 'string' || employerAliasKey(organization.name) !== employerAliasKey(company)) continue;
+    const logo = record(organization.logo);
+    add(typeof organization.logo === 'string' ? organization.logo : logo.contentUrl || logo.url);
   }
   for (const icon of $('link[rel~="icon"], link[rel="apple-touch-icon"]').toArray()) add($(icon).attr('href'));
   add(new URL('/favicon.ico', responded).href);
@@ -113,6 +122,7 @@ export function corporateLogoSources(html: string, requestedUrl: string, respond
 
 function sameEvidencePage(requested: string, responded: string): boolean {
   if (requested === responded) return true;
+  if (buildIcimsIframeUrl(requested)) return icimsPostingUrlsMatch(requested, responded);
   const board = companyLogoBoardUrl(requested);
   if (board) return board === companyLogoBoardUrl(responded);
   const left = new URL(requested), right = new URL(responded);
@@ -143,12 +153,13 @@ export async function* companyLogoSources(subject: LogoSubject, fetchPage: Fetch
   // A failed favicon for a known company should try that company's native
   // images before spending its time budget on potentially blocked ATS pages.
   if (known) for (const website of websites) yield* websiteSources(website);
-  const pages = [...new Set([subject.canonicalUrl, subject.url, ...[subject.canonicalUrl, subject.url].map(companyLogoBoardUrl)])];
+  const postings = [subject.canonicalUrl, subject.url].filter((url): url is string => Boolean(url));
+  const pages = new Set([...postings.flatMap(url => [buildIcimsIframeUrl(url)?.href, url]), ...postings.map(companyLogoBoardUrl)]);
   for (const value of pages) {
     if (!value) continue;
     try {
       const url = assertSafeExternalNavigationUrl(value).href;
-      const response = await fetchPage(url);
+      const response = await fetchPage(url, buildIcimsIframeUrl(url) ? ICIMS_FETCH_USER_AGENT : undefined);
       if (!response.ok || !sameEvidencePage(url, response.url || url)) continue;
       const html = await response.text(), finalUrl = response.url || url;
       const logo = postingLogo(html, finalUrl, company);

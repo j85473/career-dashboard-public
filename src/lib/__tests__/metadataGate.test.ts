@@ -93,6 +93,27 @@ test('an explicitly excluded employer is dismissed before direct-board JD recove
   assert.equal(verdict.reason, 'Locally triaged out: Employer excluded from local scoring (2020 Companies)');
 });
 
+test('DSI Systems is excluded before JD recovery using the full employer name or its Workable posting', () => {
+  const posting = { title: 'Account Sales Manager - EDM', location: 'United States' };
+  for (const identity of [
+    { company: 'DSI Systems' },
+    { company: '  DSI   Systems Inc  ' },
+    { company: 'DSI Systems, Inc.' },
+    { company: 'DSI', url: 'https://apply.workable.com/dsi-systems/j/B90E49489D?source=career' },
+  ]) {
+    assert.deepEqual(metadataGate({ ...posting, ...identity }), {
+      passes: false, reason: 'Locally triaged out: Employer excluded from local scoring (DSI Systems)',
+    });
+  }
+  for (const identity of [
+    { company: 'DSI' },
+    { company: 'DSI Holdings Corporation' },
+    { company: 'Dsi', url: 'https://jobs.lever.co/dsi/d7902717-96b3-46d4-bfe9-0044180cc17f' },
+    { company: 'DSI', url: 'https://apply.workable.com/dsi-systems-partners/j/B90E49489D' },
+    { company: 'DSI', url: 'https://apply.workable.com.example.org/dsi-systems/j/B90E49489D' },
+  ]) assert.equal(metadataGate({ ...posting, ...identity }).passes, true);
+});
+
 test('AutoZone Parts Sales Manager is excluded before JD recovery even in the local metro', () => {
   for (const title of ['Part Sales Manager – Full Time', 'Parts Sales Manager - Part Time']) {
     const verdict = metadataGate({ company: 'AutoZone', title, location: 'Anoka, MN' });

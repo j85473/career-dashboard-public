@@ -125,11 +125,12 @@ export function createCompanyLogoCache(options: {
         const shared = memory.get(key);
         if (shared && now() - shared.verifiedAt < 30 * DAY) return shared;
         const deadline = AbortSignal.timeout(20_000);
-        const fetchExternal = (url: string, accept: string) => safeExternalFetch(url, {
+        const fetchExternal = (url: string, accept: string, userAgent = 'CareerDashboard/1.0') => safeExternalFetch(url, {
           signal: AbortSignal.any([deadline, AbortSignal.timeout(5000)]),
-          headers: { Accept: accept, 'User-Agent': 'CareerDashboard/1.0' },
+          headers: { Accept: accept, 'User-Agent': userAgent },
         }, 5, { maximumBytes: accept === 'text/html' ? 2 * MAX_IMAGE_BYTES : MAX_IMAGE_BYTES });
-        const sources = options.sources?.(subject) || companyLogoSources(subject, url => fetchExternal(url, 'text/html'));
+        const sources = options.sources?.(subject)
+          || companyLogoSources(subject, (url, userAgent) => fetchExternal(url, 'text/html', userAgent));
         const tried = new Set<string>();
         for await (const url of sources) {
           if (tried.has(url)) continue;

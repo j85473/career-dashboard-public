@@ -33,6 +33,7 @@ function safePath(name) {
 export function isPrivatePath(name) {
   const lower = name.toLowerCase();
   return PRIVATE_PATHS.has(name)
+    || /^data\/writing\//i.test(name)
     || /(?:candidate[ _-]*evidence[ _-]*inventory|minified[ _-]*evidence)/i.test(path.posix.basename(name))
     || /^(?:\.agents\/|\.tasks\/|data\/runtime\/|data\/scoring\/results\/|docs\/interview-prep\/)/i.test(lower)
     || /(?:^|\/)\.env(?!\.example$)/i.test(name);

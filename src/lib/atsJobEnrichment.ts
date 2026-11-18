@@ -132,6 +132,7 @@ const DETAIL_MUTABLE_FIELDS: Readonly<Record<string, ReadonlySet<DetailMutableFi
   workable: new Set(['description']),
   bamboohr: new Set(['description']),
   breezy: new Set(['description', 'company', 'location']),
+  pinpoint: new Set(['description']),
   teamtailor: new Set(['location']),
   rippling: new Set(['description', 'company', 'location', 'compensation']),
 };
@@ -140,8 +141,9 @@ type DetailPlan = { kind: 'employer'; fields: EnrichmentFields } | {
   kind?: 'detail';
   url: string;
   transport: 'fetch' | 'safe_fetch';
+  headers?: HeadersInit;
   fields: EnrichmentFields;
-  parse: (response: Response, dependencies: AtsJobEnrichmentDependencies) => Promise<EnrichmentFields>;
+  parse: (response: Response, dependencies: AtsJobEnrichmentDependencies, responseUrl: string) => Promise<EnrichmentFields>;
   complete?: (fetchPage: CornerstoneEvidenceReader) => Promise<EnrichmentFields>;
 };
 
@@ -442,6 +444,12 @@ function htmlResponsePlan(
       return selectFields(parsed);
     },
   };
+}
+
+function pinpointPostingId(url: URL | null, slug: string): string | null {
+  if (!url || url.protocol !== 'https:' || url.host !== `${slug}.pinpointhq.com`
+    || url.username || url.password) return null;
+  return /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?postings\/([a-z0-9-]+)\/?$/i.exec(url.pathname)?.[1] || null;
 }
 
 function preparedDetailPlan(input: {
@@ -784,6 +792,34 @@ function preparedDetailPlan(input: {
     };
   }
 
+  if (platform === 'pinpoint') {
+    if (immutableListingTitleRejected(input)) return { plan: null, reason: 'title_gate_rejected', fields };
+    const url = URL.parse(stringValue(job.url));
+    const id = pinpointPostingId(url, slug);
+    if (!url || !id) return { plan: null, reason: 'missing_detail_identity', fields };
+    return {
+      plan: {
+        url: url.href,
+        transport: 'safe_fetch',
+        // Pinpoint negotiates the first accepted type and rejects JSON on posting pages.
+        headers: { Accept: 'text/html' },
+        fields,
+        parse: async (response, _dependencies, responseUrl) => {
+          const landed = responseUrl ? URL.parse(responseUrl) : url;
+          if (!landed || pinpointPostingId(landed, slug) !== id) {
+            throw new AtsDetailResponseError('Pinpoint detail redirected away from the requested posting');
+          }
+          const html = await response.text();
+          const { parseJsonLdPostingHtml } = await loadAtsApiModule();
+          const posting = parseJsonLdPostingHtml(html, landed.href);
+          return { ...fields, description: posting?.text || null };
+        },
+      },
+      reason: '',
+      fields,
+    };
+  }
+
   if (platform === 'teamtailor') {
     const detailUrl = typeof job.url === 'string' && job.url ? job.url : null;
     if (!detailUrl) return { plan: null, reason: 'missing_detail_identity', fields };
@@ -1039,8 +1075,11 @@ export async function enrichAtsListingJob(
   const detailSource = `ATS-${platform} Details`;
   let parsedFields: EnrichmentFields | null = null;
   try {
-    await session.request(plan.url, { transport: plan.transport,
-      inspect: async response => { parsedFields = await plan.parse(response.clone(), dependencies); } });
+    await session.request(plan.url, {
+      transport: plan.transport,
+      headers: plan.headers,
+      inspect: async response => { parsedFields = await plan.parse(response.clone(), dependencies, response.url); },
+    });
     if (plan.complete) parsedFields = await plan.complete((url, options) => session.request(url, {
       vendorRequest: new URL(url).hostname === new URL(plan.url).hostname,
       allowMissing: true,

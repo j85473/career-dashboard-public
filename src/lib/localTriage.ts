@@ -1,4 +1,5 @@
 import { hasIncompleteLocations, US_STATE_LOCATION_PATTERN } from './postingLocation';
+import { parseHttpUrl } from './urlHost';
 import {
   containsNonlocalGeography,
   hasMinnesotaLocationOption,
@@ -148,6 +149,11 @@ const EXCLUDED_EMPLOYER_ALIASES = new Map<string, string>([
   ['cintas corp', 'Cintas'],
   ['cintas corp.', 'Cintas'],
   ['cintas corporation', 'Cintas'],
+  ['dsi systems', 'DSI Systems'],
+  ['dsi systems inc', 'DSI Systems'],
+  ['dsi systems inc.', 'DSI Systems'],
+  ['dsi systems, inc', 'DSI Systems'],
+  ['dsi systems, inc.', 'DSI Systems'],
   // AO Garcia Agency's Lever tenant label and its employer display name.
   ['aogarciaagency', 'AO Garcia Agency'],
   ['ao garcia agency', 'AO Garcia Agency'],
@@ -205,8 +211,14 @@ function normalizedEmployerName(company: string | null | undefined): string {
 }
 
 /** A user-selected employer exclusion; it withholds but never promotes a job. */
-export function employerTriageVerdict(company: string | null | undefined): LocalTriageVerdict {
-  const excludedEmployer = EXCLUDED_EMPLOYER_ALIASES.get(normalizedEmployerName(company));
+export function employerTriageVerdict(company: string | null | undefined, ...postingUrls: (string | null | undefined)[]): LocalTriageVerdict {
+  // Other employers use the name DSI. The Workable tenant identifies the
+  // employer even when the listing uses only the initials.
+  const isDsiSystemsPosting = postingUrls.some(value => {
+    const url = parseHttpUrl(value);
+    return url?.hostname === 'apply.workable.com' && /^\/dsi-systems\/j\/[a-z0-9]+(?:\/|$)/i.test(url.pathname);
+  });
+  const excludedEmployer = isDsiSystemsPosting ? 'DSI Systems' : EXCLUDED_EMPLOYER_ALIASES.get(normalizedEmployerName(company));
   return excludedEmployer
     ? { pass: false, reason: `Employer excluded from local scoring (${excludedEmployer})` }
     : PASS;
@@ -217,12 +229,16 @@ const AUTOZONE_EMPLOYER_ALIASES = new Set([
   'autozone, inc', 'autozone, inc.', 'autozone stores', 'autozone stores llc',
 ]);
 
-/** Explicit employer and role exclusions apply before recovery, regardless of location. */
-export function explicitLocalExclusionVerdict(input: {
+type LocalExclusionInput = {
   company?: string | null;
   title?: string | null;
-}): LocalTriageVerdict {
-  const employer = employerTriageVerdict(input.company);
+  url?: string | null;
+  canonicalUrl?: string | null;
+};
+
+/** Explicit employer and role exclusions apply before recovery, regardless of location. */
+export function explicitLocalExclusionVerdict(input: LocalExclusionInput): LocalTriageVerdict {
+  const employer = employerTriageVerdict(input.company, input.url, input.canonicalUrl);
   if (!employer.pass) return employer;
   // The referenced Oracle posting uses singular "Part Sales Manager"; both
   // spellings and schedule/location suffixes identify the excluded role.
@@ -447,10 +463,8 @@ export function titleGeographyVerdict(title: string | null | undefined): LocalTr
  * Combined verdict. Explicit employer and role preferences run first; title triage
  * then remains ahead of geography, so its reason is recorded when both reject.
  */
-export function localTriageVerdict(input: {
+export function localTriageVerdict(input: LocalExclusionInput & {
   capRationale: string;
-  company?: string | null;
-  title?: string | null;
   location?: string | null;
 }): LocalTriageVerdict {
   const exclusion = explicitLocalExclusionVerdict(input);

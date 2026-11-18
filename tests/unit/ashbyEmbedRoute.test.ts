@@ -59,7 +59,6 @@ for (const scenario of ['board', 'board-rescore', 'selected', 'unavailable'] as 
       jdBatchId: selected ? null : 'existing-jd-work', afBatchId: selected ? null : 'existing-score-work' };
     let saved = { ...old };
     const writes: Record<string, unknown>[] = [];
-    replace(t, prisma.job, 'findMany', async () => []);
     replace(t, prisma.job, 'findUnique', async () => ({ ...saved }));
     for (const method of ['update', 'updateMany']) replace(t, prisma.job, method, async ({ data }: { data: Record<string, unknown> }) => {
       writes.push(data); saved = { ...saved, ...data };
@@ -67,7 +66,8 @@ for (const scenario of ['board', 'board-rescore', 'selected', 'unavailable'] as 
     });
     replace(t, prisma, '$transaction', async (run: (client: unknown) => Promise<unknown>) => run(prisma));
     replace(t, prisma, '$executeRaw', async () => 0);
-    replace(t, prisma, '$queryRaw', async () => [{ id: 'existing-score', jobId: old.id,
+    replace(t, prisma, '$queryRaw', async (sql: TemplateStringsArray) =>
+      sql[0]?.includes('WITH prefix AS') ? [] : [{ id: 'existing-score', jobId: old.id,
       evaluationType: 'standard', family: 'legacy', schemaVersion: 'career-dashboard-fit-result-v1',
       aimFitScore: 67, experienceFitScore: 84, passed: true, staleAt: null, staleReason: null, createdAt: new Date() }]);
     replace(t, prisma.atsCompany, 'findMany', async () => [{ slug: 'zafran-security', platform: 'ashby', status: 'active' }]);
@@ -134,7 +134,6 @@ for (const linkOnly of [true, false]) {
     const existing = { ...current, id: 'existing', url: `${url}?ashby_jid=${id}`,
       canonicalUrl: `${url}?ashby_jid=${id}`, postingIdentity: urlPostingIdentity(`${board}/${id}`),
       status: 'applied', submittedResume: 'submitted.docx', aimFitScore: 67, reqFitScore: 84 };
-    replace(t, prisma.job, 'findMany', async () => [existing]);
     replace(t, prisma.job, 'findUnique', async ({ where }: { where: { id: string } }) =>
       where.id === current.id ? { ...current } : { ...existing });
     for (const method of ['create', 'update', 'updateMany']) {
@@ -142,7 +141,7 @@ for (const linkOnly of [true, false]) {
     }
     replace(t, prisma, '$transaction', async (run: (client: unknown) => Promise<unknown>) => run(prisma));
     replace(t, prisma, '$executeRaw', async () => 0);
-    replace(t, prisma, '$queryRaw', async () => []);
+    replace(t, prisma, '$queryRaw', async (sql: TemplateStringsArray) => sql[0].includes('WITH prefix AS') ? [existing] : []);
     const response = await POST(new Request('http://localhost/api/jobs/current/scrape', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: submitted, linkOnly, skipRescore: linkOnly }),
