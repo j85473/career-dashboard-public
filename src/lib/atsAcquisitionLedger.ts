@@ -1,3 +1,4 @@
+import { atsEvidenceRefreshBatchesSql } from './atsEvidenceRefresh';
 import { atsLedgerHash, canonicalJson } from './atsEvidenceHash';
 export { atsLedgerHash } from './atsEvidenceHash';
 import { resolveAtsItemRaw } from './atsRawEvidence';
@@ -5,7 +6,7 @@ import { atsRetryColumns, readAtsRetryReason, type AtsRetryReason } from './atsR
 import { retainedAtsDetailRetryAt } from './atsDetailRetryPolicy';
 import { storageAllows } from './storagePressure';
 import { reserveAtsServiceTurn, finishAtsServiceTurn, ATS_SERVICE_MAX_WAIT_MS, type AtsServiceTurn } from './atsServiceScheduling';
-import { atsContinuationEligibilityWhere, atsContinuationServiceWhere, ATS_API_SERVICE_CLASSES, ATS_DRAIN_PHASES, gr8PeopleListingBoardWhere } from './atsSchedulingEligibility';
+import { atsContinuationEligibilityWhere, atsContinuationServiceWhere, ATS_API_SERVICE_CLASSES, ATS_DRAIN_PHASES, ATS_OPEN_BATCH_STATUSES, gr8PeopleListingBoardWhere } from './atsSchedulingEligibility';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import { nextAtsProcessingContinuationAt } from './atsProcessingSchedule';
 import { reserveFirstCollection } from './atsFirstCollectionAdmission';
@@ -332,10 +333,10 @@ async function observedAtsSourceStates(
   return observations;
 }
 
-/** Existing batches retain their stored layout. New Oracle/UKG postings must
- * not wait for another posting's employer evidence before they can publish. */
+/** These providers resolve posting-level evidence independently. Each verified
+ * posting in a new batch can publish while a neighbor waits on a detail. */
 export function atsSegmentSizeForNewBoard(platform: string, requested?: number): number {
-  const fallback = platform === 'oracle' || platform === 'ukg' ? 1 : 25;
+  const fallback = ['oracle', 'ukg', 'cornerstone', 'successfactors'].includes(platform) ? 1 : 25;
   return Number.isFinite(requested) && requested! > 0
     ? Math.max(1, Math.min(1_999, Math.floor(requested!))) : fallback;
 }
@@ -396,11 +397,21 @@ export async function admitAtsV2Board(input: {
         where: {
           slug: input.slug,
           platform: input.platform,
-          status: { in: ['fetching', 'partial', 'synchronized'] },
+          status: { in: [...ATS_OPEN_BATCH_STATUSES] },
         },
-        select: { id: true },
+        select: { id: true, status: true },
       });
-      if (active) return null;
+      if (active) {
+        if (active.status !== 'synchronized') return null;
+        // Under the cross-host admission lock, recheck the old batch and every
+        // sibling. A scheduler preview cannot authorize a third collection.
+        const refresh = await transaction.$queryRaw<Array<{ id: string }>>(
+          atsEvidenceRefreshBatchesSql(Prisma.sql`batch.id=${active.id}`),
+        );
+        if (!refresh.length) return null;
+        const paused = pausedAtsListingPlatforms(await readAtsListingPauses(observedAt, transaction), observedAt);
+        if (paused.includes(input.platform)) return null;
+      }
       const claim = async (): Promise<AtsLedgerClaim | null> => {
         if (!await reserveFirstCollection(transaction, input, batchId, observedAt)) return null;
 
@@ -1846,29 +1857,29 @@ export async function sealReadyAtsV2Segments(input: {
     // every unfinished segment after each five-detail quantum. The unique
     // canonical-ordinal index plus the bounded range makes COUNT = expected
     // proof that every ordinal in a segment exists and is terminal.
-    const ready = await transaction.$queryRaw<Array<{ segmentOrdinal: number }>>(Prisma.sql`
-      SELECT candidate."segmentOrdinal"
-        FROM (
-          SELECT (item."canonicalOrdinal" / ${batch.segmentSize}::integer)::integer AS "segmentOrdinal"
-        FROM "AtsIngestionItem" item
-       WHERE item."batchId" = ${batch.id}
-         AND item."ledgerGeneration" = ${batch.activeLedgerGeneration}
-         AND item."canonicalOrdinal" >= 0
-         AND item."canonicalOrdinal" < ${sealableCount}
-         AND item."enrichmentStatus" = 'terminal'
-         AND NOT EXISTS (
-           SELECT 1 FROM "AtsIngestionSegment" segment
-            WHERE segment."batchId" = item."batchId"
-              AND segment."ledgerGeneration" = item."ledgerGeneration"
-              AND segment."segmentOrdinal" = item."canonicalOrdinal" / ${batch.segmentSize}::integer
-         )
-        ) candidate
-       GROUP BY candidate."segmentOrdinal"
+    const singlePosting = batch.segmentSize === 1;
+    const ordinal = singlePosting ? Prisma.sql`item."canonicalOrdinal"`
+      : Prisma.sql`(item."canonicalOrdinal" / ${batch.segmentSize}::integer)`;
+    const completeRange = singlePosting ? Prisma.empty : Prisma.sql`
+      GROUP BY candidate."segmentOrdinal"
       HAVING COUNT(*) = LEAST(${batch.segmentSize}::integer,
-        ${sealableCount}::integer
-          - candidate."segmentOrdinal" * ${batch.segmentSize}::integer)
-       ORDER BY "segmentOrdinal"
-       LIMIT ${batch.segmentSize === 1 ? ATS_LEDGER_SEAL_SEGMENTS_PER_PASS * 25 : ATS_LEDGER_SEAL_SEGMENTS_PER_PASS}
+        ${sealableCount}::integer - candidate."segmentOrdinal" * ${batch.segmentSize}::integer)`;
+    const ready = await transaction.$queryRaw<Array<{ segmentOrdinal: number }>>(Prisma.sql`
+      SELECT candidate."segmentOrdinal" FROM (
+        SELECT ${ordinal} AS "segmentOrdinal" FROM "AtsIngestionItem" item
+        WHERE item."batchId" = ${batch.id}
+          AND item."ledgerGeneration" = ${batch.activeLedgerGeneration}
+          AND item."canonicalOrdinal" >= 0 AND item."canonicalOrdinal" < ${sealableCount}
+          AND item."enrichmentStatus" = 'terminal'
+          AND NOT EXISTS (
+            SELECT 1 FROM "AtsIngestionSegment" segment
+            WHERE segment."batchId" = item."batchId" AND segment."ledgerGeneration" = item."ledgerGeneration"
+              AND segment."segmentOrdinal" = ${ordinal}
+          )
+      ) candidate
+      ${completeRange}
+      ORDER BY candidate."segmentOrdinal"
+      LIMIT ${ATS_LEDGER_SEAL_SEGMENTS_PER_PASS * (singlePosting ? 25 : 1)}
     `);
     const ranges = ready.map(({ segmentOrdinal }) => {
       const firstOrdinal = segmentOrdinal * batch.segmentSize;
@@ -1879,9 +1890,11 @@ export async function sealReadyAtsV2Segments(input: {
       where: {
         batchId: batch.id,
         ledgerGeneration: batch.activeLedgerGeneration,
-        OR: ranges.map(({ firstOrdinal, lastOrdinal }) => ({
-          canonicalOrdinal: { gte: firstOrdinal, lte: lastOrdinal },
-        })),
+        ...(singlePosting
+          ? { canonicalOrdinal: { in: ranges.map(range => range.firstOrdinal) } }
+          : { OR: ranges.map(({ firstOrdinal, lastOrdinal }) => ({
+            canonicalOrdinal: { gte: firstOrdinal, lte: lastOrdinal },
+          })) }),
       },
       orderBy: { canonicalOrdinal: 'asc' },
       select: {
@@ -1893,9 +1906,12 @@ export async function sealReadyAtsV2Segments(input: {
         terminalAt: true,
       },
     });
+    // Both queries return ascending ordinals, including when pending ranges
+    // leave gaps. Validate each contiguous slice once before writing any seal.
+    let itemOffset = 0;
     const manifests = ranges.map((range) => {
-      const segmentItems = items.filter((item) => item.canonicalOrdinal >= range.firstOrdinal
-        && item.canonicalOrdinal <= range.lastOrdinal);
+      const segmentItems = items.slice(itemOffset, itemOffset + range.itemCount);
+      itemOffset += range.itemCount;
       // Fail closed if the payload read contradicts the candidate query. A
       // serialization retry re-reads everything; it never rewrites old seals.
       if (segmentItems.length !== range.itemCount || segmentItems.some((item, index) =>
@@ -2155,6 +2171,31 @@ function mergeAtsLedgerItem(rawJson: Prisma.JsonValue | null, overlay: Prisma.Js
   return { ...jsonObject(rawJson), ...jsonObject(overlay) };
 }
 
+// Synchronized generations cannot append or replace a provider response.
+// Keep only small metadata objects, never raw pages or posting evidence.
+const synchronizedPageMetadata = new Map<string, JsonObject>();
+
+export async function readSegmentPageMetadata(batchId: string, generation: number, synchronizedAt: Date | null,
+  client: Pick<Prisma.TransactionClient, 'atsIngestionPage'> = prisma): Promise<JsonObject> {
+  const key = JSON.stringify([batchId, generation]);
+  const cached = synchronizedAt && synchronizedPageMetadata.get(key);
+  if (cached) return structuredClone(cached);
+  const pages = await client.atsIngestionPage.findMany({
+    where: { batchId, generation },
+    orderBy: [{ requestedOffset: 'asc' }, { responseAttempt: 'asc' }],
+    select: { metadata: true },
+  });
+  const metadata = pages.reduce<JsonObject>((merged, page) => ({ ...merged, ...jsonObject(page.metadata) }), {});
+  if (synchronizedAt && Buffer.byteLength(JSON.stringify(metadata)) <= 64 * 1024) {
+    if (synchronizedPageMetadata.size >= 32) {
+      const oldest = synchronizedPageMetadata.keys().next().value;
+      if (oldest !== undefined) synchronizedPageMetadata.delete(oldest);
+    }
+    synchronizedPageMetadata.set(key, structuredClone(metadata));
+  }
+  return metadata;
+}
+
 export async function claimNextAtsV2Segment(
   now = new Date(), employerRetryMode: AtsEmployerRetryMode = 'fallback',
 ): Promise<PrefetchedAtsSegment | null> {
@@ -2238,15 +2279,7 @@ export async function claimNextAtsV2Segment(
   const remainingItems = items.slice(segment.processingOffset);
   const jobs = remainingItems.map((item) => mergeAtsLedgerItem(resolveAtsItemRaw(item) as Prisma.JsonValue, item.enrichmentOverlay));
   const canonicalOrdinals = remainingItems.map((item) => item.canonicalOrdinal);
-  const pages = await prisma.atsIngestionPage.findMany({
-    where: { batchId: segment.batchId, generation: segment.ledgerGeneration },
-    orderBy: [{ requestedOffset: 'asc' }, { responseAttempt: 'asc' }],
-    select: { metadata: true },
-  });
-  const metadata = pages.reduce<JsonObject>(
-    (merged, page) => ({ ...merged, ...jsonObject(page.metadata) }),
-    {},
-  );
+  const metadata = await readSegmentPageMetadata(segment.batchId, segment.ledgerGeneration, segment.batch.synchronizedAt);
   return {
     handoffKind: 'ledger_segment',
     employerVerificationRetry: isAtsEmployerVerificationHold(segment.holdReason, segment.retryCode),

@@ -132,6 +132,7 @@ test('ADP reads employer sections across wrappers and accepts named EEO declarat
     ['<div><p><b>ABOUT US</b></p></div><p>Example Employer is a manufacturer. Our team builds products.</p>', 'Example Employer'],
     ['<p>About Example Employer:</p><p>Example Employer builds products.</p>', 'Example Employer'],
     ['<div>Example Employer is an equal opportunity employer.</div>', 'Example Employer'],
+    ['<p>Cummins Clean Fuel Technologies and its Affiliate Companies are Equal Opportunity and Affirmative Action Employers.</p>', 'Cummins Clean Fuel Technologies'],
     ['<p>About Us</p><p>Example Employer (EE) is a manufacturer. Our team builds products.</p><p>Example Employer is an Equal Employment Opportunity Employer.</p>', 'Example Employer'],
   ]) assert.equal(parseAdpPosting({ ...fixture, requisitionDescription: description }, url)?.company, expected);
 });
@@ -145,5 +146,8 @@ test('ADP EEO evidence rejects generic subjects, clients, scripts and conflictin
     '<p>About Other Employer</p><p>At Other Employer, we build products.</p><p>Example Employer is an equal opportunity employer.</p>',
     '<script>Example Employer is an equal opportunity employer.</script>',
     '<p>We partner with Example Employer, which is an equal opportunity employer.</p>',
+    '<p>Our client Example Employer and its affiliates are equal opportunity employers.</p>',
+    '<p>Example Employer and Other Employer are equal opportunity employers.</p>',
+    '<p>Example Employer and its affiliates are equal opportunity employers.</p><p>Other Employer is an equal opportunity employer.</p>',
   ]) assert.equal(parseAdpPosting({ ...fixture, requisitionDescription: description }, url)?.company, undefined);
 });

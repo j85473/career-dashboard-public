@@ -18,9 +18,9 @@ const inboxVerification = source('src', 'lib', 'verifyJobsAlive.ts');
 test('Inbox source expiry checks the employer copy and preserves score authority', () => {
   assert.match(inboxVerification, /await resolveCanonical\(job/);
   assert.match(inboxVerification, /employer\.liveness === 'alive'/);
-  assert.match(inboxVerification, /updateData\.canonicalUrl = replacement\.url/);
+  assert.match(inboxVerification, /employerLinkReplacementFields\(job, replacement\)/);
   assert.match(inboxVerification, /updatedAt: job\.updatedAt/);
-  assert.match(inboxVerification, /client\.\$transaction\(tx => persist\(tx\)\)/);
+  assert.match(inboxVerification, /client\.\$transaction\(async tx => \{[\s\S]*?lockJobForEmployerLocationRepair\(tx, job\.id\)[\s\S]*?return persist\(tx\)/);
   assert.doesNotMatch(inboxVerification, /updateData\.(?:aimFitScore|reqFitScore|scoringStatus|description|jdClaimedAt|localClaimedAt)\s*=/);
 });
 
@@ -31,6 +31,7 @@ test('the pipeline continuously supervises ingestion, local scoring, and JD reco
   assert.match(pipeline, /superviseLoop\('ATS Batch Processing', runAtsBatchProcessingLoop\)/);
   assert.match(pipeline, /superviseLoop\('ATS Segment Publication', runAtsSegmentPublicationLoop\)/);
   assert.match(pipeline, /superviseLoop\('Local Scoring', runLocalScoringLoop\)/);
+  assert.match(pipeline, /superviseLoop\('Cooldown Recovery', runCooldownRecoveryLoop\)/);
   assert.match(pipeline, /superviseLoop\('JD Extraction', runJDExtraction\)/);
   assert.match(pipeline, /await Promise\.allSettled\(\[/);
 });
@@ -68,6 +69,15 @@ test('local scoring either withholds deterministically or hands eligible jobs to
   assert.match(localScoring, /currentJob\.source === 'Manual Import' \? currentJob\.status : 'dismissed'/);
 });
 
+test('local scoring checks the resolved JD for role exclusions before assigning a score', () => {
+  const recoveryIndex = localScoring.indexOf('await resolveFullDescription(scoringJob)');
+  const exclusionIndex = localScoring.indexOf('await filterNewIntakeRole(currentJob,', recoveryIndex);
+  const scoringIndex = localScoring.indexOf('runLocalHeuristic(jobWithFullDesc,', exclusionIndex);
+  assert.ok(recoveryIndex >= 0 && exclusionIndex > recoveryIndex && scoringIndex > exclusionIndex);
+  assert.match(localScoring.slice(exclusionIndex, scoringIndex), /resolvedDescription: fullDesc/);
+  assert.match(localScoring.slice(exclusionIndex, scoringIndex), /if \(recoveredExclusion\) \{[\s\S]*?continue;/);
+});
+
 test('unscored JSearch jobs are verified after local acceptance and before Aim eligibility', () => {
   const triageIndex = localScoring.indexOf('const deterministicallyRejected =');
   const verificationIndex = localScoring.indexOf('await verifyJSearchBeforeAim(', triageIndex);
@@ -80,6 +90,18 @@ test('unscored JSearch jobs are verified after local acceptance and before Aim e
   assert.match(localScoring, /verificationStatus: preAimVerification\.liveness/);
   assert.match(localScoring, /status: 'expired'/);
   assert.match(localScoring, /updatedAt: currentJob\.updatedAt,[\s\S]*?scoreEvents: \{ none: \{\} \}/);
+});
+
+test('new direct Workday jobs must pass the public page check before the Aim handoff', () => {
+  const triageIndex = localScoring.indexOf('const deterministicallyRejected =');
+  const verificationIndex = localScoring.indexOf('await verifyWorkdayBeforeAim(', triageIndex);
+  const updateIndex = localScoring.indexOf('data: workdayDisposition ?', verificationIndex);
+  const aimEligibilityIndex = localScoring.indexOf("scoringStatus: deterministicallyRejected || postingClosedBeforeAim ? 'skipped' : 'scored'", updateIndex);
+  assert.ok(triageIndex >= 0 && verificationIndex > triageIndex);
+  assert.ok(updateIndex > verificationIndex && aimEligibilityIndex > updateIndex);
+  assert.match(localScoring, /!deterministicallyRejected && isUnscoredAutomatedJob\s*&& currentJob\.source === DIRECT_WORKDAY_SOURCE && currentJob\.status === 'pending_af'\s*&& !currentJob\.tailoringStaged/);
+  assert.match(localScoring, /workdayVerification\.liveness !== 'alive'[\s\S]*?buildClosedPostingUpdate\(\)[\s\S]*?\{ scoringStatus: 'queued', batchJobId: null \}/);
+  assert.equal(localScoring.match(/AND: \[workdayRetryWhere\]/g)?.length, 2);
 });
 
 test('local scoring applies affirmative non-English information before its JD resolver', () => {

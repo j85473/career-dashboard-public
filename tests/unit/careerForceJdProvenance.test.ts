@@ -66,11 +66,13 @@ test('CareerForce ingestion extracts before redirecting and persists source prov
 
   assert.match(recovery, /include: \{[\s\S]*?observations: \{[\s\S]*?select: \{ source: true, url: true \}/);
   assert.match(recovery, /const sourceExtractionUrl = preferredJdSourceUrl\(\{/);
-  assert.match(recovery, /const atsResult = await scrapeAtsApi\(extractionUrl\)/);
+  const canonicalRead = recovery.indexOf('await readCanonicalPosting(employerUrl)');
+  const syndicatedRead = recovery.indexOf('await scrapeAtsApi(extractionUrl)');
+  assert.ok(canonicalRead >= 0 && syndicatedRead > canonicalRead, 'the employer posting must be read before syndicated recovery');
   assert.match(recovery, /buildSafeJinaReaderUrl\(extractionUrl\)/);
 
   assert.match(manualScrape, /const submittedStoredUrl = \[existingJob\.url, existingJob\.canonicalUrl\]/);
-  assert.match(manualScrape, /const extractionUrl = directPostingResult\?\.postingUrl \|\| adzunaDetails \|\| \(submittedStoredUrl && detectedAts === 'Unknown'[\s\S]*?preferredJdSourceUrl\(\{/);
+  assert.match(manualScrape, /const extractionUrl = directPostingResult\?\.postingUrl \|\| \(directDescription \? cleanedUrl : null\)[\s\S]*?preferredJdSourceUrl\(\{/);
   assert.match(manualScrape, /const atsResult = extractionUrl === cleanedUrl \|\| extractionUrl === directPostingResult\?\.postingUrl\s*\? directPostingResult/);
   assert.match(manualScrape, /completePostingMetadata\(await scrapeAtsApi\(extractionUrl\)/);
   assert.match(manualScrape, /buildSafeJinaReaderUrl\(extractionUrl\)/);
@@ -87,7 +89,7 @@ test('DEjobs ingestion preserves its source listing separately from the resolved
   assert.ok(redirectIndex > sourceUrlIndex, 'DEjobs Apply resolution must retain the source listing');
   assert.ok(persistenceIndex > redirectIndex, 'DEjobs source listing is not passed to ingestion');
 
-  const gateIndex = ingestion.indexOf('if (!acostaPriority && filter.passes && hasAuthoritativeMetadata(input.source))');
+  const gateIndex = ingestion.indexOf('hasAuthoritativeMetadata(input.source) || hasEmployerLocation');
   const createIndex = ingestion.indexOf('const job = await tx.job.create(', gateIndex);
   assert.ok(gateIndex >= 0, 'authoritative external metadata is not gated during ingestion');
   assert.ok(createIndex > gateIndex, 'the metadata gate must run before a needs_jd row can be created');

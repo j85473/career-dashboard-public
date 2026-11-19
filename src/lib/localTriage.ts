@@ -1,5 +1,6 @@
 import { hasIncompleteLocations, US_STATE_LOCATION_PATTERN } from './postingLocation';
 import { parseHttpUrl } from './urlHost';
+import { workdayLocationsForTriage } from './workdayLocation';
 import {
   containsNonlocalGeography,
   hasMinnesotaLocationOption,
@@ -389,7 +390,8 @@ export function locationTriageVerdict(
   const value = (location || '').trim();
   if (!value) return PASS;
   if (hasIncompleteLocations(value)) return { pass: true, reason: 'Location list is incomplete; retain for review' };
-  const options = splitLocationOptions(value);
+  const geography = workdayLocationsForTriage(value);
+  const options = splitLocationOptions(geography);
   if (options.length === 0) return PASS;
   // A concrete in-scope option still wins — a genuinely global-remote role that
   // also lists Minneapolis is fine.
@@ -413,16 +415,16 @@ export function locationTriageVerdict(
     return { pass: false, reason: `Location outside the searched geographies (${value.slice(0, 80)})` };
   }
   if (hasExplicitUSScope) return PASS;
-  if (GLOBAL_SCOPE.test(value)) return { pass: true, reason: 'Worldwide availability; retain for eligibility review' };
+  if (GLOBAL_SCOPE.test(geography)) return { pass: true, reason: 'Worldwide availability; retain for eligibility review' };
   if (options.some(hasMinnesotaCoverageOption)) return { pass: true, reason: 'Coverage list includes Minnesota; retain for work-base review' };
   if (options.some(acceptableLocationOption)) return PASS;
   if (controls.allowAmbiguousRemote !== false
     && !hasExplicitInternational
     && !options.some(hasForeignCountryName)
-    && !hasResidencyRequirement(value)
-    && !hasAssignedTerritoryResidencyRequirement(value)
-    && !hasRegularPresenceRequirement(value, true)
-    && !hasExplicitRemoteExclusion(value)
+    && !hasResidencyRequirement(geography)
+    && !hasAssignedTerritoryResidencyRequirement(geography)
+    && !hasRegularPresenceRequirement(geography, true)
+    && !hasExplicitRemoteExclusion(geography)
     && options.some(isUnresolvedRemoteLocation)) {
     return { pass: true, reason: 'Remote label has no confirmed work-base restriction; retain for eligibility review' };
   }

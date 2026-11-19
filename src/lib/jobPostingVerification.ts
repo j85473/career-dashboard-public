@@ -2,10 +2,12 @@ import { load } from 'cheerio';
 import { safeExternalFetch, buildSafeJinaReaderUrl } from './safeExternalFetch';
 import { isClosedJobPosting, isScorableJobDescription, isTerminalJobPostingPage } from './jobDescriptionQuality';
 import { adpPostingDetailUrl, adpPostingIdentity, parseAdpPosting } from './adpPosting';
+import { postingUrlsMatch } from './postingMetadata';
+import { workdayDetailLocation } from './workdayLocation';
 
 export type JobPostingLiveness = 'alive' | 'expired' | 'unavailable' | 'inconclusive';
 export type PostingProbe = { url: string; status: number | null; outcome: JobPostingLiveness; reason: string };
-export type PostingVerification = { liveness: JobPostingLiveness; probes: PostingProbe[] };
+export type PostingVerification = { liveness: JobPostingLiveness; probes: PostingProbe[]; postingLocation?: string };
 
 export function isAdpPostingUrl(value: string): boolean {
   try {
@@ -110,11 +112,14 @@ export async function verifyJobPosting(
   job: { url: string; title: string },
   authoritativeUrl: string | null,
   dependencies: { fetchPosting?: typeof safeExternalFetch; readPosting?: typeof readRenderedPosting } = {},
+  options: { requireCandidatePage?: boolean } = {},
 ): Promise<PostingVerification> {
   const { fetchPosting = safeExternalFetch, readPosting = readRenderedPosting } = dependencies;
+  const { requireCandidatePage = false } = options;
   const adp = isAdpPostingUrl(job.url);
   const adpDetailUrl = adp ? adpPostingDetailUrl(job.url) : null;
   const probes: PostingProbe[] = [];
+  let postingLocation: string | undefined;
   const probe = async (url: string, rendered = false): Promise<JobPostingLiveness> => {
     try {
       const response = rendered ? await readPosting(url) : await fetchPosting(url, {
@@ -131,9 +136,16 @@ export async function verifyJobPosting(
       const reportedSource = rendered ? body.match(/^URL Source:\s*(\S+)/m)?.[1] : null;
       let outcome: JobPostingLiveness;
       let reason = rendered ? 'rendered_posting' : 'posting_response';
+      const candidateUrl = rendered ? reportedSource : response.url || job.url;
       // A reader HTTP failure belongs to the reader, not the target job.
-      if (rendered && (response.status !== 200 || (reportedSource && reportedSource !== url))) outcome = 'inconclusive';
-      else if (rendered && isClosedJobPosting(body)) { outcome = 'expired'; reason = 'rendered_closure'; }
+      if (rendered && (response.status !== 200
+        || (!requireCandidatePage && reportedSource && reportedSource !== url))) outcome = 'inconclusive';
+      else if (requireCandidatePage && (!candidateUrl || !postingUrlsMatch(candidateUrl, job.url))) {
+        outcome = 'inconclusive'; reason = 'candidate_page_identity_unconfirmed';
+      } else if (requireCandidatePage && !rendered && response.ok && /^\s*(?:\{|\[)/.test(body)) {
+        // A detail payload can remain readable even when the public posting is gone.
+        outcome = 'inconclusive'; reason = 'candidate_page_requires_rendering';
+      } else if (rendered && isClosedJobPosting(body)) { outcome = 'expired'; reason = 'rendered_closure'; }
       else if (response.status === 200 && isWwrPostingLandingPage(url, rendered ? '' : response.url, body)) {
         outcome = 'expired'; reason = 'wwr_posting_redirected_to_landing';
       } else if (adp && url === adpDetailUrl) {
@@ -154,6 +166,13 @@ export async function verifyJobPosting(
           ? classifyAdpCandidatePage(response.status, pageBody, job.title) : 'inconclusive';
         if (outcome === 'unavailable') reason = 'adp_application_page_unavailable';
       } else outcome = classifyJobPostingLiveness(response.status, pageBody, job.title);
+      // A successful exact Workday detail includes the primary and all
+      // additional locations. Reuse the response that proved the posting.
+      if (outcome === 'alive' && url === authoritativeUrl
+        && /\.(?:myworkdayjobs|myworkdaysite)\.com$/.test(new URL(url).hostname)
+        && postingUrlsMatch(response.url || url, url)) {
+        try { postingLocation = workdayDetailLocation(JSON.parse(body).jobPostingInfo) || undefined; } catch { /* HTML has no detail fields. */ }
+      }
       probes.push({ url, status: response.status, outcome, reason });
       return outcome;
     } catch {
@@ -161,16 +180,21 @@ export async function verifyJobPosting(
       return 'inconclusive';
     }
   };
-  if (adpDetailUrl) {
+  if (adpDetailUrl && !requireCandidatePage) {
     const data = await probe(adpDetailUrl);
     // A retained JD proves identity, not application availability. Even a
     // successful API response must be followed by the actual candidate page.
     if (data === 'expired') return { liveness: data, probes };
-  } else if (authoritativeUrl) {
+  } else if (authoritativeUrl && !requireCandidatePage) {
     const authoritative = await probe(authoritativeUrl);
-    if (authoritative !== 'inconclusive') return { liveness: authoritative, probes };
+    if (authoritative !== 'inconclusive') {
+      return { liveness: authoritative, probes, ...(postingLocation ? { postingLocation } : {}) };
+    }
   }
   const page = await probe(job.url);
   if (page !== 'inconclusive') return { liveness: page, probes };
+  if (requireCandidatePage && probes.at(-1)?.reason === 'candidate_page_identity_unconfirmed') {
+    return { liveness: page, probes };
+  }
   return { liveness: await probe(job.url, true), probes };
 }

@@ -50,9 +50,10 @@ function fixture(t: TestContext, count = 52, size = 25) {
       findUniqueOrThrow: async () => batch,
       update: async ({ data }: { data: Record<string, unknown> }) => { updates.push(data); Object.assign(batch, data); },
     },
-    atsIngestionItem: { findMany: async ({ where }: { where: { OR: { canonicalOrdinal: { gte: number; lte: number } }[] } }) => {
+    atsIngestionItem: { findMany: async ({ where }: { where: { canonicalOrdinal?: { in: number[] }; OR?: { canonicalOrdinal: { gte: number; lte: number } }[] } }) => {
       payloadReads++;
-      const result = items.filter(i => where.OR.some(r => i.canonicalOrdinal >= r.canonicalOrdinal.gte && i.canonicalOrdinal <= r.canonicalOrdinal.lte));
+      const result = items.filter(i => where.canonicalOrdinal?.in.includes(i.canonicalOrdinal)
+        || where.OR?.some(r => i.canonicalOrdinal >= r.canonicalOrdinal.gte && i.canonicalOrdinal <= r.canonicalOrdinal.lte));
       return corruptPayload ? result.slice(1) : result;
     } },
     atsIngestionSegment: { createMany: async ({ data }: { data: typeof manifests }) => { manifests.push(...data); return { count: data.length }; } },
@@ -119,9 +120,13 @@ test('operator reset drain remains separate and empty boards need no item reads'
   assert.equal(f.counts().payloadReads + f.counts().boardWrites, 0);
 });
 
-test('new Oracle and UKG batches isolate posting readiness while other providers retain batching', () => {
+test('new evidence-dependent catalogues isolate posting readiness while existing segment layouts are honored', () => {
   assert.equal(atsSegmentSizeForNewBoard('oracle'), 1);
   assert.equal(atsSegmentSizeForNewBoard('ukg'), 1);
+  for (const platform of ['cornerstone', 'successfactors']) {
+    assert.equal(atsSegmentSizeForNewBoard(platform), 1);
+    assert.equal(atsSegmentSizeForNewBoard(platform, 25), 25);
+  }
   assert.equal(atsSegmentSizeForNewBoard('greenhouse'), 25);
   assert.equal(atsSegmentSizeForNewBoard('oracle', 25), 25, 'an explicit existing layout remains representable');
 });

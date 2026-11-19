@@ -72,3 +72,24 @@ test('every completion call site forwards the facts its own claim verified', () 
     assert.match(call, /verifiedPayloadHash:/, path);
   }
 });
+
+test('persistence shares only finalized page metadata within the exact batch and generation', async () => {
+  const { readSegmentPageMetadata } = await import('../atsAcquisitionLedger');
+  const now = new Date();
+  let reads = 0;
+  const client = { atsIngestionPage: { findMany: async () => [
+    { metadata: { board: { name: 'Original' }, page: 1 } }, { metadata: { page: ++reads } },
+  ] } } as unknown as NonNullable<Parameters<typeof readSegmentPageMetadata>[3]>;
+  const read = (batch: string, generation: number, synchronizedAt: Date | null) =>
+    readSegmentPageMetadata(batch, generation, synchronizedAt, client);
+
+  assert.equal((await read('board-a', 1, null)).page, 1);
+  assert.equal((await read('board-a', 1, null)).page, 2);
+  const finalized = await read('board-a', 1, now);
+  assert.equal(finalized.page, 3);
+  (finalized.board as { name: string }).name = 'Changed by caller';
+  assert.deepEqual(await read('board-a', 1, now), { board: { name: 'Original' }, page: 3 });
+  assert.equal((await read('board-a', 2, now)).page, 4);
+  assert.equal((await read('board-b', 1, now)).page, 5);
+  assert.equal((await read('board-a', 1, null)).page, 6);
+});

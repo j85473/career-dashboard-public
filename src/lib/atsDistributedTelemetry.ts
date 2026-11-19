@@ -1,3 +1,4 @@
+import { atsEvidenceRefreshBatchesSql } from './atsEvidenceRefresh';
 import { atsRotationCohortSql } from './atsRotationCohort';
 import { NON_API_ATS_PLATFORMS } from './browserAtsBoards';
 import { prisma } from './prisma';
@@ -131,6 +132,7 @@ export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelem
         SELECT 1 FROM swept s WHERE s.slug = c.slug AND s.platform = c.platform
       )
     ),
+    refreshable AS MATERIALIZED (${atsEvidenceRefreshBatchesSql()}),
     staging AS (
       SELECT
         ${atsStagingVolumeSql(Prisma.sql`day.now_utc`)},
@@ -165,7 +167,8 @@ export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelem
           AND NOT EXISTS (
             SELECT 1 FROM "AtsIngestionBatch" b
             WHERE b.slug = o.slug AND b.platform = o.platform
-              AND b.status IN ('fetching', 'partial', 'synchronized')
+              AND b.id NOT IN (SELECT id FROM refreshable)
+              AND b.status IN ('fetching', 'partial', 'synchronized', 'reset_draining')
           )) AS "cohortReadyNow",
       (SELECT MIN(t) FROM (
         SELECT MIN(o."nextCheckDate") AS t FROM outstanding o, day
@@ -173,7 +176,8 @@ export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelem
             AND NOT EXISTS (
               SELECT 1 FROM "AtsIngestionBatch" b
               WHERE b.slug = o.slug AND b.platform = o.platform
-                AND b.status IN ('fetching', 'partial', 'synchronized')
+                AND b.id NOT IN (SELECT id FROM refreshable)
+                AND b.status IN ('fetching', 'partial', 'synchronized', 'reset_draining')
             )
         UNION ALL
         SELECT MIN(b."nextAcquireAt")
@@ -189,7 +193,8 @@ export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelem
           AND NOT EXISTS (
             SELECT 1 FROM "AtsIngestionBatch" b
             WHERE b.slug = o.slug AND b.platform = o.platform
-              AND b.status IN ('fetching', 'partial', 'synchronized')
+              AND b.id NOT IN (SELECT id FROM refreshable)
+              AND b.status IN ('fetching', 'partial', 'synchronized', 'reset_draining')
           ))
        +
        (SELECT COUNT(*)::int
@@ -216,7 +221,8 @@ export async function readAtsDistributedTelemetry(): Promise<AtsDistributedTelem
               AND circuit."openUntil">day.now_utc)
           AND NOT EXISTS (SELECT 1 FROM "AtsIngestionBatch" batch
             WHERE batch.slug=b.slug AND batch.platform=b.platform
-              AND batch.status IN ('fetching', 'partial', 'synchronized')))
+              AND batch.status IN ('fetching', 'partial', 'synchronized', 'reset_draining')
+              AND batch.id NOT IN (SELECT id FROM refreshable)))
         AS "globalReadyNow",
       (SELECT COUNT(*)::int FROM "AtsCompany" b WHERE b.status = 'active' AND b.platform NOT IN (${Prisma.join(NON_API_ATS_PLATFORMS)})) AS "weekActiveBoards",
       (SELECT COUNT(*)::int FROM "AtsCompany" b, day

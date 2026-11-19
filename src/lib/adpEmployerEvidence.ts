@@ -4,6 +4,8 @@ import { manualImportCompanyValue } from './manualImportPolicy';
 import { employerWebsiteName, publishedEmployerName } from './publicAtsEmployer';
 import { readBoundedAtsBody } from './tenantAtsBoards';
 
+const GENERIC_ADP_EMPLOYER_NAME = /^(?:ADP|Workforce Now|ADP Workforce Now|Default(?: Brand(?:ing)?)?|Recruitment|Careers?)$/i;
+
 /** The public page uses ClientName, not ClientID, as the employer's name. */
 export function adpClientFeaturesUrl(value: string): string | null {
   const identity = adpPostingIdentity(value);
@@ -21,37 +23,39 @@ export function parseAdpClientCompany(body: unknown): string | undefined {
     if (!['ClientName', 'CLIENT_NAME'].includes(field?.nameCode?.codeValue)) continue;
     if (typeof field.stringValue === 'string' && !field.stringValue.trim()) continue;
     const name = typeof field.stringValue === 'string' ? manualImportCompanyValue(field.stringValue) : undefined;
-    if (!name || name.length > 200 || /^(?:ADP|Workforce Now|ADP Workforce Now|Default(?: Brand(?:ing)?)?|Recruitment|Careers?)$/i.test(name)) return undefined;
+    if (!name || name.length > 200 || GENERIC_ADP_EMPLOYER_NAME.test(name)) return undefined;
     names.add(name);
   }
   return names.size === 1 ? [...names][0] : undefined;
 }
 
 export type AdpPublicFetcher = (url: string, init: RequestInit) => Promise<Response>;
-export type AdpCareerCenter = { contentLinks?: Array<{ linkTypeCode?: { codeValue?: string }; contentBody?: { links?: Array<{ href?: string }> } }>;
+export type AdpCareerCenter = { contentLinks?: Array<{
+    linkTypeCode?: { codeValue?: string; longName?: string };
+    contentBody?: { links?: Array<{ href?: string; title?: string }> };
+}>;
     meta?: { customFieldGroup?: { indicatorFields?: Array<{ nameCode?: { codeValue?: string }; indicatorValue?: boolean }> } } };
 export class AdpPublicResponseError extends Error {}
+
+function adpCorporateUrl(href: string | undefined): URL | null {
+    try {
+        const published = decodeURIComponent(href || '').trim();
+        // A published bare hostname and a legacy HTTP link can both be read over HTTPS.
+        const hostOnly = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?:[/?#]|$)/i.test(published);
+        const url = new URL(hostOnly ? 'https://' + published : published);
+        if (url.protocol === 'http:') url.protocol = 'https:';
+        if (url.protocol !== 'https:' || url.username || url.password || url.port
+            || /(?:^|\.)(?:adp\.com|linkedin\.com|facebook\.com|instagram\.com|youtube\.com|twitter\.com|x\.com)$/.test(url.hostname)) return null;
+        return url;
+    } catch { return null; }
+}
 
 /** Only the career center's explicit corporate link supplies a website lookup.
  * Social links, opaque tenant IDs and logo filenames never supply a name. */
 export function adpEmployerWebsite(body: AdpCareerCenter): string | null {
     const links = (body.contentLinks || []).filter(link => ['LINKS-BRND', 'IMG_LOGO'].includes(link.linkTypeCode?.codeValue || ''))
-        .flatMap(link => link.contentBody?.links || []).flatMap(link => {
-            try {
-                const published = decodeURIComponent(link.href || '').trim();
-                // Some centers publish an explicit corporate hostname without
-                // a scheme. Preserve that host; no tenant/name guessing.
-                const hostOnly = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?:[/?#]|$)/i.test(published);
-                const url = new URL(hostOnly ? 'https://' + published : published);
-                // Older centers still publish HTTP corporate links. Request
-                // their explicit host/path over HTTPS, with the same evidence
-                // and redirect checks as any other corporate lookup.
-                if (url.protocol === 'http:') url.protocol = 'https:';
-                if (url.protocol !== 'https:' || url.username || url.password || url.port
-                    || /(?:^|\.)(?:adp\.com|linkedin\.com|facebook\.com|instagram\.com|youtube\.com|twitter\.com|x\.com)$/.test(url.hostname)) return [];
-                return [url.href];
-            } catch { return []; }
-        });
+        .flatMap(link => link.contentBody?.links || [])
+        .map(link => adpCorporateUrl(link.href)?.href).filter((href): href is string => Boolean(href));
     const unique = [...new Set(links)];
     if (unique.length === 1) return unique[0];
     // Career centers can list Website, Culture and Careers for one employer.
@@ -61,6 +65,32 @@ export function adpEmployerWebsite(body: AdpCareerCenter): string | null {
         const url = new URL(link);
         return url.pathname === '/' && !url.search && !url.hash;
     }) || null : null;
+}
+
+/** The welcome heading and the named corporate home link must agree. */
+function adpCareerCenterCompany(body: AdpCareerCenter): string | undefined {
+    const headings = new Set<string>();
+    const brands = new Map<string, string>();
+    for (const entry of body.contentLinks || []) {
+        if (entry.linkTypeCode?.codeValue === 'WELCOME-TXT' && typeof entry.linkTypeCode.longName === 'string') {
+            const $ = cheerio.load(entry.linkTypeCode.longName);
+            $('script,style').remove();
+            for (const heading of $('h1,h2,h3,h4,h5,h6,b,strong').toArray()) {
+                const text = $(heading).text().trim();
+                const name = /^careers at\s+/i.test(text) ? publishedEmployerName(text) : '';
+                if (name) headings.add(name.toLowerCase());
+            }
+        }
+        if (entry.linkTypeCode?.codeValue !== 'LINKS-BRND') continue;
+        for (const link of entry.contentBody?.links || []) {
+            const url = adpCorporateUrl(link.href);
+            if (url?.pathname !== '/' || url.search || url.hash) continue;
+            const name = publishedEmployerName(link.title);
+            if (name && name.length <= 200 && !GENERIC_ADP_EMPLOYER_NAME.test(name)) brands.set(name.toLowerCase(), name);
+        }
+    }
+    if (headings.size !== 1 || brands.size !== 1) return undefined;
+    return brands.get([...headings][0]);
 }
 
 export async function readAdpPublicJson(url: string, fetcher: AdpPublicFetcher,
@@ -109,7 +139,10 @@ export class AdpEmployerEvidence {
             try { configured = parseAdpClientCompany(await this.dependencies.json(adpClientFeaturesUrl(postingUrl)!)); }
             catch (error) { if (!(error instanceof AdpPublicResponseError)) throw error; }
             if (configured) return { name: configured };
-            const site = adpEmployerWebsite(await this.dependencies.careerCenter());
+            const careerCenter = await this.dependencies.careerCenter();
+            const brand = adpCareerCenterCompany(careerCenter);
+            if (brand) return { name: brand };
+            const site = adpEmployerWebsite(careerCenter);
             if (!site) return {};
             await this.dependencies.check();
             let response: Response;

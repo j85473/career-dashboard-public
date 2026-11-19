@@ -297,7 +297,7 @@ test('only aggregator sources are resolved', () => {
   assert.equal(isAggregatorSource(''), false);
 });
 
-test('enrichment touches the apply link and description, and nothing that identifies the job', () => {
+test('enrichment saves employer locations with the link and preserves scoring and lifecycle fields', () => {
   const match: DirectAtsMatch = {
     url: 'https://job-boards.greenhouse.io/karbon/jobs/6149696004',
     description: 'x'.repeat(10_793),
@@ -305,18 +305,23 @@ test('enrichment touches the apply link and description, and nothing that identi
     slug: 'karbon',
     matchedVia: 'live',
     postingTitle: 'Customer Success Manager - Mid Market',
-    postingLocation: 'Remote, United States',
+    postingLocation: 'Atlanta, GA; Los Angeles, CA; Charlotte, NC; Nashville, TN; Quakertown, PA',
   };
   const plan = planDirectMatchEnrichment(
-    { url: 'https://jobicy.com/jobs/151321', canonicalUrl: 'https://jobicy.com/jobs/151321', description: 'y'.repeat(6_510) },
+    { url: 'https://jobicy.com/jobs/151321', canonicalUrl: 'https://jobicy.com/jobs/151321', description: 'y'.repeat(6_510),
+      location: 'Anywhere' },
     match,
   );
-  assert.deepEqual(Object.keys(plan || {}).sort(), ['canonicalUrl', 'description', 'url']);
+  assert.deepEqual(Object.keys(plan || {}).sort(), ['canonicalUrl', 'description', 'location', 'url']);
   assert.equal(plan?.url, match.url);
   assert.equal(plan?.canonicalUrl, match.url);
-  // Scoring identity fields must never appear in an enrichment.
-  for (const forbidden of ['title', 'company', 'location', 'status', 'scoringStatus', 'aimFitScore']) {
+  assert.equal(plan?.location, match.postingLocation);
+  for (const forbidden of ['title', 'company', 'identityFingerprint', 'status', 'scoringStatus', 'aimFitScore']) {
     assert.ok(!(forbidden in (plan || {})), `${forbidden} must not be enriched`);
+  }
+  const current = { url: 'https://jobicy.com/jobs/151321', location: 'Anywhere' };
+  for (const incomplete of ['5 Locations', 'Atlanta, GA; Additional locations unresolved', 'Atlanta, GA; 4 Locations']) {
+    assert.equal(planDirectMatchEnrichment(current, { ...match, postingLocation: incomplete })?.location, undefined);
   }
 });
 
@@ -343,23 +348,34 @@ test('a shorter employer description is not treated as a correction', () => {
 
 test('the enrichment write is refused when the row changed underneath it', async () => {
   const seen: Array<{ where: Record<string, unknown>; data: unknown }> = [];
-  const store = {
+  let locked = false;
+  const transaction = {
+    $queryRaw: async () => { locked = true; },
     job: {
       updateMany: async (args: { where: Record<string, unknown>; data: unknown }) => {
+        assert.ok(locked, 'the job must be locked before checking for a scoring lease');
         seen.push(args);
         return { count: args.where.updatedAt ? 1 : 0 };
       },
     },
-  } as unknown as Pick<Prisma.TransactionClient, 'job'>;
+  };
+  const store = {
+    ...transaction,
+    $transaction: async (action: (tx: typeof transaction) => Promise<unknown>) => action(transaction),
+  } as unknown as Parameters<typeof applyDirectMatchEnrichment>[3];
 
   const stamp = new Date('2026-08-25T00:00:00Z');
   const applied = await applyDirectMatchEnrichment('job-1', stamp, {
     url: 'https://job-boards.greenhouse.io/karbon/jobs/6149696004',
     canonicalUrl: 'https://job-boards.greenhouse.io/karbon/jobs/6149696004',
+    location: 'Minneapolis, MN; St. Paul, MN',
   }, store);
 
   assert.equal(applied, true);
   assert.equal(seen[0].where.updatedAt, stamp, 'the concurrency guard must be in the predicate');
+  assert.equal(seen[0].where.userCanonicalUrl, null);
+  assert.equal(seen[0].where.afBatchId, null);
+  assert.deepEqual(seen[0].where.scoringBatchItems, { none: { status: 'leased' } });
 });
 
 test('what we already store is preferred over spending a board request', async () => {

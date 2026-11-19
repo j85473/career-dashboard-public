@@ -1,16 +1,21 @@
 import type { Job } from './prismaClient';
 
 import { prisma } from './prisma';
-import { safeExternalFetch } from './safeExternalFetch';
+import { verifyJobPosting, type PostingVerification } from './jobPostingVerification';
+import { authoritativeJobVerificationUrl } from './verifyJobsAlive';
+import { urlMatchesAnyHost } from './urlHost';
 import { latestJobScoreEvents, type LatestJobScoreBundle } from './jobScoreAuthorityQuery';
 import { resolveStagedScoreAuthority } from './scoreAuthority';
 import { nonManualImportSourceWhere } from './manualImportPolicy';
-import { reconcileCompanyCooldowns, resolveInboxAdmission } from './companyCooldown';
+import { activeCompanyCooldowns, cooldownCompanyKey, COOLDOWN_POSTING_CHECK_EVENT,
+  effectiveCooldownDeadline, reconcileCompanyCooldowns, resolveInboxAdmission } from './companyCooldown';
 import { appliedRepeatDismissalData, findAppliedRepeatForJob, recordAppliedRepeatDismissal } from './appliedDuplicateStore';
 import { assertJobLifecycleInvariants, JobLifecycleInvariantError } from './jobLifecycleInvariant';
 import { AIM_EXPERIENCE_QUEUE_MINIMUM_SCORE } from './scoringLifecyclePolicy';
 import { evaluateAuthoritativeMetadata, hasAuthoritativeMetadata } from './authoritativeMetadataGate';
 import { USER_LIFECYCLE_INTENT_EVENT_TYPES } from './userLifecycleAuthority';
+import { recordJobPipelineEvent } from './ingestionControl';
+import { CLOSED_POSTING_REASON } from './jdRecoveryPolicy';
 
 export type CooldownReleasePlan = {
   status: 'pending_af' | 'inbox' | 'dismissed' | 'expired';
@@ -21,9 +26,9 @@ type ScoredCooldownReleasePlan = CooldownReleasePlan & {
   status: 'pending_af' | 'inbox' | 'dismissed';
 };
 
-// URL checks can take up to ten seconds each. Keep one pipeline turn bounded
-// while allowing a contradictory row to stay put without blocking later jobs.
 export const MAX_COOLDOWN_RELEASES_PER_PASS = 50;
+const MAX_COOLDOWN_CHECKS_PER_PASS = 15;
+const COOLDOWN_CHECK_RETRY_MS = 15 * 60 * 1000;
 const LEGACY_LOCAL_CAP = /\b(?:score capped|capped the score) below triage\b/i;
 
 export class CooldownReleaseHoldError extends Error {
@@ -36,7 +41,7 @@ export class CooldownReleaseHoldError extends Error {
 export async function processCooldownCandidates<T>(
   candidates: readonly T[],
   release: (candidate: T) => Promise<boolean>,
-  onHeld: (candidate: T, error: JobLifecycleInvariantError | CooldownReleaseHoldError) => void,
+  onHeld: (candidate: T, error: JobLifecycleInvariantError | CooldownReleaseHoldError) => void | Promise<void>,
   limit = MAX_COOLDOWN_RELEASES_PER_PASS,
 ): Promise<{ released: number; held: number }> {
   let released = 0;
@@ -48,7 +53,7 @@ export async function processCooldownCandidates<T>(
     } catch (error) {
       if (!(error instanceof JobLifecycleInvariantError || error instanceof CooldownReleaseHoldError)) throw error;
       held++;
-      onHeld(candidate, error);
+      await onHeld(candidate, error);
     }
   }
   return { released, held };
@@ -136,30 +141,62 @@ export function statusAfterCooldown(bundle: LatestJobScoreBundle | null): 'pendi
   return cooldownReleasePlan(bundle).status;
 }
 
-export async function processCooldownJobs(onProgress?: (msg: string) => void) {
-  onProgress?.('Checking for expired cooldown jobs...');
-  
-  const expiredCooldowns = await prisma.job.findMany({
+export async function verifyCooldownPosting(
+  job: Pick<Job, 'title' | 'url' | 'canonicalUrl' | 'userCanonicalUrl'>,
+  dependencies?: Parameters<typeof verifyJobPosting>[2],
+): Promise<PostingVerification> {
+  const url = job.userCanonicalUrl || job.canonicalUrl || job.url;
+  if (!url) return { liveness: 'inconclusive', probes: [] };
+  const workday = urlMatchesAnyHost(url, ['myworkdayjobs.com', 'myworkdaysite.com']);
+  return verifyJobPosting(
+    { url, title: job.title }, workday ? null : authoritativeJobVerificationUrl(url),
+    dependencies, { requireCandidatePage: workday },
+  );
+}
+
+export async function processCooldownJobs(onProgress?: (msg: string) => void, signal?: AbortSignal) {
+  if (signal?.aborted) return;
+  const now = new Date();
+  const cooldownJobs = await prisma.job.findMany({
     where: {
       status: 'cooldown',
+      tailoringStaged: false,
+      batchJobId: null,
+      jdBatchId: null,
+      afBatchId: null,
       AND: [nonManualImportSourceWhere()],
-      cooldownUntil: {
-        lt: new Date()
-      }
+      cooldownUntil: { not: null },
+      scoringBatchItems: { none: { status: 'leased' } },
     },
-    orderBy: [{ cooldownUntil: 'asc' }, { id: 'asc' }],
+    orderBy: [{ lastVerifiedAt: { sort: 'asc', nulls: 'first' } }, { cooldownUntil: 'asc' }, { id: 'asc' }],
   });
+  if (cooldownJobs.length === 0) return;
 
-  if (expiredCooldowns.length === 0) {
-    onProgress?.('No expired cooldown jobs found.');
-    return;
+  const authorities = await activeCompanyCooldowns(prisma, now);
+  const retryBefore = new Date(now.valueOf() - COOLDOWN_CHECK_RETRY_MS);
+  const expiredCooldowns: Array<{ job: Job; deadline: Date }> = [];
+  function unchangedCooldown(job: Job) {
+    return { id: job.id, status: 'cooldown', updatedAt: job.updatedAt, cooldownUntil: job.cooldownUntil };
   }
 
-  onProgress?.(`Found ${expiredCooldowns.length} jobs to release from cooldown. Validating URLs...`);
-  const scoreBundles = await latestJobScoreEvents(expiredCooldowns.map((job) => job.id));
+  for (const job of cooldownJobs) {
+    if (signal?.aborted) return;
+    if (!job.cooldownUntil) continue;
+    const deadline = effectiveCooldownDeadline(job.cooldownUntil, authorities.get(cooldownCompanyKey(job)), now);
+    if (deadline > now && deadline < job.cooldownUntil) {
+      await prisma.job.updateMany({ where: unchangedCooldown(job), data: { cooldownUntil: deadline } });
+    } else if (deadline <= now && expiredCooldowns.length < MAX_COOLDOWN_CHECKS_PER_PASS
+      && (!job.lastVerifiedAt || job.lastVerifiedAt < deadline || job.lastVerifiedAt <= retryBefore)) {
+      expiredCooldowns.push({ job, deadline });
+    }
+  }
+  if (expiredCooldowns.length === 0) return;
+
+  onProgress?.(`Checking ${expiredCooldowns.length} postings whose Cooldown ended.`);
+  const scoreBundles = await latestJobScoreEvents(expiredCooldowns.map(({ job }) => job.id));
   const legacyCandidateIds = expiredCooldowns
-    .filter((job) => LEGACY_LOCAL_CAP.test(job.fitRationale || ''))
-    .map((job) => job.id);
+    .filter(({ job }) => LEGACY_LOCAL_CAP.test(job.fitRationale || ''))
+    .map(({ job }) => job.id);
   const [scoreEventRows, userIntentRows] = legacyCandidateIds.length > 0
     ? await Promise.all([
       prisma.jobScoreEvent.findMany({
@@ -178,8 +215,9 @@ export async function processCooldownJobs(onProgress?: (msg: string) => void) {
   const userIntentIds = new Set(userIntentRows.map((row) => row.jobId));
 
   const applyRelease = async (
-    job: typeof expiredCooldowns[number],
+    job: Job,
     plan: CooldownReleasePlan,
+    verification: PostingVerification,
     localRejectionReason: string | null = null,
   ) => {
     const now = new Date();
@@ -195,18 +233,18 @@ export async function processCooldownJobs(onProgress?: (msg: string) => void) {
         now,
         store: tx,
         actor: 'machine',
+        completedCooldown: true,
       });
       // A job that repeats an application goes to Dismissed instead of the
       // Inbox, keeping any score it has, and is not queued for scoring. A job
       // headed back to scoring is checked too, so no scoring is spent on it.
       const repeat = admission.repeat
         ?? (plan.status === 'pending_af' ? await findAppliedRepeatForJob(job.id, tx) : null);
+      const nextStatus = repeat ? 'dismissed' : admission.status;
       const updated = await tx.job.updateMany({
         where: {
-          id: job.id,
-          status: 'cooldown',
+          ...unchangedCooldown(job),
           ...(localRejectionReason ? {
-            updatedAt: job.updatedAt,
             scoringStatus: 'scored',
             fitScore: job.fitScore,
             fitRationale: job.fitRationale,
@@ -221,23 +259,23 @@ export async function processCooldownJobs(onProgress?: (msg: string) => void) {
             pipelineEvents: { none: { eventType: { in: [...USER_LIFECYCLE_INTENT_EVENT_TYPES] } } },
           } : {}),
         },
-        data: repeat ? {
-          ...appliedRepeatDismissalData(job, repeat.reason),
+        data: {
           cooldownUntil: null,
-        } : {
-          status: admission.status,
-          cooldownUntil: admission.cooldownUntil,
-          ...(localRejectionReason ? {
-            passReason: localRejectionReason,
-          } : {}),
-          ...(plan.queueLocalScoring ? {
-            scoringStatus: 'queued',
-            batchJobId: null,
-            jdBatchId: null,
-            afBatchId: null,
-            scoreAttempts: 0,
-            scoreError: null,
-          } : {}),
+          lastVerifiedAt: now,
+          verificationStatus: verification.liveness,
+          ...(repeat ? appliedRepeatDismissalData(job, repeat.reason) : {
+            status: admission.status,
+            ...(plan.status === 'expired' ? { passReason: CLOSED_POSTING_REASON }
+              : localRejectionReason ? { passReason: localRejectionReason } : {}),
+            ...(plan.queueLocalScoring ? {
+              scoringStatus: 'queued',
+              batchJobId: null,
+              jdBatchId: null,
+              afBatchId: null,
+              scoreAttempts: 0,
+              scoreError: null,
+            } : {}),
+          }),
         },
       });
       if (updated.count === 1 && repeat) {
@@ -250,74 +288,78 @@ export async function processCooldownJobs(onProgress?: (msg: string) => void) {
           route: 'cooldown_release',
         });
       }
-      if (updated.count === 1) await assertJobLifecycleInvariants(tx, [job.id]);
       if (updated.count !== 1) return null;
-      return repeat
-        ? { status: 'dismissed', queueLocalScoring: false }
-        : { status: admission.status, queueLocalScoring: plan.queueLocalScoring };
+      await recordJobPipelineEvent({
+        jobId: job.id,
+        eventType: COOLDOWN_POSTING_CHECK_EVENT,
+        stage: 'cooldown_release',
+        source: job.source,
+        sourceId: job.sourceId,
+        occurredAt: now,
+        identityParts: [job.updatedAt.toISOString()],
+        details: { outcome: verification.liveness, probes: verification.probes, nextStatus, enteredInbox: nextStatus === 'inbox' },
+      }, tx);
+      await assertJobLifecycleInvariants(tx, [job.id]);
+      return { status: nextStatus, queueLocalScoring: !repeat && plan.queueLocalScoring };
     });
   };
 
-  const outcome = await processCooldownCandidates(expiredCooldowns, async (job) => {
+  const outcome = await processCooldownCandidates(expiredCooldowns, async ({ job, deadline }) => {
+    if (signal?.aborted) return false;
+    const verification = await verifyCooldownPosting(job);
+    if (signal?.aborted) return false;
+    if (verification.liveness === 'expired' || verification.liveness === 'unavailable') {
+      const released = await applyRelease(job, { status: 'expired', queueLocalScoring: false }, verification);
+      if (released) onProgress?.(`Expired ${job.title} after the Cooldown posting check.`);
+      return released !== null;
+    }
+
     const bundle = scoreBundles.get(job.id) || null;
     const plan = cooldownReleasePlanForJob(job, bundle);
-    if (!plan) throw new CooldownReleaseHoldError('Existing scoring state has no safe automatic release plan.');
+    if (verification.liveness !== 'alive' || !plan) {
+      const held = await prisma.job.updateMany({
+        where: unchangedCooldown(job),
+        data: { cooldownUntil: deadline, lastVerifiedAt: new Date(), verificationStatus: verification.liveness },
+      });
+      if (held.count === 1) throw new CooldownReleaseHoldError(verification.liveness === 'alive'
+        ? 'Existing scoring state has no safe automatic release plan.'
+        : 'Posting availability is inconclusive.');
+      return false;
+    }
     const localRejectionReason = legacyCappedCooldownRejection(job, bundle, {
       hasScoreEvent: scoreEventIds.has(job.id),
       hasUserIntent: userIntentIds.has(job.id),
     });
-    let isDead = false;
-    let validationFailed = false;
-    try {
-      if (!job.url) {
-        throw new Error("No URL");
-      }
-      
-      const res = await safeExternalFetch(job.url, { method: 'GET', signal: AbortSignal.timeout(10000) });
-      const text = await res.text();
-      const lowerText = text.toLowerCase();
-      
-      // Basic text validation to detect obviously closed jobs
-      isDead =
-        res.status === 404 || 
-        res.status === 410 ||
-        lowerText.includes('this job is no longer available') ||
-        lowerText.includes('this position has been filled') ||
-        lowerText.includes('job not found');
-    } catch {
-      // A URL failure is ambiguous; only the URL check may use this fallback.
-      // Transaction and database failures must reach the pipeline warning.
-      validationFailed = true;
-    }
-    if (isDead) {
-      const released = await applyRelease(job, { status: 'expired', queueLocalScoring: false });
-      if (released) onProgress?.(`Job ${job.id} marked as expired/dismissed (URL dead).`);
-      return released !== null;
-    }
     const released = localRejectionReason
-      ? await applyRelease(job, { status: 'dismissed', queueLocalScoring: false }, localRejectionReason)
-      : await applyRelease(job, plan);
+      ? await applyRelease(job, { status: 'dismissed', queueLocalScoring: false }, verification, localRejectionReason)
+      : await applyRelease(job, plan, verification);
     if (released) onProgress?.(
       localRejectionReason
         ? `Job ${job.id} locally rejected on Cooldown release: ${localRejectionReason}`
-        : validationFailed
-        ? `Validation failed for ${job.id}; restored to ${released.status}.`
         : released.queueLocalScoring
           ? `Job ${job.id} released to current local scoring.`
           : `Job ${job.id} restored to ${released.status}.`,
     );
     return released !== null;
-  }, (job, error) => {
+  }, async ({ job, deadline }, error) => {
     const reason = error instanceof JobLifecycleInvariantError
       ? error.violations.map((item) => item.invariant).join(', ')
       : error.message;
+    if (error instanceof JobLifecycleInvariantError) {
+      // Defer the contradictory row so it cannot take the first slot on every
+      // pass. The rejected transition and its receipt were both rolled back.
+      await prisma.job.updateMany({
+        where: unchangedCooldown(job),
+        data: { cooldownUntil: deadline, lastVerifiedAt: new Date() },
+      });
+    }
     console.warn(`Cooldown release held ${job.id}: ${reason}`);
   });
-  onProgress?.(`Released ${outcome.released} expired cooldown jobs; held ${outcome.held} with unresolved lifecycle states. Remaining jobs will be checked on later turns.`);
+  onProgress?.(`Processed ${outcome.released} completed Cooldown holds. ${outcome.held} are waiting for another check.`);
 }
 
 export async function enforceRetroactiveCooldowns(onProgress?: (msg: string) => void) {
-  onProgress?.('Enforcing cooldowns for newly scraped jobs from applied companies...');
+  onProgress?.('Checking Inbox for employer cooldowns triggered by recent application pairs.');
   const cooledIds = await prisma.$transaction(async (tx) => {
     const ids = await reconcileCompanyCooldowns({ now: new Date(), store: tx });
     await assertJobLifecycleInvariants(tx, ids);

@@ -11,13 +11,16 @@ export const ATS_API_SERVICE_CLASSES = ['first', 'current', 'overdue', 'recovery
 export type AtsApiServiceClass = typeof ATS_API_SERVICE_CLASSES[number];
 
 export function atsCoverageEligibilityWhere(now: Date, paused: readonly string[], firstCollection: Prisma.AtsCompanyWhereInput,
-  cohortOnly = false): Prisma.AtsCompanyWhereInput {
+  cohortOnly = false, evidenceRefreshIds: string[] = []): Prisma.AtsCompanyWhereInput {
   return {
     acquisitionEngine: 'v2', status: { in: ['active', 'parked', 'blacklisted'] }, nextCheckDate: { lte: now },
     firstCollectionHoldReason: null,
     platform: { notIn: [...NON_API_ATS_PLATFORMS, ...paused] },
     AND: [firstCollection, ...(cohortOnly ? [{ status: 'active' }, atsRotationCohortWhere(apiRotationDayFor(now))] : [])],
-    ingestionBatches: { none: { status: { in: [...ATS_OPEN_BATCH_STATUSES] } } },
+    ingestionBatches: { none: {
+      status: { in: [...ATS_OPEN_BATCH_STATUSES] },
+      ...(evidenceRefreshIds.length ? { id: { notIn: evidenceRefreshIds } } : {}),
+    } },
   };
 }
 

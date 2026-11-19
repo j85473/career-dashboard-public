@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Prisma } from './prismaClient';
+import type { Job, Prisma } from './prismaClient';
 
 import { appliedIdentityFingerprint } from './appliedDuplicateIdentity';
 import {
@@ -14,13 +14,16 @@ import { recordJobPipelineEvent } from './ingestionControl';
 
 import { employerIdentityKey } from './employerIdentity';
 import { isManualImportSource, nonManualImportSourceWhere } from './manualImportPolicy';
+import { normalizeDirectPostingUrl } from './atsDirectMatch';
 
-export const COMPANY_COOLDOWN_DAYS = 21;
+export const COMPANY_COOLDOWN_DAYS = 5;
+export const COOLDOWN_POSTING_CHECK_EVENT = 'cooldown_posting_verified';
+const COMPANY_COOLDOWN_MS = COMPANY_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
 const ACTIVE_APPLICATION_STATUSES = ['applied', 'interviewing'] as const;
 
 // Match real employers, using the canonical name or the unresolved raw company.
 // Shared publishers cannot establish a cooldown for unrelated employers.
-function cooldownCompanyKey(job: { employer?: string | null; company?: string | null }): string {
+export function cooldownCompanyKey(job: { employer?: string | null; company?: string | null }): string {
   return employerIdentityKey(job, { excludeSharedPublishers: true });
 }
 
@@ -29,7 +32,6 @@ type InboxAdmissionStore = Pick<Prisma.TransactionClient, 'job' | 'jobPipelineEv
 
 type ApplicationAuthority = {
   id: string;
-  company: string;
   decisionAt: Date;
   cooldownUntil: Date;
 };
@@ -48,7 +50,7 @@ export type InboxAdmission = {
 };
 
 export function companyCooldownUntil(decisionAt: Date): Date {
-  return new Date(decisionAt.valueOf() + COMPANY_COOLDOWN_DAYS * 24 * 60 * 60 * 1000);
+  return new Date(decisionAt.valueOf() + COMPANY_COOLDOWN_MS);
 }
 
 /** The first transition in the current contiguous Applied/Interviewing run. */
@@ -67,11 +69,15 @@ export function activeApplicationDecisionAt(
   return decisionAt || fallback;
 }
 
-async function activeApplicationAuthorities(
+type ApplicationRow = Pick<Job, 'id' | 'company' | 'employer' | 'postingIdentity' | 'url' | 'canonicalUrl' | 'updatedAt'> & {
+  statusHistory: Array<{ status: string; createdAt: Date }>;
+};
+
+export async function activeCompanyCooldowns(
   store: CompanyCooldownStore,
   now: Date,
   excludeJobId?: string,
-): Promise<ApplicationAuthority[]> {
+): Promise<Map<string, ApplicationAuthority>> {
   const jobs = await store.job.findMany({
     where: {
       status: { in: [...ACTIVE_APPLICATION_STATUSES] },
@@ -81,6 +87,9 @@ async function activeApplicationAuthorities(
       id: true,
       company: true,
       employer: true,
+      postingIdentity: true,
+      url: true,
+      canonicalUrl: true,
       updatedAt: true,
       statusHistory: {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -90,19 +99,41 @@ async function activeApplicationAuthorities(
     },
   });
 
-  return jobs.flatMap((job) => {
+  // Work from oldest to newest so more applications during an open window
+  // do not move the deadline set by the qualifying second application.
+  const applications = jobs.map((job: ApplicationRow) => ({ ...job,
+    decisionAt: activeApplicationDecisionAt(job.statusHistory, job.updatedAt),
+  })).sort((a, b) => a.decisionAt.valueOf() - b.decisionAt.valueOf() || a.id.localeCompare(b.id));
+  const recentByCompany = new Map<string, Date>();
+  const cooldowns = new Map<string, ApplicationAuthority>();
+  const seenPostings = new Set<string>();
+  for (const job of applications) {
     const company = cooldownCompanyKey(job);
-    if (!company) return [];
-    const decisionAt = activeApplicationDecisionAt(job.statusHistory, job.updatedAt);
-    const cooldownUntil = companyCooldownUntil(decisionAt);
-    return cooldownUntil > now ? [{ id: job.id, company, decisionAt, cooldownUntil }] : [];
-  });
+    if (!company || job.decisionAt > now) continue;
+    const keys = [job.postingIdentity, normalizeDirectPostingUrl(job.canonicalUrl || job.url || '')]
+      .filter((key): key is string => Boolean(key)).map(key => `${company}\n${key}`);
+    const counted = keys.some(key => seenPostings.has(key));
+    for (const key of keys) seenPostings.add(key);
+    if (counted) continue;
+
+    const previous = recentByCompany.get(company);
+    recentByCompany.set(company, job.decisionAt);
+    const current = cooldowns.get(company);
+    if (previous && job.decisionAt.valueOf() - previous.valueOf() <= COMPANY_COOLDOWN_MS
+      && (!current || current.cooldownUntil <= job.decisionAt)) {
+      cooldowns.set(company, { id: job.id, decisionAt: job.decisionAt, cooldownUntil: companyCooldownUntil(job.decisionAt) });
+    }
+  }
+  for (const [company, authority] of cooldowns) {
+    if (authority.cooldownUntil <= now) cooldowns.delete(company);
+  }
+  return cooldowns;
 }
 
-function latestAuthority(authorities: readonly ApplicationAuthority[]): ApplicationAuthority | null {
-  return authorities.reduce<ApplicationAuthority | null>((latest, authority) => (
-    !latest || authority.cooldownUntil > latest.cooldownUntil ? authority : latest
-  ), null);
+/** A new rule can shorten a saved hold, while its original deadline is a cap. */
+export function effectiveCooldownDeadline(saved: Date, authority: ApplicationAuthority | undefined, now: Date): Date {
+  const current = authority?.cooldownUntil || now;
+  return saved < current ? saved : current;
 }
 
 /**
@@ -127,6 +158,8 @@ export async function resolveInboxAdmission(input: {
   now: Date;
   store: InboxAdmissionStore;
   actor: 'machine' | 'user';
+  /** A card whose hold has ended still goes through the repost check. */
+  completedCooldown?: boolean;
   /** A caller admitting many jobs in one transaction reads the applied list once and passes it here. */
   repeatAuthorities?: readonly AppliedRepeatAuthority[];
 }): Promise<InboxAdmission> {
@@ -174,9 +207,8 @@ export async function resolveInboxAdmission(input: {
   }
 
   const company = cooldownCompanyKey(input);
-  if (!company) return admitted;
-  const authorities = await activeApplicationAuthorities(input.store, input.now, input.jobId);
-  const authority = latestAuthority(authorities.filter((candidate) => candidate.company === company));
+  if (input.completedCooldown || !company) return admitted;
+  const authority = (await activeCompanyCooldowns(input.store, input.now, input.jobId)).get(company);
   if (!authority) return admitted;
   return {
     status: 'cooldown',
@@ -187,41 +219,19 @@ export async function resolveInboxAdmission(input: {
   };
 }
 
-/** Park current Inbox rows after a user marks one employer job as active. */
+/** Park current Inbox rows when a recent pair of applications qualifies. */
 export async function parkSameCompanyInboxJobs(input: {
   authorityJobId: string;
   company: string | null | undefined;
   employer?: string | null;
-  decisionAt: Date;
   now: Date;
   store: CompanyCooldownStore;
 }): Promise<string[]> {
   const company = cooldownCompanyKey(input);
-  const cooldownUntil = companyCooldownUntil(input.decisionAt);
-  if (!company || cooldownUntil <= input.now) return [];
-
-  const candidates = await input.store.job.findMany({
-    where: {
-      id: { not: input.authorityJobId },
-      status: 'inbox',
-      AND: [nonManualImportSourceWhere()],
-    },
-    select: { id: true, company: true, employer: true },
-  });
-  const cooledIds: string[] = [];
-  for (const candidate of candidates) {
-    if (cooldownCompanyKey(candidate) !== company) continue;
-    const cooled = await input.store.job.updateMany({
-      where: {
-        id: candidate.id,
-        status: 'inbox',
-        AND: [nonManualImportSourceWhere()],
-      },
-      data: { status: 'cooldown', cooldownUntil },
-    });
-    if (cooled.count === 1) cooledIds.push(candidate.id);
-  }
-  return cooledIds;
+  if (!company) return [];
+  const authority = (await activeCompanyCooldowns(input.store, input.now)).get(company);
+  if (!authority) return [];
+  return parkInboxJobs(input.store, new Map([[company, authority]]), input.authorityJobId);
 }
 
 /** Repair only current Inbox rows; prior decisions and scores are untouched. */
@@ -229,29 +239,30 @@ export async function reconcileCompanyCooldowns(input: {
   now: Date;
   store: CompanyCooldownStore;
 }): Promise<string[]> {
-  const authorities = await activeApplicationAuthorities(input.store, input.now);
-  if (authorities.length === 0) return [];
-  const authorityByCompany = new Map<string, ApplicationAuthority>();
-  for (const authority of authorities) {
-    const current = authorityByCompany.get(authority.company);
-    if (!current || authority.cooldownUntil > current.cooldownUntil) {
-      authorityByCompany.set(authority.company, authority);
-    }
-  }
+  return parkInboxJobs(input.store, await activeCompanyCooldowns(input.store, input.now));
+}
 
-  const candidates = await input.store.job.findMany({
-    where: { status: 'inbox', AND: [nonManualImportSourceWhere()] },
+async function parkInboxJobs(store: CompanyCooldownStore, authorities: Map<string, ApplicationAuthority>, excludedJobId?: string) {
+  if (authorities.size === 0) return [];
+  const candidates = await store.job.findMany({
+    where: { status: 'inbox', AND: [nonManualImportSourceWhere()], ...(excludedJobId ? { id: { not: excludedJobId } } : {}) },
     select: { id: true, company: true, employer: true },
   });
   const cooledIds: string[] = [];
   for (const candidate of candidates) {
-    const authority = authorityByCompany.get(cooldownCompanyKey(candidate));
-    if (!authority || authority.id === candidate.id) continue;
-    const cooled = await input.store.job.updateMany({
+    const authority = authorities.get(cooldownCompanyKey(candidate));
+    if (!authority) continue;
+    const cooled = await store.job.updateMany({
       where: {
         id: candidate.id,
         status: 'inbox',
         AND: [nonManualImportSourceWhere()],
+        // A release that occurred during this window must remain in Inbox.
+        pipelineEvents: { none: {
+          eventType: COOLDOWN_POSTING_CHECK_EVENT,
+          occurredAt: { gte: authority.decisionAt },
+          details: { path: ['nextStatus'], equals: 'inbox' },
+        } },
       },
       data: { status: 'cooldown', cooldownUntil: authority.cooldownUntil },
     });

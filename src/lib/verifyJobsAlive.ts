@@ -3,7 +3,8 @@ import { safeExternalFetch } from './safeExternalFetch';
 import type { Prisma, PrismaClient } from './prismaClient';
 import { nonManualImportSourceWhere } from './manualImportPolicy';
 import { randomUUID } from 'node:crypto';
-import { isAggregatorSource, resolveDirectAtsPosting, type DirectAtsMatch } from './atsDirectMatch';
+import { employerLinkReplacementFields, isAggregatorSource, lockJobForEmployerLocationRepair, resolveDirectAtsPosting,
+  unleasedEmployerLocationWhere, type DirectAtsMatch } from './atsDirectMatch';
 import { verifyJobPosting, readRenderedPosting, isAdpPostingUrl, type JobPostingLiveness } from './jobPostingVerification';
 import { ADP_APPLICATION_UNAVAILABLE_EXPIRED_REASON } from './adpPreScoring';
 export { classifyJobPostingLiveness, type JobPostingLiveness } from './jobPostingVerification';
@@ -158,7 +159,6 @@ export async function verifyInboxJobsAlive(
       jdBatchId: null,
       url: job.url,
       updatedAt: job.updatedAt,
-      AND: [nonManualImportSourceWhere()],
     };
     if (job.batchJobId || job.jdBatchId || job.scoringStatus === 'scoring') continue;
     if (job.status !== 'inbox' && !(job.status === 'pending_af' && isAdpPostingUrl(job.url || ''))) continue;
@@ -169,7 +169,7 @@ export async function verifyInboxJobsAlive(
     let replacement: DirectAtsMatch | null = null;
     // A removed aggregator copy does not establish that the employer stopped
     // hiring. Resolve and verify the canonical copy before expiring the card.
-    if (result.liveness !== 'alive' && isAggregatorSource(job.source)) {
+    if (result.liveness !== 'alive' && !job.userCanonicalUrl && isAggregatorSource(job.source)) {
       try {
         const match = await resolveCanonical(job, { store: client, allowLivePing: true, liveCache });
         if (match && match.url !== job.url) {
@@ -177,7 +177,9 @@ export async function verifyInboxJobsAlive(
             authoritativeJobVerificationUrl(match.url), { fetchPosting, readPosting });
           result.probes.push(...employer.probes);
           result.liveness = employer.liveness;
-          if (employer.liveness === 'alive') replacement = match;
+          if (employer.liveness === 'alive') replacement = {
+            ...match, postingLocation: employer.postingLocation || match.postingLocation,
+          };
         }
       } catch {
         // A failed identity lookup cannot justify expiring an aggregator card.
@@ -190,8 +192,7 @@ export async function verifyInboxJobsAlive(
     const adp = isAdpPostingUrl(job.url || '');
     if (adp) updateData.verificationStatus = result.liveness;
     if (replacement) {
-      updateData.url = replacement.url;
-      updateData.canonicalUrl = replacement.url;
+      Object.assign(updateData, employerLinkReplacementFields(job, replacement));
     } else if ((result.liveness === 'expired' || (adp && result.liveness === 'unavailable'))
       && job.status === 'inbox') {
       // Availability is independent of score authority. Expire the Inbox card
@@ -202,7 +203,17 @@ export async function verifyInboxJobsAlive(
     }
     const persist = async (store: Pick<Prisma.TransactionClient, 'job'>
       & Partial<Pick<Prisma.TransactionClient, 'jobPipelineEvent'>>) => {
-      const updated = await store.job.updateMany({ where: unchangedInboxJob, data: updateData });
+      const updated = await store.job.updateMany({
+        where: {
+          ...unchangedInboxJob,
+          ...(replacement ? { userCanonicalUrl: null } : {}),
+          AND: [
+            nonManualImportSourceWhere(),
+            ...(replacement && updateData.location ? [unleasedEmployerLocationWhere] : []),
+          ],
+        },
+        data: updateData,
+      });
       if (updated.count && store.jobPipelineEvent) await store.jobPipelineEvent.create({ data: {
         eventKey: `inbox-posting-check:${job.id}:${randomUUID()}`,
         eventType: 'inbox_posting_verified', stage: 'inbox_verification', jobId: job.id,
@@ -217,7 +228,10 @@ export async function verifyInboxJobsAlive(
     };
     // The projection and its evidence commit together. User/lifecycle changes
     // during network requests defeat both the write and the history event.
-    const changed = client.$transaction ? await client.$transaction(tx => persist(tx)) : await persist(client);
+    const changed = client.$transaction ? await client.$transaction(async tx => {
+      if (replacement && updateData.location) await lockJobForEmployerLocationRepair(tx, job.id);
+      return persist(tx);
+    }) : await persist(client);
     if (changed) {
       if (replacement) repairedCount++;
       else if (updateData.status === 'expired') expiredCount++;

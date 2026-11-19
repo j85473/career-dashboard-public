@@ -200,7 +200,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const adzunaDetails = submittedStoredUrl
     ? adzunaDetailsUrl({ source: existingJob.source, sourceId: existingJob.sourceId, url: cleanedUrl })
     : null;
-  const extractionUrl = directPostingResult?.postingUrl || adzunaDetails || (submittedStoredUrl && detectedAts === 'Unknown'
+  const directDescription = assessJobDescriptionQuality(directPostingResult?.text || '', { structuredSource: true }).scorable;
+  const extractionUrl = directPostingResult?.postingUrl || (directDescription ? cleanedUrl : null) || adzunaDetails
+    || (submittedStoredUrl && detectedAts === 'Unknown'
     ? preferredJdSourceUrl({
         source: existingJob.source,
         jobUrl: cleanedUrl,
@@ -246,9 +248,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     let foundSlug = discoveredBoardFromUrl?.slug || '';
     let foundPlatform = discoveredBoardFromUrl?.platform || '';
 
-    let newTitle: string | undefined = undefined;
-    let newCompany: string | undefined = undefined;
-    let newLocation: string | undefined = undefined;
+    let newTitle = postingMetadataValue(directPostingResult?.title);
+    let newCompany = postingMetadataValue(directPostingResult?.company);
+    let newLocation = postingMetadataValue(directPostingResult?.location);
 
     // 1. Try ATS specific API
     const atsResult = extractionUrl === cleanedUrl || extractionUrl === directPostingResult?.postingUrl
@@ -266,14 +268,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       foundSlug = atsResult.atsSlug || '';
       foundPlatform = atsResult.platform || '';
 
-      newTitle = postingMetadataValue(atsResult.title);
+      newTitle ||= postingMetadataValue(atsResult.title);
       // Workday's detail response carries the authoritative primary plus
       // additional-location list. Keep it even when the description itself is
       // unusable and recovery falls through to Jina, matching batch-jd-submit —
       // otherwise a manual rescrape fixes the company and leaves the row stuck
       // on the "<N> Locations" placeholder.
-      newLocation = postingMetadataValue(atsResult.location);
-      newCompany = postingMetadataValue(atsResult.company);
+      newLocation ||= postingMetadataValue(atsResult.location);
+      newCompany ||= postingMetadataValue(atsResult.company);
     }
     if (!descriptionText || !newCompany || !newLocation) {
       // The reader can fill missing metadata even when the API already supplied

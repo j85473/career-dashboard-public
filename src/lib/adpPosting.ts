@@ -68,7 +68,8 @@ function authoredAdpEmployer($: cheerio.CheerioAPI): string | undefined {
   for (const block of blocks) {
     // Require a sentence-start subject, rather than pulling a client name out
     // of a sentence about another organization. Never use a generic EEO label.
-    const subject = /^(.{2,100}?)\s+is\s+an?\s+equal\s+(?:employment\s+)?opportunity\s+employer\b/i.exec(block)?.[1];
+    const subject = /^(.{2,100}?)\s+is\s+an?\s+equal\s+(?:employment\s+)?opportunity\s+employer\b/i.exec(block)?.[1]
+      || /^(.{2,100}?)\s+and\s+its\s+(?:affiliates|affiliat(?:e|ed) companies)\s+are\s+equal\s+(?:employment\s+)?opportunity(?:\s+and\s+affirmative\s+action)?\s+employers\b/i.exec(block)?.[1];
     const name = employerName(subject);
     if (name) names.set(key(name), name);
   }

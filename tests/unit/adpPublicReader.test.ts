@@ -78,6 +78,36 @@ test('ADP explicit configuration names take precedence and avoid a corporate loo
     assert.equal(calls.length, 2);
 });
 
+const bionanoCenter = {
+    contentLinks: [
+        { linkTypeCode: { codeValue: 'IMG_LOGO' }, contentBody: { links: [{ href: 'https://bionanogenomics.com/' }] } },
+        { linkTypeCode: { codeValue: 'LINKS-BRND' }, contentBody: { links: [{ href: 'https%3A%2F%2Fbionano.com%2F', title: 'Bionano' }] } },
+        { linkTypeCode: { codeValue: 'WELCOME-TXT', longName: '<div><b>Careers at Bionano</b></div>' } },
+    ],
+};
+
+test('ADP imports Bionano when the welcome heading and corporate link name agree despite an old logo URL', async () => {
+    const crawl = harness({ center: bionanoCenter });
+    const individual = harness({ center: bionanoCenter });
+    assert.equal((await crawl.reader.detail(link())).company, 'Bionano');
+    assert.equal((await fetchAdpPosting(link().url, target => individual.fetcher(String(target))))?.company, 'Bionano');
+    assert.deepEqual(crawl.calls, individual.calls);
+    assert.equal(crawl.calls.length, 3, 'published names resolve without visiting either corporate domain');
+});
+
+test('ADP welcome branding requires corroboration and rejects contradictory employer names', async () => {
+    const [logo, brand] = bionanoCenter.contentLinks;
+    for (const longName of [
+        '<div>Welcome to our career center</div>',
+        '<h2>Careers at Another Employer</h2>',
+        '<h2>Careers at Bionano</h2><h2>Careers at Another Employer</h2>',
+        '<script>const heading = "<h2>Careers at Bionano</h2>";</script>',
+    ]) {
+        const configuration = { contentLinks: [logo, brand, { linkTypeCode: { codeValue: 'WELCOME-TXT', longName } }] };
+        assert.equal((await harness({ center: configuration }).reader.detail(link())).company, 'Unknown Company');
+    }
+});
+
 test('ADP upgrades explicit legacy HTTP corporate links and still requires public employer evidence', async () => {
     const { reader, calls } = harness({ center: center(['http://www.employer.example/']) });
     assert.equal((await reader.detail(link())).company, 'Verified Employer');

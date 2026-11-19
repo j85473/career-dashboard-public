@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import type { DirectAtsMatch } from '../atsDirectMatch';
 import type { PostingVerification } from '../jobPostingVerification';
-import { verifyJSearchBeforeAim } from '../preAimPostingVerification';
+import { verifyJSearchBeforeAim, verifyWorkdayBeforeAim, workdayVerificationRetryWhere } from '../preAimPostingVerification';
 import type { Prisma } from '../prismaClient';
 
 const job = {
@@ -105,6 +105,16 @@ test('a recognized employer URL is authoritative and bypasses aggregator resolut
   assert.equal(verification.replacement, null);
 });
 
+test('a verified direct Workday URL replaces stale aggregator geography before Aim', async () => {
+  const locations = 'Atlanta, GA; Charlotte, NC; Nashville, TN';
+  const verification = await verifyJSearchBeforeAim({ ...job, canonicalUrl: workday.url, location: 'Anywhere' }, {
+    store,
+    verify: async posting => ({ ...result('alive', posting.url), postingLocation: locations }),
+  });
+  assert.equal(verification.replacement?.url, workday.url);
+  assert.equal(verification.replacement?.postingLocation, locations);
+});
+
 test('employer lookup failures stay inconclusive instead of expiring the job', async () => {
   const verification = await verifyJSearchBeforeAim(job, {
     store,
@@ -114,4 +124,73 @@ test('employer lookup failures stay inconclusive instead of expiring the job', a
 
   assert.equal(verification.liveness, 'inconclusive');
   assert.equal(verification.authority, 'unresolved_aggregator');
+});
+
+const workday = {
+  title: 'Channel Account Manager',
+  url: 'https://acme.wd1.myworkdayjobs.com/en-US/Careers/job/Minneapolis/Channel-Account-Manager_R123',
+};
+const workdayDescription = 'Responsibilities include growing a book of channel accounts. '
+  + 'Qualifications include five years of experience in partner management. '
+  + 'Build joint business plans, report opportunities, and enable your partners to sell services. '.repeat(10);
+
+function renderedWorkday(body: string, url = workday.url) {
+  return new Response(`Title: ${workday.title}\n\nURL Source: ${url}\n\nMarkdown Content:\n${body}`);
+}
+
+test('a successful Workday detail payload cannot override a missing public application page', async () => {
+  const verification = await verifyWorkdayBeforeAim(workday, {
+    fetchPosting: async url => {
+      assert.equal(url, workday.url);
+      return Response.json({ jobPostingInfo: { title: workday.title, jobDescription: workdayDescription } });
+    },
+    readPosting: async url => {
+      assert.equal(url, workday.url);
+      return renderedWorkday("The page you are looking for doesn't exist.");
+    },
+  });
+  assert.equal(verification.liveness, 'expired');
+  assert.deepEqual(verification.probes.map(p => p.outcome), ['inconclusive', 'expired']);
+});
+
+test('Workday candidate verification accepts a matching rendered posting', async () => {
+  const verification = await verifyWorkdayBeforeAim(workday, {
+    fetchPosting: async () => new Response('<title>Careers</title><main>Search Jobs</main>'),
+    readPosting: async () => renderedWorkday(`## ${workday.title}\n\n${workdayDescription}`),
+  });
+  assert.equal(verification.liveness, 'alive');
+});
+
+test('Workday candidate verification defers access failures and rejects redirected closure evidence', async () => {
+  const closure = "The page you are looking for doesn't exist.";
+  const other = workday.url.replace('_R123', '_R456');
+  const redirected = new Response('Not found', { status: 404 });
+  Object.defineProperty(redirected, 'url', { value: other });
+  for (const response of [new Response('Denied', { status: 403 }), new Response('Rate limited', { status: 429 })]) {
+    const verification = await verifyWorkdayBeforeAim(workday, {
+      fetchPosting: async () => response,
+      readPosting: async () => renderedWorkday(closure, other),
+    });
+    assert.equal(verification.liveness, 'inconclusive');
+  }
+  const redirectedPage = await verifyWorkdayBeforeAim(workday, {
+    fetchPosting: async () => redirected,
+    readPosting: async () => renderedWorkday(closure),
+  });
+  assert.equal(redirectedPage.liveness, 'inconclusive');
+  assert.equal(redirectedPage.probes.length, 1);
+  const unverifiableReader = await verifyWorkdayBeforeAim(workday, {
+    fetchPosting: async () => { throw new Error('timeout'); },
+    readPosting: async () => new Response(closure),
+  });
+  assert.equal(unverifiableReader.liveness, 'inconclusive');
+});
+
+test('inconclusive Workday checks retry after fifteen minutes', () => {
+  const predicate = workdayVerificationRetryWhere(new Date('2026-11-18T20:15:00Z'));
+  assert.ok(predicate.OR?.some(condition => condition.source === null));
+  assert.ok(predicate.OR?.some(condition => condition.verificationStatus
+    && typeof condition.verificationStatus === 'object'
+    && condition.verificationStatus.not === 'inconclusive'));
+  assert.deepEqual(predicate.OR?.at(-1), { lastVerifiedAt: { lte: new Date('2026-11-18T20:00:00Z') } });
 });

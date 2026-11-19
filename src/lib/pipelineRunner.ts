@@ -941,9 +941,6 @@ async function orchestratePipeline(releaseLock: () => Promise<void>) {
           }
 
 
-          latestIngestion = 'Ingestion: Checking for expired Cooldown jobs...'; updateCombinedTicker();
-          try { await processCooldownJobs((msg) => { latestIngestion = `Ingestion: ${msg}`; updateCombinedTicker(); }); } catch (error) { recordWarning('Cooldown processing', error); }
-
           latestIngestion = 'Ingestion: Verifying liveliness of inbox jobs...'; updateCombinedTicker();
           try {
             const { verifyInboxJobsAlive } = await import('@/lib/verifyJobsAlive');
@@ -1135,6 +1132,14 @@ async function orchestratePipeline(releaseLock: () => Promise<void>) {
       }
     };
 
+    const runCooldownRecoveryLoop = async () => {
+      while (!ac.signal.aborted && !await pipelineStopRequested()) {
+        await processCooldownJobs(undefined, ac.signal);
+        if (!ac.signal.aborted && !await pipelineStopRequested()) await enforceRetroactiveCooldowns();
+        await waitForPipelineDelay(5 * 60 * 1000, ac.signal);
+      }
+    };
+
     const runLocalScoringLoop = async () => {
       while (true) {
         if (ac.signal.aborted || await pipelineStopRequested()) break;
@@ -1254,6 +1259,7 @@ async function orchestratePipeline(releaseLock: () => Promise<void>) {
       superviseLoop('Duplicate combining', runSameJobConsolidationLoop),
       superviseLoop('JD Extraction', runJDExtraction),
       superviseLoop('Stale Lease Cleanup', runStaleLeaseCleanup),
+      superviseLoop('Cooldown Recovery', runCooldownRecoveryLoop),
       superviseLoop('ATS Remote Telemetry', runAtsRemoteTelemetryLoop),
     ]);
 

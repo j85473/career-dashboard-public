@@ -8,10 +8,48 @@ import {
   legacyCappedCooldownRejection,
   processCooldownCandidates,
   statusAfterCooldown,
+  verifyCooldownPosting,
 } from '../cooldownRecovery';
 import { JobLifecycleInvariantError } from '../jobLifecycleInvariant';
 import type { LatestJobScoreBundle } from '../jobScoreAuthorityQuery';
 import { AIM_EXPERIENCE_QUEUE_MINIMUM_SCORE } from '../scoringLifecyclePolicy';
+
+test('Cooldown verification prefers the employer URL and distinguishes live, closed, and blocked responses', async () => {
+  const job = {
+    title: 'Partner Manager',
+    url: 'https://aggregator.example/jobs/123',
+    canonicalUrl: 'https://careers.example/jobs/123',
+    userCanonicalUrl: null,
+  };
+  const description = 'Responsibilities include enabling channel partners and managing account plans. '
+    + 'Qualifications include business development experience and demonstrated account growth. '.repeat(15);
+  const live = await verifyCooldownPosting(job, {
+    fetchPosting: async url => {
+      assert.equal(url, job.canonicalUrl);
+      return new Response(`<h1>${job.title}</h1><p>${description}</p>`);
+    },
+  });
+  assert.equal(live.liveness, 'alive');
+  assert.equal((await verifyCooldownPosting(job, {
+    fetchPosting: async () => new Response('', { status: 410 }),
+  })).liveness, 'expired');
+  assert.equal((await verifyCooldownPosting(job, {
+    fetchPosting: async () => new Response('', { status: 429 }),
+    readPosting: async () => { throw new Error('reader unavailable'); },
+  })).liveness, 'inconclusive');
+});
+
+test('Cooldown verification checks the chosen public Workday page for closure', async () => {
+  const url = 'https://acme.wd1.myworkdayjobs.com/en-US/Careers/job/US/Partner-Manager_R123';
+  const result = await verifyCooldownPosting({ title: 'Partner Manager', url: null, canonicalUrl: null, userCanonicalUrl: url }, {
+    fetchPosting: async input => {
+      assert.equal(input, url);
+      return new Response('<title>Careers</title>');
+    },
+    readPosting: async () => new Response(`Title: Careers\n\nURL Source: ${url}\n\nMarkdown Content:\nThe page you are looking for doesn't exist.`),
+  });
+  assert.equal(result.liveness, 'expired');
+});
 
 test('an expired Cooldown row without score authority re-enters current local scoring', () => {
   assert.deepEqual(cooldownReleasePlan(null), {
@@ -156,7 +194,7 @@ test('one conflicting scored cooldown cannot block later releases', async () => 
     attempted.push(job);
     if (job === 1) throw new JobLifecycleInvariantError([]);
     return true;
-  }, (job) => held.push(job));
+  }, (job) => { held.push(job); });
   assert.deepEqual(outcome, { released: 2, held: 1 });
   assert.deepEqual(attempted, [1, 2, 3]);
   assert.deepEqual(held, [1]);

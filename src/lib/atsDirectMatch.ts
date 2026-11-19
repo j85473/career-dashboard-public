@@ -41,7 +41,7 @@ import { recruiteePostingLocation } from './recruiteeLocation';
  * The failure mode is "no enrichment", never "wrong enrichment".
  */
 
-import type { Prisma } from './prismaClient';
+import type { Prisma, PrismaClient } from './prismaClient';
 
 import { cleanHtmlText, fetchAtsPlatformResponse, generatePostingIdentity, normalizeCompany, normalizeJobLocation, normalizeTitle, normalizeUrl } from './jobIngestion';
 import { locationsCompatibleForDirectMatch } from './directMatchLocation';
@@ -52,6 +52,9 @@ import { buildEmployerRuleIndex, resolveEmployer, sameEmployer, type EmployerRul
 import { eightfoldBoardSlugFromUrl, eightfoldBoardIdentity, eightfoldCareersUrl, eightfoldSearchUrl,
   eightfoldDetailUrl, eightfoldPostingUrl, eightfoldLocation, parseEightfoldConfig, parseEightfoldListing } from './eightfoldBoard';
 import { workdayBoardSlugFromJobUrl } from './atsBoardYield';
+import { isWorkdayLocationsPlaceholder } from './workdayLocation';
+import { hasIncompleteLocations } from './postingLocation';
+import { postingMetadataValue } from './postingMetadata';
 import { reserveProviderBudgetForSource } from './ingestionControl';
 import { zohoRecruitBoardSlugFromUrl, zohoRecruitBoardRequest, parseZohoRecruitListing } from './zohoRecruitBoard';
 import { EMPLOYER_CATALOGUE_TIMEOUT_MS, fetchEmployerBoardPostings, supportsEmployerBoardLookup } from './employerBoardPostings';
@@ -67,6 +70,8 @@ export type BoardPosting = {
   url: string;
   location: string | null;
   description: string | null;
+  /** Stored reprints can identify a posting while retaining unverified geography. */
+  employerLocation?: string | null;
 };
 
 export type DirectMatchJob = {
@@ -375,7 +380,7 @@ function uniquePostings(postings: readonly BoardPosting[]): BoardPosting[] {
 }
 
 /** A vendor homepage or employer board is not an individual application target. */
-function isSpecificPostingUrl(value: string | null | undefined): value is string {
+export function isSpecificPostingUrl(value: string | null | undefined): value is string {
   if (!value) return false;
   try {
     const url = new URL(value);
@@ -754,7 +759,10 @@ export async function findStoredAtsPostings(
       if (retainedBytes > STORED_ATS_CATALOGUE_MAX_BYTES) throw new StoredAtsCatalogueLimitError(company);
       const description = descriptionText(row.description);
       for (const { url, board } of identities) {
-        candidates.push({ board, title: row.title || '', url, location: row.location, description });
+        const hasEmployerLocation = directSource && [row.url, row.canonicalUrl].some(value =>
+          value && directAtsPostingKey({ url: value }) === directAtsPostingKey({ url }));
+        candidates.push({ board, title: row.title || '', url, location: row.location, description,
+          ...(!hasEmployerLocation ? { employerLocation: null } : {}) });
       }
     }
     if (page.length < 400) { complete = true; break; }
@@ -799,7 +807,8 @@ export async function findStoredAtsPostings(
     && !/^(?:out_of_territory|proven_unproductive):/.test(row.excludedReason || ''))
     .map(row => `${row.platform}:${row.slug}`));
   const postings = complete ? candidates.filter(row => !row.board || !withheld.has(`${row.board.platform}:${row.board.slug}`))
-    .map(row => ({ title: row.title, url: row.url, location: row.location, description: row.description })) : [];
+    .map(row => ({ title: row.title, url: row.url, location: row.location, description: row.description,
+      ...(row.employerLocation === null ? { employerLocation: null } : {}) })) : [];
   const crawlExcluded = new Set((registered || []).filter(row => row.status === 'excluded' && !withheld.has(`${row.platform}:${row.slug}`))
     .map(row => `${row.platform}:${row.slug}`));
   const verificationRequiredUrls = candidates.filter(row => row.board && (row.board.platform === 'adp'
@@ -919,20 +928,24 @@ export async function resolveDirectAtsPostingFromCatalogue(
   if (!isAggregatorSource(job.source) || !job.title?.trim() || !job.company?.trim()) return null;
 
   const storedMatch = selectDirectAtsMatch(job, stored);
-  if (storedMatch && !verificationRequiredUrls.includes(storedMatch.url)) {
+  const storedIdentity = storedMatch ? boardIdentityFromUrl(storedMatch.url) || board : null;
+  const storedLocation = storedMatch ? locationFromEmployerPosting(storedMatch) : null;
+  const needsLiveLocation = storedIdentity?.platform === 'workday' && !storedLocation;
+  const requiresVerification = (url: string) => verificationRequiredUrls.includes(url)
+    || Boolean(needsLiveLocation && url === storedMatch?.url);
+  if (storedMatch && !requiresVerification(storedMatch.url)) {
     deps.onOutcome?.('matched_stored');
-    const identity = boardIdentityFromUrl(storedMatch.url) || board;
     return {
       url: normalizeDirectPostingUrl(storedMatch.url) || storedMatch.url,
       description: storedMatch.description,
-      platform: identity?.platform || 'unknown',
-      slug: identity?.slug || '',
+      platform: storedIdentity?.platform || 'unknown',
+      slug: storedIdentity?.slug || '',
       matchedVia: 'stored',
       matchedBy: declaredSourcePostingKeys(job.description).has(directAtsPostingKey(storedMatch)) ? 'source_url'
         : declaredRequisitionId(job.description) && declaredRequisitionId(job.description) === declaredRequisitionId(storedMatch.description)
         ? 'requisition' : selectDirectAtsMatch({ ...job, description: null }, stored)?.url === storedMatch.url ? 'title' : 'description',
       postingTitle: storedMatch.title,
-      postingLocation: storedMatch.location,
+      postingLocation: storedLocation,
     };
   }
 
@@ -981,8 +994,8 @@ export async function resolveDirectAtsPostingFromCatalogue(
   // manufacture uniqueness. Only explicit source/req evidence can choose it.
   const liveMatch = selectDirectAtsMatch(job, [...live, ...stored]);
   if (!liveMatch) { deps.onOutcome?.('no_unique_live_match'); return null; }
-  if (verificationRequiredUrls.includes(liveMatch.url)
-    && !live.some(posting => directAtsPostingKey(posting) === directAtsPostingKey(liveMatch))) {
+  const liveEvidence = live.find(posting => directAtsPostingKey(posting) === directAtsPostingKey(liveMatch));
+  if (requiresVerification(liveMatch.url) && !liveEvidence) {
     deps.onOutcome?.('stored_match_requires_live_confirmation'); return null;
   }
   const identity = boardIdentityFromUrl(liveMatch.url) || board;
@@ -999,7 +1012,7 @@ export async function resolveDirectAtsPostingFromCatalogue(
       : declaredRequisitionId(job.description) && declaredRequisitionId(job.description) === declaredRequisitionId(liveMatch.description)
       ? 'requisition' : selectDirectAtsMatch({ ...job, description: null }, [...live, ...stored])?.url === liveMatch.url ? 'title' : 'description',
     postingTitle: liveMatch.title,
-    postingLocation: liveMatch.location,
+    postingLocation: locationFromEmployerPosting(liveEvidence || liveMatch),
   };
 }
 
@@ -1007,7 +1020,44 @@ export type DirectMatchEnrichment = {
   url: string;
   canonicalUrl: string;
   description?: string;
+  location?: string;
 };
+
+export function verifiedEmployerLocation(value: string | null | undefined): string | undefined {
+  const location = postingMetadataValue(value);
+  if (!location || hasIncompleteLocations(location)) return undefined;
+  if (location.split(/[;|]/).some(option => isWorkdayLocationsPlaceholder(option)
+    || /^\s*(?:multiple|various) locations?\s*$/i.test(option))) return undefined;
+  return location;
+}
+
+/** Use published geography. A stored aggregator location can help match but cannot replace it. */
+export function locationFromEmployerPosting(posting: BoardPosting): string | null {
+  return verifiedEmployerLocation(posting.employerLocation === undefined ? posting.location : posting.employerLocation) || null;
+}
+
+export function employerLinkReplacementFields(
+  current: { location?: string | null },
+  match: Pick<DirectAtsMatch, 'url' | 'postingLocation'>,
+): Pick<DirectMatchEnrichment, 'url' | 'canonicalUrl' | 'location'> {
+  const location = verifiedEmployerLocation(match.postingLocation);
+  return { url: match.url, canonicalUrl: match.url, ...(location && location !== current.location ? { location } : {}) };
+}
+
+/** Do not change inputs that a worker or an exported scoring run is using. */
+export const unleasedEmployerLocationWhere: Prisma.JobWhereInput = {
+  batchJobId: null,
+  jdBatchId: null,
+  afBatchId: null,
+  scoringStatus: { not: 'scoring' },
+  scoringBatchItems: { none: { status: 'leased' } },
+};
+
+export async function lockJobForEmployerLocationRepair(tx: Prisma.TransactionClient, jobId: string) {
+  // Scoring export takes the same row lock before inserting its lease. Check
+  // for that lease in the next statement, once the lock has been acquired.
+  await tx.$queryRaw`SELECT id FROM "Job" WHERE id = ${jobId} FOR UPDATE`;
+}
 
 /**
  * Compare readable content, never the length of tags, attributes or entities.
@@ -1023,17 +1073,14 @@ export function selectFullerAtsDescription(
 }
 
 /**
- * What enrichment is allowed to change on an existing row.
- *
- * Only the apply target and the posting text. Nothing here touches `title`,
- * `company`, or `location`, so `identityFingerprint` stays valid and no
- * duplicate relationship is re-decided behind Joseph's back.
+ * Update the apply target and published locations when replacing a link.
+ * Keep the original identity and all saved scoring and lifecycle decisions.
  *
  * The description is replaced only when the employer's readable copy is longer
  * than the aggregator's readable copy — tags must not make a stub look fuller.
  */
 export function planDirectMatchEnrichment(
-  job: { url?: string | null; canonicalUrl?: string | null; description?: string | null },
+  job: { url?: string | null; canonicalUrl?: string | null; description?: string | null; location?: string | null },
   match: DirectAtsMatch,
 ): DirectMatchEnrichment | null {
   const nextUrl = match.url;
@@ -1045,8 +1092,7 @@ export function planDirectMatchEnrichment(
 
   if (urlAlreadyDirect && !betterDescription) return null;
   return {
-    url: nextUrl,
-    canonicalUrl: nextUrl,
+    ...(urlAlreadyDirect ? { url: nextUrl, canonicalUrl: nextUrl } : employerLinkReplacementFields(job, match)),
     ...(betterDescription ? { description: betterDescription } : {}),
   };
 }
@@ -1068,11 +1114,17 @@ export async function applyDirectMatchEnrichment(
   jobId: string,
   expectedUpdatedAt: Date,
   enrichment: DirectMatchEnrichment,
-  store: Pick<Prisma.TransactionClient, 'job'>,
+  store: Pick<PrismaClient, 'job' | '$transaction'>,
+  additionalWhere: Prisma.JobWhereInput = {},
 ): Promise<boolean> {
-  const result = await store.job.updateMany({
-    where: { id: jobId, updatedAt: expectedUpdatedAt, userCanonicalUrl: null },
+  const persist = (target: Pick<Prisma.TransactionClient, 'job'>) => target.job.updateMany({
+    where: { ...additionalWhere, id: jobId, updatedAt: expectedUpdatedAt, userCanonicalUrl: null,
+      ...(enrichment.location ? unleasedEmployerLocationWhere : {}) },
     data: enrichment,
   });
+  const result = enrichment.location ? await store.$transaction(async tx => {
+    await lockJobForEmployerLocationRepair(tx, jobId);
+    return persist(tx);
+  }) : await persist(store);
   return result.count === 1;
 }

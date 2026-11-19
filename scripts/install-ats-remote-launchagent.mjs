@@ -107,6 +107,8 @@ async function main() {
     'src/lib/tenantAtsBoards.ts',
     'src/lib/atsFirstCollectionAdmission.ts',
     'src/lib/atsAdmissionCapacity.ts',
+    'src/lib/atsEvidenceRefresh.ts',
+    'src/lib/atsSchedulingEligibility.ts',
     'src/lib/atsAcquisition.ts',
     'src/lib/atsAcquisitionCompatibility.ts',
     'src/lib/atsAcquisitionCoordination.ts',

@@ -1,5 +1,6 @@
-import type { Prisma } from './prismaClient';
-import { boardIdentityFromUrl, selectDirectAtsMatch, type BoardPosting } from './atsDirectMatch';
+import type { PrismaClient } from './prismaClient';
+import { applyDirectMatchEnrichment, boardIdentityFromUrl, employerLinkReplacementFields, locationFromEmployerPosting,
+  selectDirectAtsMatch, type BoardPosting } from './atsDirectMatch';
 
 export const HIMALAYAS_REPAIR_STATUSES = ['inbox', 'pending_af', 'needs_jd', 'bookmarked', 'applied', 'interviewing'];
 
@@ -25,20 +26,17 @@ export function selectHimalayasEmployerPosting(job: HimalayasRepairJob, postings
   return match && boardIdentityFromUrl(match.url) ? match : null;
 }
 
-/** Link-only compare-and-set; never consolidates cards or writes scoring inputs. */
+/** Save a verified apply link and its locations while preserving saved scores. */
 export async function applyHimalayasLinkRepair(
   job: HimalayasRepairJob,
   postings: readonly BoardPosting[],
-  store: Pick<Prisma.TransactionClient, 'job'>,
+  store: Pick<PrismaClient, 'job' | '$transaction'>,
 ): Promise<boolean> {
   const match = selectHimalayasEmployerPosting(job, postings);
   if (!match) return false;
-  const result = await store.job.updateMany({
-    where: { id: job.id, updatedAt: job.updatedAt, userCanonicalUrl: null,
-      source: { equals: 'Himalayas', mode: 'insensitive' }, status: { in: HIMALAYAS_REPAIR_STATUSES },
-      url: job.url, canonicalUrl: job.canonicalUrl,
-    },
-    data: { url: match.url, canonicalUrl: match.url },
+  const data = employerLinkReplacementFields(job, { url: match.url, postingLocation: locationFromEmployerPosting(match) });
+  return applyDirectMatchEnrichment(job.id, job.updatedAt, data, store, {
+    source: { equals: 'Himalayas', mode: 'insensitive' }, status: { in: HIMALAYAS_REPAIR_STATUSES },
+    url: job.url, canonicalUrl: job.canonicalUrl,
   });
-  return result.count === 1;
 }

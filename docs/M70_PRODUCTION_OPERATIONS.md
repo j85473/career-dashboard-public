@@ -933,9 +933,11 @@ npm run ats:resolve-aggregators -- --links-only --stored-only --job-id=<UUID> --
 ```
 
 Omit `--stored-only` to include supported live employer lookups. Add `--apply`
-only for an authorized repair. User-selected URLs and concurrent card edits
-are protected at write time. Scheduled repairs preserve scores, descriptions,
-attachments and lifecycle states. The browser and employer-discovery passes
+only for an authorized repair. The link repair also saves verified employer
+locations. Repairs that change location wait for active scoring leases to end.
+Scheduled repairs preserve saved scores, descriptions, attachments and lifecycle
+states. User-selected URLs and concurrent card edits are protected at write time.
+The browser and employer-discovery passes
 checkpoint stable boundaries before network attempts; old positional cursors
 start one new rotation without changing any cards.
 

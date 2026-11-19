@@ -35,13 +35,14 @@ test('all Inbox writers use the shared company admission policy', () => {
   assert.match(source('src/lib/pipelineRunner.ts'), /Startup cooldown enforcement/);
 });
 
-test('existing scored-row ATS enrichment still cannot rewrite score identity metadata', () => {
+test('existing scored-row ATS enrichment uses the verified location without rewriting scores or fingerprint', () => {
   const directMatch = source('src/lib/atsDirectMatch.ts');
   const start = directMatch.indexOf('export function planDirectMatchEnrichment');
   const end = directMatch.indexOf('export async function applyDirectMatchEnrichment', start);
   const enrichment = directMatch.slice(start, end);
   assert.doesNotMatch(enrichment, /title:/);
   assert.doesNotMatch(enrichment, /company:/);
-  assert.doesNotMatch(enrichment, /location:/);
+  assert.match(enrichment, /employerLinkReplacementFields\(job, match\)/);
+  assert.doesNotMatch(enrichment, /identityFingerprint|postingIdentity/);
   assert.doesNotMatch(enrichment, /aimFitScore|reqFitScore|staleAt/);
 });

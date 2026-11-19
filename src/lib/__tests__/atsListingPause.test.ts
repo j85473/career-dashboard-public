@@ -52,14 +52,19 @@ test('all continuation priorities retain pause, retry and lease guards without e
 });
 
 test('assigned, overdue and recovery coverage all skip paused platforms before the candidate limit', async t => {
-  const original = { execute: prisma.$executeRaw, policy: prisma.atsFirstCollectionPolicy.findUnique,
+  const original = { query: prisma.$queryRaw, execute: prisma.$executeRaw, policy: prisma.atsFirstCollectionPolicy.findUnique,
     many: prisma.atsCompany.findMany };
   t.after(() => {
+    prisma.$queryRaw = original.query;
     prisma.$executeRaw = original.execute;
     prisma.atsFirstCollectionPolicy.findUnique = original.policy;
     prisma.atsCompany.findMany = original.many;
   });
   const reads: Prisma.AtsCompanyWhereInput[] = [];
+  prisma.$queryRaw = (async (query: Prisma.Sql) => {
+    assert.ok(query.values.includes('workday'), 'the retained-evidence refresh must respect the listing pause');
+    return [];
+  }) as typeof prisma.$queryRaw;
   prisma.$executeRaw = (async () => 0) as typeof prisma.$executeRaw;
   prisma.atsFirstCollectionPolicy.findUnique = (async () => null) as typeof prisma.atsFirstCollectionPolicy.findUnique;
   prisma.atsCompany.findMany = (async (input) => {

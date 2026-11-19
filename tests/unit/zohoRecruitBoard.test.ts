@@ -117,7 +117,7 @@ test('the aggregator worker recognizes stored Zoho canonicals before fetching a 
   assert.equal(match?.description?.includes('<p>'), false);
 });
 
-test('the aggregator worker fetches the known Zoho board and enriches only links and readable JD', async () => {
+test('the aggregator worker saves the verified Zoho link, location, and readable JD', async () => {
   let requested = '';
   const match = await resolveDirectAtsPosting(aggregator, { store: storeWith([storedPosting('Different role')]),
     fetcher: (async (url: string) => { requested = url; return Response.json(listing()); }) as never });
@@ -128,13 +128,19 @@ test('the aggregator worker fetches the known Zoho board and enriches only links
   assert.ok(match);
   const enrichment = planDirectMatchEnrichment({ url: 'https://himalayas.app/jobs/123', description: 'Brief stub' }, match);
   assert.ok(enrichment);
-  assert.deepEqual(Object.keys(enrichment).sort(), ['canonicalUrl', 'description', 'url']);
+  assert.deepEqual(Object.keys(enrichment).sort(), ['canonicalUrl', 'description', 'location', 'url']);
+  assert.equal(enrichment.location, 'Remote, United States');
   let written: unknown;
   const stamp = new Date('2026-10-08T12:00:00Z');
-  await applyDirectMatchEnrichment('aggregator-job', stamp, enrichment, {
+  const transaction = { $queryRaw: async () => {},
     job: { updateMany: async (args: unknown) => { written = args; return { count: 1 }; } },
+  };
+  await applyDirectMatchEnrichment('aggregator-job', stamp, enrichment, {
+    ...transaction, $transaction: async (action: (tx: typeof transaction) => Promise<unknown>) => action(transaction),
   } as unknown as Parameters<typeof applyDirectMatchEnrichment>[3]);
-  assert.deepEqual(written, { where: { id: 'aggregator-job', updatedAt: stamp, userCanonicalUrl: null }, data: enrichment });
+  assert.deepEqual(written, { where: { id: 'aggregator-job', updatedAt: stamp, userCanonicalUrl: null,
+    batchJobId: null, jdBatchId: null, afBatchId: null, scoringStatus: { not: 'scoring' },
+    scoringBatchItems: { none: { status: 'leased' } } }, data: enrichment });
 });
 
 test('Zoho live matching refuses ambiguous titles, closed jobs and malformed feeds', async () => {

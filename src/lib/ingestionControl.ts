@@ -43,6 +43,7 @@ export const JOB_PIPELINE_EVENT_TYPES = [
   'inbox_posting_verified',
   'canonical_intake_pending',
   'canonical_intake_expired',
+  'cooldown_posting_verified',
 ] as const;
 
 export type JobPipelineEventType = typeof JOB_PIPELINE_EVENT_TYPES[number];

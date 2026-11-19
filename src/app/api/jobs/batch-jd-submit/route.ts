@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import type { Prisma } from '../../../../lib/prismaClient';
 import { prisma } from '@/lib/prisma';
 import { scrapeAtsApi } from '@/lib/atsApi';
+import { isAggregatorSource } from '@/lib/atsDirectMatch';
+import { canonicalEmployerPostingUrl, canonicalPostingDescription, readCanonicalPosting } from '@/lib/canonicalPosting';
 import { scoreJobs } from '@/lib/jobScoring';
 import { cleanJobDescriptionText } from '@/lib/jobDescriptionText';
 import {
@@ -26,10 +28,11 @@ import {
 } from '@/lib/jdRecoveryPolicy';
 import { isSnippetOnlyAggregator } from '@/lib/ingestionSourceKind';
 import { evaluateAuthoritativeMetadata, hasAuthoritativeMetadata } from '@/lib/authoritativeMetadataGate';
-import { storedDescriptionQualityOptions } from '@/lib/jobDescriptionQuality';
+import { isClosedJobPosting, storedDescriptionQualityOptions } from '@/lib/jobDescriptionQuality';
+import { derivePostingFacts } from '@/lib/postingFacts';
 import { jdRecoveryAttemptEvidence, readJdRecoveryResponse, type JdRecoveryAttempt } from '@/lib/jdRecoveryEvidence';
 import { assessJobInfoLanguage } from '@/lib/jobLanguage';
-import { preferredJdSourceUrl } from '@/lib/jobSourceProvenance';
+import { preferredJdSourceUrl, preferredPostingDescriptionUrl } from '@/lib/jobSourceProvenance';
 import {
   automatedLifecycleIsProtected,
   manualImportInformationalScoringUpdate,
@@ -45,8 +48,6 @@ import {
   JD_ENRICHMENT_STARVED_REASON,
   planJdEnrichmentDeferral,
 } from '@/lib/jdEnrichmentDeferral';
-
-const ACTIVE_JD_STATUSES = ['pending_af', 'inbox'];
 
 function withBatchJdTransaction<T>(
   action: (tx: Prisma.TransactionClient) => Promise<T>,
@@ -126,9 +127,9 @@ export async function POST(request: Request) {
           id: job.id,
           jdBatchId: runId,
           scoringStatus: 'needs_jd',
-          status: { in: ACTIVE_JD_STATUSES },
-          
+          status: job.status,
           url: job.url,
+          updatedAt: job.updatedAt,
         });
         const updateClaimedInputs = (
           job: typeof claimedJobs[number],
@@ -159,26 +160,47 @@ export async function POST(request: Request) {
           const attempt: JdRecoveryAttempt = { url: job.url, transport: 'none' };
           try {
             const lifecycleProtected = automatedLifecycleIsProtected(job);
+            const preferredUrl = job.userCanonicalUrl || preferredPostingDescriptionUrl(job.url, job.canonicalUrl);
+            const employerUrl = canonicalEmployerPostingUrl(preferredUrl);
+            const shouldReadEmployer = employerUrl && job.status === 'pending_af'
+              && isAggregatorSource(job.source)
+              && job.fitScore === null && job.aimFitScore === null && job.reqFitScore === null
+              && !await prisma.jobScoreEvent.findFirst({ where: { jobId: job.id }, select: { id: true } });
+            const employerResult = shouldReadEmployer ? await readCanonicalPosting(employerUrl) : null;
+            const employerPosting = employerResult?.postingVerificationError ? null : employerResult;
+            const employerText = canonicalPostingDescription(employerPosting?.text);
+            if (employerText) {
+              attempt.url = employerUrl;
+              attempt.transport = 'ats_api';
+              attempt.structuredSource = true;
+              attempt.body = employerText;
+            }
+            const title = employerPosting?.title || job.title;
+            const company = employerPosting?.company || job.company;
+            const location = employerPosting?.location || job.location;
             const existingDecision = decideJdRecovery(job.description, job.scoreAttempts, storedDescriptionQualityOptions(job.source));
-            if (existingDecision.kind === 'closed') {
+            if (isClosedJobPosting(employerText) || !employerPosting && existingDecision.kind === 'closed') {
               await updateClaimedInputs(
                 job,
                 lifecycleProtected
                   ? manualImportInformationalScoringUpdate(
                       'automated closed-posting signal preserved as informational only.',
                     )
-                  : buildClosedPostingUpdate(),
+                  : {
+                      ...buildClosedPostingUpdate(),
+                      ...(employerText ? { description: employerText, ...derivePostingFacts(employerText) } : {}),
+                    },
                 [],
+                employerText ? jdRecoveryAttemptEvidence(attempt, 'closed', null) : undefined,
               );
               continue;
             }
 
-            // Every source gets the language-only portion of local filtering
-            // before an ATS request or Jina call. Sparse/ambiguous metadata
-            // fails open; affirmative non-English information is a dismissal.
+            // Prefer the employer's text and title for the language check.
+            // Run it before spending a fallback details or reader request.
             const language = assessJobInfoLanguage({
-              title: job.title,
-              description: job.description,
+              title,
+              description: employerText || job.description,
             });
             if (language.isAffirmativelyNonEnglish) {
               await updateClaimedInputs(job, {
@@ -199,7 +221,7 @@ export async function POST(request: Request) {
               continue;
             }
 
-            if (existingDecision.kind === 'ready') {
+            if (!employerPosting && existingDecision.kind === 'ready') {
               await updateClaimedInputs(job, {
                 jdBatchId: null,
                 batchJobId: null,
@@ -211,19 +233,14 @@ export async function POST(request: Request) {
               continue;
             }
 
-            // A direct ATS board (and Glassdoor's search result) states its own
-            // title, company and location, so the record is authoritative the
-            // moment it lands and JD recovery cannot improve it. Apply the same
-            // deterministic gate `jobScoring` and the retroactive triage script
-            // use before paying for a details request or a Jina call.
-            // Location-based fit remains Aim-owned; this gate only applies the
-            // existing safe prefilter and local-triage rules.
-            if (hasAuthoritativeMetadata(job.source)) {
+            // Use the exact employer location ahead of any syndicated location.
+            // Apply the same metadata gate used for directly collected postings.
+            if (hasAuthoritativeMetadata(job.source) || employerPosting?.location) {
               const metadataVerdict = evaluateAuthoritativeMetadata({
-                title: job.title,
-                company: job.company,
-                location: job.location,
-                url: job.url,
+                title,
+                company,
+                location,
+                url: employerPosting ? employerUrl : job.url,
               });
               if (!metadataVerdict.passes) {
                 await updateClaimedInputs(job, {
@@ -237,27 +254,38 @@ export async function POST(request: Request) {
                         scoringStatus: 'skipped' as const,
                         status: 'dismissed',
                         passReason: metadataVerdict.reason,
+                        ...(employerPosting ? {
+                          title, company, location,
+                          identityFingerprint: generateV4Fingerprint(title, company, location || 'Unknown Location'),
+                          ...(employerText ? { description: employerText, ...derivePostingFacts(employerText) } : {}),
+                        } : {}),
                         scoreAttempts: 0,
                         scoreError: null,
                       }),
-                }, []);
+                }, [], employerText ? jdRecoveryAttemptEvidence(attempt, 'metadata_rejected', metadataVerdict.reason) : undefined);
                 continue;
               }
             }
 
             let markdown = '';
             let finalResolvedUrl = job.url;
-            let newTitle: string | undefined = undefined;
-            let newCompany: string | undefined = undefined;
-            let newLocation: string | undefined = undefined;
+            let newTitle = employerPosting?.title;
+            let newCompany = employerPosting?.company;
+            let newLocation = employerPosting?.location;
             let recoveredFromStructuredSource = false;
             const sourceExtractionUrl = preferredJdSourceUrl({
               source: job.source,
-              jobUrl: job.url,
+              jobUrl: shouldReadEmployer ? preferredUrl : job.url,
               observations: job.observations,
             });
 
-            if (job.source === GLASSDOOR_SOURCE) {
+            if (employerText) {
+              markdown = employerText;
+              recoveredFromStructuredSource = true;
+            } else if (employerPosting && existingDecision.kind === 'ready') {
+              markdown = existingDecision.text;
+              recoveredFromStructuredSource = storedDescriptionQualityOptions(job.source).structuredSource === true;
+            } else if (job.source === GLASSDOOR_SOURCE) {
               attempt.transport = 'provider_api';
               // Glassdoor search results have no JD. Their listing ID plus the
               // saved search query string feed the provider's details API;
@@ -286,15 +314,16 @@ export async function POST(request: Request) {
               // Step 1: Try ATS specific API (Greenhouse, Lever, Workday, etc.)
               attempt.url = extractionUrl;
               attempt.transport = 'ats_api';
-              const atsResult = await scrapeAtsApi(extractionUrl);
+              const atsResult = shouldReadEmployer && extractionUrl === employerUrl
+                ? employerResult : await scrapeAtsApi(extractionUrl);
               if (atsResult?.postingVerificationError) throw new Error(atsResult.postingVerificationError);
               // Workday's detail response carries the complete primary plus
               // additional-location list and its authoritative hiring entity.
               // Preserve both even if the description itself is too short and
               // recovery falls through to Jina.
-              if (atsResult?.location) newLocation = atsResult.location;
-              if (atsResult?.title) newTitle = atsResult.title;
-              if (atsResult?.company) newCompany = atsResult.company;
+              newLocation ||= atsResult?.location;
+              newTitle ||= atsResult?.title;
+              newCompany ||= atsResult?.company;
               if (atsResult && atsResult.text.length > 500) {
                 markdown = atsResult.text;
                 recoveredFromStructuredSource = true;

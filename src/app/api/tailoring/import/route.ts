@@ -139,7 +139,6 @@ export async function POST(request: Request) {
               authorityJobId: updated.id,
               company: updated.company,
               employer: updated.employer,
-              decisionAt: updated.updatedAt,
               now: updated.updatedAt,
               store: tx,
             }));

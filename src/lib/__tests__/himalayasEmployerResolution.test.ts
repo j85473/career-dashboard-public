@@ -26,17 +26,25 @@ test('ambiguity and geography disagreement leave existing cards unresolved', () 
   assert.equal(selectHimalayasEmployerPosting({ ...job, canonicalUrl: posting.url }, [posting]), null);
 });
 
-test('an applied card receives only a link repair, with concurrent edits protected', async () => {
+test('an applied card receives the employer link and location while preserving decisions and scoring', async () => {
   const writes: unknown[] = [];
-  const store = { job: { updateMany: async (query: unknown) => { writes.push(query); return { count: 1 }; } } } as unknown as Parameters<typeof applyHimalayasLinkRepair>[2];
+  let count = 1;
+  const transaction = { $queryRaw: async () => {},
+    job: { updateMany: async (query: unknown) => { writes.push(query); return { count }; } } };
+  const store = {
+    ...transaction,
+    $transaction: async (action: (tx: typeof transaction) => Promise<unknown>) => action(transaction),
+  } as unknown as Parameters<typeof applyHimalayasLinkRepair>[2];
   assert.equal(await applyHimalayasLinkRepair(job, [posting], store), true);
   assert.deepEqual(writes, [{
     where: { id: job.id, updatedAt: job.updatedAt, userCanonicalUrl: null, source: { equals: 'Himalayas', mode: 'insensitive' },
-      status: { in: ['inbox', 'pending_af', 'needs_jd', 'bookmarked', 'applied', 'interviewing'] }, url: job.url, canonicalUrl: null },
-    data: { url: posting.url, canonicalUrl: posting.url },
+      status: { in: ['inbox', 'pending_af', 'needs_jd', 'bookmarked', 'applied', 'interviewing'] }, url: job.url, canonicalUrl: null,
+      batchJobId: null, jdBatchId: null, afBatchId: null, scoringStatus: { not: 'scoring' },
+      scoringBatchItems: { none: { status: 'leased' } } },
+    data: { url: posting.url, canonicalUrl: posting.url, location: posting.location },
   }]);
-  const changed = { job: { updateMany: async () => ({ count: 0 }) } } as unknown as typeof store;
-  assert.equal(await applyHimalayasLinkRepair(job, [posting], changed), false);
+  count = 0;
+  assert.equal(await applyHimalayasLinkRepair(job, [posting], store), false);
   writes.length = 0;
   assert.equal(await applyHimalayasLinkRepair(job, [posting, { ...posting, url: 'https://jobs.lever.co/acme/other' }], store), false);
   assert.deepEqual(writes, []);

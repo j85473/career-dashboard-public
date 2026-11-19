@@ -8,8 +8,43 @@ import {
   verifyJobPosting,
   type JobPostingLiveness,
   type PostingProbe,
+  type PostingVerification,
 } from './jobPostingVerification';
+import type { Prisma } from './prismaClient';
 import { authoritativeJobVerificationUrl } from './verifyJobsAlive';
+
+export const DIRECT_WORKDAY_SOURCE = 'ATS-workday';
+const WORKDAY_VERIFICATION_RETRY_MS = 15 * 60 * 1000;
+
+export function workdayVerificationRetryWhere(now: Date): Prisma.JobWhereInput {
+  return {
+    OR: [
+      { source: null },
+      { source: { not: DIRECT_WORKDAY_SOURCE } },
+      { status: { not: 'pending_af' } },
+      { tailoringStaged: true },
+      { fitScore: { not: null } },
+      { aimFitScore: { not: null } },
+      { reqFitScore: { not: null } },
+      { verificationStatus: { not: 'inconclusive' } },
+      { lastVerifiedAt: null },
+      { lastVerifiedAt: { lte: new Date(now.getTime() - WORKDAY_VERIFICATION_RETRY_MS) } },
+    ],
+  };
+}
+
+/** Check the application page itself, even when a complete JD was already saved. */
+export async function verifyWorkdayBeforeAim(
+  job: { url: string | null; title: string },
+  dependencies?: Parameters<typeof verifyJobPosting>[2],
+): Promise<PostingVerification> {
+  if (!job.url) return { liveness: 'inconclusive', probes: [] };
+  const result = await verifyJobPosting(
+    { url: job.url, title: job.title }, null, dependencies, { requireCandidatePage: true },
+  );
+  if (result.liveness === 'unavailable') return { ...result, liveness: 'inconclusive' };
+  return result;
+}
 
 type Candidate = {
   title: string;
@@ -76,7 +111,7 @@ export async function verifyJSearchBeforeAim(
         matchedVia: 'stored',
         matchedBy: 'title',
         postingTitle: job.title,
-        postingLocation: job.location || null,
+        postingLocation: employer.postingLocation || null,
       } : null,
       probes: employer.probes,
     };
@@ -97,7 +132,9 @@ export async function verifyJSearchBeforeAim(
         liveness: employer.liveness,
         authority: 'employer_posting',
         sourceLiveness: null,
-        replacement: employer.liveness === 'alive' ? replacement : null,
+        replacement: employer.liveness === 'alive' ? {
+          ...replacement, postingLocation: employer.postingLocation || replacement.postingLocation,
+        } : null,
         probes: employer.probes,
       };
     }

@@ -158,5 +158,6 @@ test('parseIcimsPostingHtml rejects a different embedded job and a portal shell'
 test('scrapeAtsApi routes iCIMS hosts through the dedicated extractor before JSON-LD', () => {
   const source = readFileSync(new URL('../../src/lib/atsApi.ts', import.meta.url), 'utf8');
   assert.match(source, /if \(isDomain\(host, 'icims\.com'\)\) \{\s+const detail = await scrapeIcimsPosting\(url\);/);
-  assert.ok(source.indexOf("isDomain(host, 'icims.com')") < source.indexOf('return await scrapeJsonLdJobPosting(url)'));
+  const fallback = source.indexOf('return await scrapeJsonLdJobPosting(url,');
+  assert.ok(fallback > source.indexOf("isDomain(host, 'icims.com')") && fallback >= 0);
 });

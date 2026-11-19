@@ -84,6 +84,7 @@ import { signalChildProcessGroup } from './childProcessControl';
 import { workdayBoardCompanyFallback, workdayHiringOrganizationName } from './workdayCompany';
 import { resolveWorkdayPlaceholderLocation, workdayDetailLocation } from './workdayLocation';
 import { recoverExternalWorkdayMetadata } from './externalWorkdayMetadata';
+import { canonicalEmployerPostingUrl, canonicalPostingDescription, readCanonicalPosting } from './canonicalPosting';
 import { locationsCompatibleForReprint } from './reprintLocationCompatibility';
 import {
   findAppliedDuplicateEvidence,
@@ -2261,7 +2262,7 @@ export async function resolveExternalDirectAtsPosting(
       ...posting,
       title: match.postingTitle || posting.title,
       location: match.postingLocation || posting.location,
-      description: selectFullerAtsDescription(posting.description, match.description) || posting.description,
+      description: canonicalPostingDescription(match.description) || posting.description,
       url: match.url,
     };
   } catch (error: unknown) {
@@ -2360,18 +2361,24 @@ export async function ingestExternalJob(
   }, async () => intakeMatch);
   ({ title, description, location, url } = resolvedPosting);
   canonicalUrl = normalizeUrl(url);
-  company = await standardizeIncomingCompany({ company, url, canonicalUrl }, prisma);
-
-  // Only unseen arrivals reach this read. An aggregator's broad remote label
-  // must not conceal an employer's state restriction; details retain every
-  // additional site rather than treating the URL's primary site as exclusive.
-  const workdayDetail = await recoverExternalWorkdayMetadata({ url, location });
+  // Only unseen arrivals reach this read. A complete reprint can still
+  // disagree with the exact employer posting about where the job is based.
+  const employerUrl = isAggregatorSource(input.source) ? canonicalEmployerPostingUrl(url) : null;
+  const employerPosting = await readCanonicalPosting(employerUrl);
+  const workdayDetail = employerUrl ? null : await recoverExternalWorkdayMetadata({ url, location });
   if (workdayDetail?.location) location = workdayDetail.location;
   const fullerDescription = selectFullerAtsDescription(description, workdayDetail?.text);
   if (fullerDescription) description = fullerDescription;
-  const locationRecovery = await recoverMissingSourceLocation({ title, company, location, url, source: input.source });
+  title = employerPosting?.title || title;
+  company = await standardizeIncomingCompany({ company: employerPosting?.company || company, url, canonicalUrl }, prisma);
+  location = employerPosting?.location || location;
+  const hasEmployerLocation = Boolean(employerPosting?.location || intakeMatch?.postingLocation || workdayDetail?.location);
+  const employerDescription = canonicalPostingDescription(employerPosting?.text);
+  description = employerDescription || description;
+  const locationRecovery = hasEmployerLocation ? null
+    : await recoverMissingSourceLocation({ title, company, location, url, source: input.source });
   if (locationRecovery) location = locationRecovery.location;
-  location = descriptionWorkLocation(location, description) || location;
+  if (!hasEmployerLocation) location = descriptionWorkLocation(location, description) || location;
   const postingIdentity = generatePostingIdentity({ source: input.source, sourceId, canonicalUrl, url });
   const identityFingerprint = generateV4Fingerprint(title, company, location);
 
@@ -2418,12 +2425,12 @@ export async function ingestExternalJob(
   // Authored source-card metadata can reject an out-of-scope posting before an
   // empty list-view description creates a needs_jd row. This is prospective:
   // it only decides the initial state of a newly ingested observation.
-  if (!acostaPriority && filter.passes && hasAuthoritativeMetadata(input.source)) {
+  if (!acostaPriority && filter.passes && (hasAuthoritativeMetadata(input.source) || hasEmployerLocation)) {
     const metadataFilter = evaluateAuthoritativeMetadata({
       title,
       company,
       location,
-      url: input.sourceUrl || input.url,
+      url: hasEmployerLocation ? url : input.sourceUrl || input.url,
     });
     if (!metadataFilter.passes) filter = metadataFilter;
   }
@@ -2432,7 +2439,8 @@ export async function ingestExternalJob(
     const payDescription = await recoverJobviteCompensation({ url, description });
     if (payDescription) description = payDescription;
   }
-  const jdReady = isScorableJobDescription(description, storedDescriptionQualityOptions(input.source));
+  const employerClosed = Boolean(employerDescription && isClosedJobPosting(employerDescription));
+  const jdReady = !employerClosed && isScorableJobDescription(description, storedDescriptionQualityOptions(input.source));
   const appliedRepeat = filter.passes && jdReady
     ? await findAppliedRepeatForIngestionSafely({ title, company, employer, location, description, source: input.source })
     : null;
@@ -2465,6 +2473,7 @@ export async function ingestExternalJob(
         passReason: appliedRepeat ? appliedRepeat.reason : filter.passes ? null : filter.reason,
         scoringStatus: appliedRepeat ? 'skipped' : filter.passes ? (jdReady ? 'queued' : 'needs_jd') : 'skipped',
         ...priorityLifecycle,
+        ...(employerClosed ? buildClosedPostingUpdate() : {}),
         observations: { create: { source: input.source, sourceId, url: observationUrl, ...attribution } },
         },
       });
@@ -2478,7 +2487,7 @@ export async function ingestExternalJob(
         queryFamily: attribution.queryFamily,
         geoLane: input.geoLane,
         details: filter.passes
-          ? { initialStatus: priorityLifecycle?.status || (appliedRepeat ? 'dismissed' : machineInitialStatus), enteredInbox: Boolean(priorityLifecycle), priorityRule: priorityLifecycle ? 'acosta_channel_sales' : null, jdReady, appliedRepeatOfJobId: appliedRepeat?.authority.id || null, locationRecovery }
+          ? { initialStatus: job.status, enteredInbox: job.status === 'inbox', priorityRule: priorityLifecycle ? 'acosta_channel_sales' : null, jdReady, appliedRepeatOfJobId: appliedRepeat?.authority.id || null, locationRecovery }
           : { reason: filter.reason, locationRecovery },
         identityParts: [input.windowEnd?.toISOString() || 'external'],
       }, tx);
@@ -2972,7 +2981,9 @@ export async function ingestJobs(
     const error = captureAtsInterruption();
     if (error) throw error;
   };
-  const atsProgress = options.atsPlatform ? {
+  // Only a leased scheduler task consumes the board cursor and due-board
+  // count. Published segments checkpoint their own offsets independently.
+  const atsProgress = options.atsPlatform && options.taskId && options.taskLeaseToken ? {
     platform: options.atsPlatform,
     selectedCount: targetAtsSlugs?.length || 0,
     completedCount: 0,
@@ -3701,6 +3712,7 @@ export async function ingestJobs(
     // preserved either way on the JobSourceObservation.
     let finalUrl = rawUrl;
     let directAtsResolved = false;
+    let hasCanonicalLocation = false;
     let manualAts: string | undefined = undefined;
 
     // This is intentionally language-only: the title and any provider snippet
@@ -3763,29 +3775,32 @@ export async function ingestJobs(
           finalUrl = directMatch.url;
           // This is a new, unscored row and the match is a unique employer-ATS
           // posting. Adopt its structured identity before fingerprints and
-          // score inputs are created. Existing-row enrichment remains limited
-          // to URL/description in planDirectMatchEnrichment.
+          // score inputs are created. Existing reprints get the verified
+          // location when their link is repaired, with their scores preserved.
           if (directMatch.postingTitle) title = directMatch.postingTitle;
-          if (directMatch.postingLocation) location = directMatch.postingLocation;
-          // Compare and save readable text; encoded markup must not make an
-          // employer's copy look fuller than the cleaned aggregator JD.
-          const fullerDescription = selectFullerAtsDescription(finalDescription, directMatch.description);
-          if (fullerDescription) finalDescription = fullerDescription;
+          if (directMatch.postingLocation) {
+            location = directMatch.postingLocation;
+            hasCanonicalLocation = true;
+          }
+          finalDescription = canonicalPostingDescription(directMatch.description) || finalDescription;
         }
     }
 
     const isAggregator = isRedirectResolutionAggregatorUrl(rawUrl)
       && !directAtsResolved && !boardIdentityFromUrl(finalCanonicalUrl);
+    const knownEmployerUrl = !directAtsResolved && isAggregatorSource(source)
+      ? canonicalEmployerPostingUrl(finalCanonicalUrl) : null;
 
     if (
       !networkComplete
       && glassdoorMetadataFilter?.passes !== false
       && !availableLanguage.isAffirmativelyNonEnglish
       && !options.deferWorkdayDescriptions
-      && (finalDescription.length < 400 || isAggregator)
+      && (finalDescription.length < 400 || isAggregator || knownEmployerUrl)
     ) {
-      let resolvedUrl: string | null = directAtsResolved || boardIdentityFromUrl(finalCanonicalUrl) ? finalCanonicalUrl : null;
-      if (isAggregator && rawUrl) {
+      let resolvedUrl: string | null = knownEmployerUrl
+        || (directAtsResolved || boardIdentityFromUrl(finalCanonicalUrl) ? finalCanonicalUrl : null);
+      if (!resolvedUrl && isAggregator && rawUrl) {
         try {
           const directUrl = await resolveRedirectUrl(rawUrl, 3000);
           if (directUrl && directUrl !== rawUrl && !urlMatchesAnyHost(directUrl, ['adzuna.com', 'jsearch.p.rapidapi.com'])) {
@@ -3802,13 +3817,17 @@ export async function ingestJobs(
       
       finalCanonicalUrl = normalizeUrl(resolvedUrl || canonicalUrl);
       
+      const employerUrl = canonicalEmployerPostingUrl(resolvedUrl);
       let atsResult = null;
-      if (finalCanonicalUrl) {
-         atsResult = await scrapeAtsApi(finalCanonicalUrl);
+      if (employerUrl) {
+        atsResult = await readCanonicalPosting(employerUrl);
+      } else if (finalCanonicalUrl) {
+        atsResult = await scrapeAtsApi(finalCanonicalUrl);
       }
+      const employerText = employerUrl ? canonicalPostingDescription(atsResult?.text) : undefined;
       
-      if (atsResult) {
-         if (atsResult.text) finalDescription = atsResult.text;
+      if (atsResult && !atsResult.postingVerificationError) {
+         if (employerText || !employerUrl && atsResult.text) finalDescription = employerText || atsResult.text;
          manualAts = atsResult.ats;
          if (resolvedUrl && boardIdentityFromUrl(resolvedUrl)) {
             finalUrl = resolvedUrl;
@@ -3826,6 +3845,7 @@ export async function ingestJobs(
          }
          if (atsResult.location) {
             location = atsResult.location;
+            hasCanonicalLocation ||= Boolean(employerUrl);
          }
          
          if (atsResult.atsSlug && atsResult.platform) {
@@ -3843,7 +3863,8 @@ export async function ingestJobs(
             }
          }
       }
-      if (!atsResult?.text && !atsResult?.postingVerificationError) {
+      if (!(employerUrl ? employerText || isScorableJobDescription(finalDescription, storedDescriptionQualityOptions(source))
+        : atsResult?.text) && !atsResult?.postingVerificationError) {
          const scraped = await tryFetchFullDescription({
            url: rawUrl,
            resolvedUrl,
@@ -3876,11 +3897,11 @@ export async function ingestJobs(
 
     // Only unseen arrivals reach this point. Recover explicit source geography
     // even when JSearch already supplied a complete JD; never update an old card.
-    const locationRecovery = !networkComplete ? await recoverMissingSourceLocation({
+    const locationRecovery = !networkComplete && !hasCanonicalLocation ? await recoverMissingSourceLocation({
       title, company, location, url: finalUrl, source,
     }, { signal }) : null;
     if (locationRecovery) location = locationRecovery.location;
-    location = descriptionWorkLocation(location, finalDescription) || location;
+    if (!hasCanonicalLocation) location = descriptionWorkLocation(location, finalDescription) || location;
     finalCanonicalUrl = normalizeUrl(finalCanonicalUrl);
     company = await standardizeIncomingCompany({
       company,
@@ -3966,7 +3987,7 @@ export async function ingestJobs(
     // record needs JD recovery: otherwise a known out-of-scope posting can
     // spend three recovery attempts and land in JD Failed solely because its
     // description is incomplete.
-    if (!acostaPriority && preFilterResult.passes && hasAuthoritativeMetadata(source)) {
+    if (!acostaPriority && preFilterResult.passes && (hasAuthoritativeMetadata(source) || hasCanonicalLocation)) {
       const metadataFilter = evaluateAuthoritativeMetadata({
         title,
         company,

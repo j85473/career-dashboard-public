@@ -1,3 +1,5 @@
+import { US_STATE_LOCATION_PATTERN } from './postingLocation';
+
 /**
  * Recovering the real city Workday encodes in its posting URL, for the rows
  * where `locationsText` is the "<N> Locations" placeholder rather than a
@@ -99,6 +101,24 @@ export function workdayDetailLocation(jobPostingInfo: unknown): string | null {
     .sort((left, right) => left.localeCompare(right, 'en-US', { sensitivity: 'base' }));
   const locations = first ? [first, ...rest] : rest;
   return locations.length > 0 ? locations.join('; ') : null;
+}
+
+const WORKDAY_US_ADDRESS = new RegExp(
+  '^\\s*USA?\\s*:\\s*(' + US_STATE_LOCATION_PATTERN + ')\\s*:\\s*([^:]+)(?::.*)?$',
+  'i',
+);
+
+/** Read the published city and state for triage without changing the saved address. */
+export function workdayLocationsForTriage(location: string): string {
+  return location.split(/([;|])/).map(option => {
+    const address = WORKDAY_US_ADDRESS.exec(option);
+    if (!address) return option;
+    const [, state, cityField] = address;
+    // Some office labels append the numbered street to the city with a slash.
+    const city = cityField.split(/\s*\/\s*(?=\d)/, 1)[0].trim();
+    if (!/^[\p{L}\p{N}][\p{L}\p{M}\p{N}.'’() -]*$/u.test(city)) return option;
+    return city + ', ' + (state.length === 2 ? state.toUpperCase() : state);
+  }).join('');
 }
 
 function looksLikeStreetAddress(tokens: string[]): boolean {

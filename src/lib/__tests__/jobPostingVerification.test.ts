@@ -80,14 +80,14 @@ test('a reader target-404 with a complete matching posting preserves the posting
 });
 
 function inboxStore() {
-  const job = { id: 'card', title, company: 'Datadog', description, url: wwr, canonicalUrl: wwr,
+  const job = { id: 'card', title, company: 'Datadog', description, url: wwr, canonicalUrl: wwr, location: 'Anywhere',
     status: 'inbox', source: 'WeWorkRemotely', sourceId: wwr, tailoringStaged: false,
     updatedAt: new Date('2026-10-01T00:00:00Z'), fitScore: 70 as number | null, aimFitScore: 64 as number | null, reqFitScore: 73 as number | null, scoringStatus: 'scored',
     batchJobId: null as string | null, jdBatchId: null as string | null, _count: { scoreEvents: 0 } };
   const events: unknown[] = [];
   const writes: Prisma.JobUpdateManyArgs[] = [];
   let inTransaction = false;
-  const client = { job: {
+  const client = { $queryRaw: async () => { assert.equal(inTransaction, true); }, job: {
     findMany: async (args: Prisma.JobFindManyArgs) => {
       assert.equal(args.take, 25);
       assert.deepEqual(args.where?.OR?.[0], { status: 'inbox' });
@@ -123,13 +123,35 @@ test('dead aggregator copy with verified employer posting repairs links and pres
   });
   assert.equal(job.url, employer);
   assert.equal(job.canonicalUrl, employer);
+  assert.equal(job.location, 'Boston, USA');
   assert.equal(job.status, 'inbox');
   assert.equal(job.aimFitScore, 64);
   assert.equal(job.reqFitScore, 73);
   assert.equal(job.description, description);
   assert.equal(job.scoringStatus, 'scored');
-  assert.deepEqual(Object.keys(writes[0].data).sort(), ['canonicalUrl', 'lastVerifiedAt', 'url']);
+  assert.deepEqual(Object.keys(writes[0].data).sort(), ['canonicalUrl', 'lastVerifiedAt', 'location', 'url']);
+  assert.ok(Array.isArray(writes[0].where?.AND)
+    && writes[0].where.AND.some(condition => condition.scoringBatchItems?.none?.status === 'leased'));
   assert.equal(events.length, 1);
+});
+
+test('an Inbox link repair takes all locations from the verified Workday detail', async () => {
+  const { client, job } = inboxStore();
+  const locations = ['Atlanta, GA', 'Los Angeles, CA', 'Charlotte, NC', 'Nashville, TN', 'Quakertown, PA'];
+  await verifyInboxJobsAlive(undefined, { client, delayMs: 0,
+    fetchPosting: async url => {
+      assert.ok(String(url) === wwr || String(url) === authoritativeJobVerificationUrl(workday));
+      return String(url) === wwr ? new Response('Gone', { status: 410 }) : Response.json({
+        jobPostingInfo: { title, jobDescription: description, location: locations[0], additionalLocations: locations.slice(1) },
+      });
+    },
+    resolveCanonical: async () => ({ url: workday, description, platform: 'workday', slug: 'epicor',
+      matchedVia: 'stored', postingTitle: title, postingLocation: locations[0] }),
+  });
+  assert.equal(job.url, workday);
+  assert.deepEqual(new Set(job.location.split('; ')), new Set(locations));
+  assert.equal(job.aimFitScore, 64);
+  assert.equal(job.reqFitScore, 73);
 });
 
 test('ADP closures expire scored Inbox cards while preserving pending review and score authority', async () => {

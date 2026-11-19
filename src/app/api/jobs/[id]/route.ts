@@ -358,7 +358,6 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
           authorityJobId: updated.id,
           company: updated.company,
           employer: updated.employer,
-          decisionAt: updated.updatedAt,
           now: updated.updatedAt,
           store: tx,
         }));

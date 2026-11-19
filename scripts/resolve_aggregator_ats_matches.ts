@@ -112,7 +112,7 @@ async function main(): Promise<void> {
   const index = buildEmployerRuleIndex(rules);
   const companyKey = (name: string) => employerAliasKey(resolveEmployer({ company: name }, index));
   console.log(`${apply ? 'APPLY' : 'DRY RUN'} — resolving aggregator listings to direct ATS postings`);
-  if (linksOnly) console.log('  --links-only: apply links only, descriptions left untouched.');
+  if (linksOnly) console.log('  --links-only: save verified employer links and locations, keeping saved descriptions.');
 
   const jobs = await prisma.job.findMany({
     where: { NOT: { source: { startsWith: 'ATS-' } }, source: { not: null }, userCanonicalUrl: null,

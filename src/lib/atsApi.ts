@@ -501,7 +501,7 @@ export async function scrapeEightfoldPostingDetail(url: string, pageHtml?: strin
   }
 }
 
-export async function scrapeAtsApi(url: string): Promise<AtsScrapeResult | null> {
+export async function scrapeAtsApi(url: string, options: { requireSameUrl?: boolean } = {}): Promise<AtsScrapeResult | null> {
   try {
     const parsed = await assertSafeExternalUrl(url);
     const host = parsed.hostname.toLowerCase();
@@ -720,7 +720,7 @@ export async function scrapeAtsApi(url: string): Promise<AtsScrapeResult | null>
     // above (Workday, Teamtailor) carry it too, alongside boards this function
     // has no dedicated branch for. Fetch the page itself and look for that
     // block before giving up to the caller's (paid) Jina fallback.
-    return await scrapeJsonLdJobPosting(url);
+    return await scrapeJsonLdJobPosting(url, options.requireSameUrl);
   } catch (e: unknown) {
     if (e instanceof Error && e.name === 'TimeoutError') {
       throw e;
@@ -837,7 +837,10 @@ export function jsonLdPageMetadata(posting: JsonLdJobPosting, html: string): Pos
 }
 
 /** Metadata remains usable even when a page delegates its full description to JavaScript. */
-export async function scrapeJobPostingMetadata(url: string): Promise<PostingMetadata | null> {
+export async function scrapeJobPostingMetadata(
+  url: string,
+  options: { requireSameUrl?: boolean } = {},
+): Promise<PostingMetadata | null> {
   let parsedUrl: URL;
   try { parsedUrl = new URL(url); } catch { return null; }
   if (isAppOneHost(parsedUrl.hostname)) {
@@ -849,6 +852,7 @@ export async function scrapeJobPostingMetadata(url: string): Promise<PostingMeta
     signal: AbortSignal.timeout(15000),
   }).catch(() => null);
   if (!response?.ok) return null;
+  if (options.requireSameUrl && !postingUrlsMatch(response.url, url)) return null;
   const html = await readSafeFetchText(response);
   const brandedOffer = talentsConnectPage(html, url);
   if (brandedOffer) {
@@ -924,12 +928,13 @@ export const JSON_LD_FETCH_USER_AGENT =
  * the surrounding page body is not. Validate terminal pages, shells, minimum
  * length and truncation without requiring particular English section headings.
  */
-async function scrapeJsonLdJobPosting(url: string): Promise<AtsScrapeResult | null> {
+async function scrapeJsonLdJobPosting(url: string, requireSameUrl = false): Promise<AtsScrapeResult | null> {
   const pageRes = await safeExternalFetch(url, {
     headers: { 'User-Agent': JSON_LD_FETCH_USER_AGENT },
     signal: AbortSignal.timeout(15000),
   }).catch(() => null);
   if (!pageRes || !pageRes.ok) return null;
+  if (requireSameUrl && !postingUrlsMatch(pageRes.url, url)) return null;
 
   const html = await readSafeFetchText(pageRes);
   const embeddedAshby = ashbyEmbed(html, url);

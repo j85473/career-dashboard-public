@@ -103,6 +103,30 @@ test('shared recovery distinguishes a cached unavailable board from a complete e
   assert.equal(outcomes.at(-1), 'no_unique_live_match');
 });
 
+test('stored Workday aliases with aggregator geography need live employer locations before repair', async () => {
+  const board = { platform: 'workday', slug: 'acme.wd1::Careers' };
+  const job = { title: 'Account Manager', company: 'Acme', source: 'SerpApi', location: 'Anywhere' };
+  const path = '/job/Atlanta-GA/Account-Manager_R123';
+  const url = `https://acme.wd1.myworkdayjobs.com/en-US/Careers${path}`;
+  const catalogue = { board, boards: [board], postings: [{ title: job.title, url,
+    location: 'Anywhere', employerLocation: null, description: null }] };
+  const locations = ['Atlanta, GA', 'Los Angeles, CA', 'Charlotte, NC', 'Nashville, TN', 'Quakertown, PA'];
+  const store = { job: {} } as never;
+  assert.equal(await resolveDirectAtsPostingFromCatalogue(job, catalogue, { store, allowLivePing: false }), null);
+  const match = await resolveDirectAtsPostingFromCatalogue(job, catalogue, {
+    store,
+    fetcher: async input => String(input).endsWith('/jobs') ? Response.json({
+      total: 1, jobPostings: [{ title: job.title, externalPath: path }],
+    }) : Response.json({ hiringOrganization: { name: 'Acme' }, jobPostingInfo: {
+      title: job.title, externalUrl: url, jobReqId: 'R123', jobDescription: 'Exact employer posting.',
+      location: locations[0], additionalLocations: locations.slice(1),
+    } }),
+  });
+  assert.equal(match?.url, url);
+  assert.equal(match.matchedVia, 'live');
+  assert.deepEqual(new Set(match.postingLocation?.split('; ')), new Set(locations));
+});
+
 test('a complete Workday search can outlast the old ping deadline while explicit deadlines still stop it', async (t) => {
   let now = 0;
   const deadlines: Array<{ controller: AbortController; at: number }> = [];

@@ -292,10 +292,11 @@ export function employerIdentityKey(
   job: { employer?: string | null; company?: string | null; source?: string | null },
   options: { excludeSharedPublishers?: boolean } = {},
 ): string {
-  const key = employerAliasKey(job.employer || presentableEmployerName(job.company, job.source));
-  // A publisher label cannot establish an employer-wide application cooldown.
-  // Keep other identity consumers unchanged; a resolved real employer still wins.
-  if (options.excludeSharedPublishers && key === 'remotequestjobs') return '';
+  const name = job.employer || presentableEmployerName(job.company, job.source);
+  const key = employerAliasKey(name);
+  // Names shared by unrelated postings cannot establish an employer cooldown.
+  if (options.excludeSharedPublishers && (isPlaceholderEmployerName(name)
+    || /^(?:remotequestjobs|(?:confidential|undisclosed)(?:company|employer|careers)?)$/.test(key))) return '';
   return key;
 }
 

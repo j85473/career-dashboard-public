@@ -28,7 +28,7 @@ test('new canonical location matches do not broaden automatic historical reprint
     assert.deepEqual(planDirectMatchEnrichment(aggregate, {
       url: matched!.url, description: null, postingTitle: title, postingLocation,
       platform: 'greenhouse', slug: 'example', matchedVia: 'stored',
-    }), { url: directUrl, canonicalUrl: directUrl });
+    }), { url: directUrl, canonicalUrl: directUrl, location: postingLocation });
   }
 });
 

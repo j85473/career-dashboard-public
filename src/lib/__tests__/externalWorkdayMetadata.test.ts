@@ -80,7 +80,7 @@ test('external ingestion uses recovered geography before identity and triage, af
 
 test('description recovery retains structured ATS location through the scoring metadata tuple', () => {
   const scoring = readFileSync('src/lib/jobScoring.ts', 'utf8');
-  assert.match(scoring, /discoveredLocation: extra\.location/);
+  assert.match(scoring, /discoveredLocation: employerPosting\?\.location \|\| extra\?\.location/);
   assert.match(scoring, /location: atsResult\.location/);
   assert.match(scoring, /location: resolved\.discoveredLocation \|\| currentJob\.location/);
 });

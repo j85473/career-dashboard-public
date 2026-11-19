@@ -9,10 +9,18 @@ const posting = {
   url: 'https://www.dice.com/job-detail/provider-id', location: 'United States',
   description: 'A short source description.',
 };
+const employerDescription = [
+  'Responsibilities',
+  'Manage a portfolio of distributor accounts and build a business plan for each territory. Meet with customers to assess the sales pipeline, develop forecasts with distributor leaders, and identify opportunities to grow the business.',
+  'Qualifications',
+  'Five years of experience in partner account management and business development. Experience facilitating partner workshops, preparing sales reports, and coordinating customer engagements with distributor and territory sales teams.',
+  'You will work with marketing and operations to plan product launches, document commitments, and report progress against the annual territory plan.',
+  'The position requires regular travel to distributor locations and experience presenting quarterly results to internal stakeholders.',
+].join('\n\n');
 const match: DirectAtsMatch = {
   url: 'https://example.wd1.myworkdayjobs.com/External/job/Remote/Partner-Manager_R123',
   postingTitle: 'Partner Manager', postingLocation: 'Remote Work MN; Minneapolis, MN',
-  description: 'A longer employer description with the complete posting and all requirements.',
+  description: employerDescription,
   platform: 'workday', slug: 'example.wd1::External', matchedVia: 'stored',
 };
 
@@ -29,6 +37,12 @@ test('external API intake adopts a verified ATS posting without altering provide
   assert.equal(resolved.source, posting.source);
   assert.equal(resolved.company, posting.company);
   assert.deepEqual(posting, original);
+});
+
+test('intake uses the complete employer description even when the syndicated copy is longer', async () => {
+  const longerReprint = employerDescription + '\n\nAdditional information about the job board and its services.';
+  const resolved = await resolveExternalDirectAtsPosting({ ...posting, description: longerReprint }, async () => match);
+  assert.equal(resolved.description, employerDescription);
 });
 
 test('an unresolved or ambiguous external posting retains its original metadata', async () => {

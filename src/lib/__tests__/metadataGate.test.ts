@@ -153,6 +153,37 @@ test('a multi-site posting that includes the metro is kept', () => {
   assert.equal(verdict.passes, true, verdict.reason);
 });
 
+test('Workday address state takes precedence over a matching Twin Cities name', () => {
+  const posting = {
+    title: 'Bilingual Spanish Retail Sales Consultant - FORT LAUDERDALE',
+    company: 'AT&T Mobility Services LLC',
+    location: 'USA:FL:Fort Lauderdale:530 N Federal Hwy:RET/RET',
+  };
+  const verdict = metadataGate(posting);
+  assert.equal(verdict.passes, false);
+  assert.match(verdict.reason, /outside the searched geographies/i);
+  assert.equal(metadataGate({
+    ...posting, location: 'USA:IN:Bloomington:260 N Jacob Dr:RET/RET',
+  }).passes, false);
+});
+
+test('Workday address triage keeps genuine local and remote alternatives and uses the published city', () => {
+  const florida = 'USA:FL:Fort Lauderdale:530 N Federal Hwy:RET/RET';
+  const local = 'USA:MN:Lauderdale:123 Main St:RET/RET';
+  for (const location of [
+    local,
+    'USA:MN:Blaine:123 Main St:RET/RET',
+    'USA:MN:Minneapolis / 123 Main St - Adm:123 Main St',
+    'USA:WI:Hudson:123 Main St:RET/RET',
+    florida + '; ' + local,
+    florida + ' | Remote - US',
+  ]) assert.equal(metadataGate({ title: 'Partner Manager', company: 'Acme', location }).passes, true, location);
+  for (const location of [
+    'USA:MN:Rochester:123 Minneapolis Ave:RET/RET',
+    florida + '; USA:NY:Woodbury:123 Main St:RET/RET',
+  ]) assert.equal(metadataGate({ title: 'Partner Manager', company: 'Acme', location }).passes, false, location);
+});
+
 test('ambiguous employer remote labels are not rejected before JD recovery', () => {
   for (const location of ['REMOTE • Sales - BOSTONtec', 'US - California - Vista; Watkins - Remote']) {
     const verdict = metadataGate({ title: 'Regional Sales Manager', company: 'Acme', location });

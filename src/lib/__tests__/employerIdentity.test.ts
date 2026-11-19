@@ -110,6 +110,18 @@ test('excluding shared publishers for cooldown does not change general identity 
   assert.equal(employerIdentityKey({ company: 'Remote Quest Jobs', employer: 'HP, Inc.' }, { excludeSharedPublishers: true }), 'hp');
 });
 
+test('cooldown identity skips placeholder employer names and honors resolved employers', () => {
+  const cooldown = { excludeSharedPublishers: true };
+  for (const name of ['Unknown Company', 'unknown-employer', 'N/A', 'Not Provided', 'Unavailable',
+    'Confidential Company', 'Confidential Careers', 'Undisclosed Employer']) {
+    assert.equal(employerIdentityKey({ company: name }, cooldown), '', name);
+    assert.equal(employerIdentityKey({ employer: name, company: name }, cooldown), '', name);
+    assert.equal(employerIdentityKey({ employer: 'HP, Inc.', company: name }, cooldown), 'hp', name);
+  }
+  assert.equal(employerIdentityKey({ employer: 'Unknown Company' }), 'unknown');
+  assert.equal(employerIdentityKey({ employer: 'Unavailable Technologies' }, cooldown), 'unavailabletechnologies');
+});
+
 test('persisted placeholder rules cannot assign unrelated imports to Apple', () => {
   const rules = index([
     { matchType: 'alias', matchKey: 'unknown', standardName: 'Apple' },

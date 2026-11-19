@@ -112,5 +112,6 @@ test('parseComeetPostingHtml fails closed on identity mismatch and empty portal 
 test('scrapeAtsApi routes Comeet hosts through the dedicated extractor before JSON-LD', () => {
   const source = readFileSync(new URL('../../src/lib/atsApi.ts', import.meta.url), 'utf8');
   assert.match(source, /if \(isDomain\(host, 'comeet\.com'\) \|\| isDomain\(host, 'comeet\.co'\)\) \{\s+const detail = await scrapeComeetPosting\(url\);/);
-  assert.ok(source.indexOf("isDomain(host, 'comeet.com')") < source.indexOf('return await scrapeJsonLdJobPosting(url)'));
+  const fallback = source.indexOf('return await scrapeJsonLdJobPosting(url,');
+  assert.ok(fallback > source.indexOf("isDomain(host, 'comeet.com')") && fallback >= 0);
 });

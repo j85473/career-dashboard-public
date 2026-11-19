@@ -1,3 +1,4 @@
+import { readEvidenceRefreshCandidates } from './atsEvidenceRefresh';
 import { workerDrainRequested } from './workerDeployment';
 import { atsTemporaryRetryDelayMs, isAtsTemporaryFailure } from './atsTemporaryFailure';
 import { storageAllows } from './storagePressure';
@@ -272,6 +273,8 @@ export type AtsV2LanePlan = {
   reason: string;
   listingConcurrencyLimit?: number;
   coverageEligible?: number;
+  /** Bounded selection hints shared by the lanes. Admission rechecks the exact batch. */
+  evidenceRefreshIds?: string[];
   listingEligible?: number;
   drainEligible?: number;
   continuationEligible?: number;
@@ -396,11 +399,14 @@ export function orderAtsV2ContinuationCandidates<T extends AtsV2ContinuationCand
   return selected;
 }
 
-async function atsV2CoverageHeads(now: Date, cohortOnly: boolean, pausedPlatforms?: readonly string[]) {
+async function atsV2CoverageHeads(now: Date, cohortOnly: boolean, pausedPlatforms?: readonly string[], plannedRefreshIds?: string[]) {
   const paused = pausedPlatforms ?? pausedAtsListingPlatforms(await readAtsListingPauses(now), now);
   const eligibility = atsCoverageEligibilityWhere(now, paused, {}, cohortOnly);
-  const { where: first, reviewed } = await firstCollectionSelection(prisma, now, eligibility);
-  const base = atsCoverageEligibilityWhere(now, paused, first, cohortOnly);
+  const [{ where: first, reviewed }, refreshIds] = await Promise.all([
+    firstCollectionSelection(prisma, now, eligibility),
+    plannedRefreshIds ?? readEvidenceRefreshCandidates(prisma, now, paused, cohortOnly).then(result => result.ids),
+  ]);
+  const base = atsCoverageEligibilityWhere(now, paused, first, cohortOnly, refreshIds);
   const sizeAware = await atsDistributedArchitectureActive();
   const heads = await Promise.all(ATS_API_SERVICE_CLASSES.map(async (key, priority) => {
     const candidates = key === 'first' && reviewed ? [reviewed] : await prisma.atsCompany.findMany({
@@ -422,11 +428,11 @@ export async function selectNextAtsV2CoverageBoard(now = new Date(), cohortOnly 
   return (await atsV2CoverageHeads(now, cohortOnly, pausedPlatforms))[0]?.board || null;
 }
 
-export async function claimNextAtsV2Coverage(now = new Date(), pausedPlatforms?: readonly string[]): Promise<AtsLedgerClaim | null> {
+export async function claimNextAtsV2Coverage(now = new Date(), pausedPlatforms?: readonly string[], plannedRefreshIds?: string[]): Promise<AtsLedgerClaim | null> {
   if (!await atsNewBoardAdmissionsAllowed()) return null;
   const staging = await atsV2StagingSnapshot(prisma, now);
   if (staging.admissionBlocked && !staging.cohortAdmissionAllowed) return null;
-  const heads = await atsV2CoverageHeads(now, staging.admissionBlocked, pausedPlatforms);
+  const heads = await atsV2CoverageHeads(now, staging.admissionBlocked, pausedPlatforms, plannedRefreshIds);
   const turn = await reserveAtsServiceTurn('api-coverage', heads, { now });
   if (!turn) return null;
   try {
@@ -1268,7 +1274,7 @@ export async function runAtsV2ContinuousDispatcher(input: {
           ? 'continuation'
           : workerIndex < plan.coverageSlots ? 'coverage' : 'continuation';
         let claim = lane === 'coverage'
-          ? await dependencies.claimNextAtsV2Coverage(new Date(), pausedPlatforms)
+          ? await dependencies.claimNextAtsV2Coverage(new Date(), pausedPlatforms, plan.evidenceRefreshIds)
           : await dependencies.claimNextAtsV2Continuation({ listingConcurrencyLimit: plan.listingConcurrencyLimit, pausedPlatforms });
         let effectiveLane = lane;
         const mayBorrowOtherLane = !continuationOnly
@@ -1276,7 +1282,7 @@ export async function runAtsV2ContinuousDispatcher(input: {
         if (!claim && mayBorrowOtherLane && !input.signal.aborted) {
           effectiveLane = lane === 'coverage' ? 'continuation' : 'coverage';
           claim = effectiveLane === 'coverage'
-            ? await dependencies.claimNextAtsV2Coverage(new Date(), pausedPlatforms)
+            ? await dependencies.claimNextAtsV2Coverage(new Date(), pausedPlatforms, plan.evidenceRefreshIds)
             : await dependencies.claimNextAtsV2Continuation({ listingConcurrencyLimit: plan.listingConcurrencyLimit, pausedPlatforms });
         }
         if (!claim) {
@@ -1308,8 +1314,9 @@ export async function atsV2ShadowLanePlan(now = new Date(), cohortOnly = false):
   const coverageWhere = atsCoverageEligibilityWhere(now, paused, first, cohortOnly);
   const continuationWhere = atsContinuationEligibilityWhere(now, paused);
   const day = atsRotationDayWindow(now);
-  const [coverageCount, listingEligible, drainEligible, confirmedContacts, gate] = await Promise.all([
+  const [coverageCount, refresh, listingEligible, drainEligible, confirmedContacts, gate] = await Promise.all([
     prisma.atsCompany.count({ where: coverageWhere }),
+    readEvidenceRefreshCandidates(prisma, now, paused, cohortOnly),
     prisma.atsIngestionBatch.count({ where: { AND: [continuationWhere, { acquisitionPhase: 'listing' }] } }),
     prisma.atsIngestionBatch.count({ where: { AND: [continuationWhere, { acquisitionPhase: { in: [...ATS_DRAIN_PHASES] } }] } }),
     prisma.atsEndpointDailyContactReceipt.count({ where: {
@@ -1319,12 +1326,12 @@ export async function atsV2ShadowLanePlan(now = new Date(), cohortOnly = false):
     prisma.atsAcquisitionRuntimeGate.findUnique({ where: { id: 'global' }, select: { admissionState: true, admissionResumeAt: true } }),
   ]);
   const coverageEligible = gate?.admissionState === 'open'
-    || gate?.admissionState === 'draining' && gate.admissionResumeAt && gate.admissionResumeAt <= now ? coverageCount : 0;
+    || gate?.admissionState === 'draining' && gate.admissionResumeAt && gate.admissionResumeAt <= now ? coverageCount + refresh.total : 0;
   const continuationEligible = listingEligible + drainEligible;
   return { ...planAtsV2LaneReservation({ confirmedContacts,
     elapsedDayFraction: Math.max(0, Math.min(1, (now.getTime() - day.startsAt.getTime()) / (day.endsAt.getTime() - day.startsAt.getTime()))),
     remainingDayMs: Math.max(0, day.endsAt.getTime() - now.getTime()), coverageEligible, continuationEligible,
-  }), coverageEligible, continuationEligible, listingEligible, drainEligible };
+  }), coverageEligible, evidenceRefreshIds: refresh.ids, continuationEligible, listingEligible, drainEligible };
 }
 
 export async function atsV2RuntimeLanePlan(

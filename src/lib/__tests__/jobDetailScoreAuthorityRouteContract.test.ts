@@ -145,8 +145,8 @@ test('automated JD replacement and local resolution use the same transactional a
 });
 
 test('deferred Workday recovery persists authoritative company and locations and refreshes identity', () => {
-  assert.match(batchJdSource, /if \(atsResult\?\.location\) newLocation = atsResult\.location/);
-  assert.match(batchJdSource, /if \(atsResult\?\.company\) newCompany = atsResult\.company/);
+  assert.match(batchJdSource, /newLocation \|\|= atsResult\?\.location/);
+  assert.match(batchJdSource, /newCompany \|\|= atsResult\?\.company/);
   assert.match(batchJdSource, /const resolvedLocation = newLocation \|\| job\.location/);
   assert.match(batchJdSource, /const resolvedCompany = newCompany \|\| job\.company/);
   assert.match(batchJdSource, /location: resolvedLocation/);
@@ -163,9 +163,9 @@ test('JD recovery applies the strict shared quality gate and cannot recycle the 
   assert.doesNotMatch(batchJdSource, /isValidMarkdown/);
 });
 
-test('JD recovery dismisses affirmative non-English metadata before ATS or Jina requests', () => {
+test('JD recovery checks the effective posting language before fallback details or reader requests', () => {
   const languageIndex = batchJdSource.indexOf('const language = assessJobInfoLanguage({');
-  const atsIndex = batchJdSource.indexOf('const atsResult = await scrapeAtsApi(', languageIndex);
+  const atsIndex = batchJdSource.indexOf('await scrapeAtsApi(extractionUrl)', languageIndex);
   const jinaIndex = batchJdSource.indexOf('const jinaUrl = await buildSafeJinaReaderUrl(', languageIndex);
 
   assert.ok(languageIndex >= 0, 'language gate is missing from JD recovery');
@@ -190,7 +190,7 @@ test('Glassdoor runs the local metadata gate before spending a details request',
   assert.ok(enrichmentIndex > filterIndex, 'Glassdoor details enrichment must follow the metadata filter');
   assert.match(ingestionSource, /glassdoorMetadataFilter\?\.passes !== false/);
 
-  const batchFilterIndex = batchJdSource.indexOf('if (hasAuthoritativeMetadata(job.source)) {');
+  const batchFilterIndex = batchJdSource.indexOf('if (hasAuthoritativeMetadata(job.source) || employerPosting?.location)');
   const batchDetailsIndex = batchJdSource.indexOf('markdown = await fetchGlassdoorJobDescription(job,', batchFilterIndex);
   assert.ok(batchFilterIndex >= 0, 'JD recovery authoritative metadata gate is missing');
   assert.ok(batchDetailsIndex > batchFilterIndex, 'JD recovery must filter Glassdoor metadata before details');
@@ -213,8 +213,8 @@ test('JD recovery dismisses an out-of-scope authoritative posting before spendin
   // it could never pass. The gate must now cover every authoritative source,
   // not just Glassdoor, and it must run before any fetch — that "without
   // fetching" property is the point, since the avoided cost is a paid call.
-  const gateIndex = batchJdSource.indexOf('if (hasAuthoritativeMetadata(job.source)) {');
-  const atsIndex = batchJdSource.indexOf('const atsResult = await scrapeAtsApi(', gateIndex);
+  const gateIndex = batchJdSource.indexOf('if (hasAuthoritativeMetadata(job.source) || employerPosting?.location)');
+  const atsIndex = batchJdSource.indexOf('await scrapeAtsApi(extractionUrl)', gateIndex);
   const jinaIndex = batchJdSource.indexOf('const jinaUrl = await buildSafeJinaReaderUrl(', gateIndex);
   const glassdoorFetchIndex = batchJdSource.indexOf('markdown = await fetchGlassdoorJobDescription(job,', gateIndex);
 
@@ -242,7 +242,7 @@ test('direct ATS admission applies authoritative metadata before creating a Need
   // An ATS board's own location is not a hint that JD recovery can improve.
   // The complete metadata tuple must be checked after adapter enrichment and
   // before the description-quality decision creates a Needs JD card.
-  const directGateIndex = ingestionSource.indexOf('if (!acostaPriority && preFilterResult.passes && hasAuthoritativeMetadata(source)) {');
+  const directGateIndex = ingestionSource.indexOf('hasAuthoritativeMetadata(source) || hasCanonicalLocation');
   const needsJdIndex = ingestionSource.indexOf('const needsJd = !enrichedPostingClosed', directGateIndex);
   assert.ok(directGateIndex >= 0, 'direct ATS admission metadata gate is missing');
   assert.ok(needsJdIndex > directGateIndex,

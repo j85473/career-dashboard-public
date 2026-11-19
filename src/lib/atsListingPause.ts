@@ -4,8 +4,8 @@ import { pausedAtsPlatforms } from './atsProviderRequest';
 import { effectiveProviderCircuitState } from './ingestionControl';
 
 /** A cooldown is a request hold, never a reason to withhold acquired data. */
-export async function readAtsListingPauses(now = new Date()) {
-  return prisma.providerCircuit.findMany({
+export async function readAtsListingPauses(now = new Date(), client: Pick<Prisma.TransactionClient, 'providerCircuit'> = prisma) {
+  return client.providerCircuit.findMany({
     where: { provider: { startsWith: 'ATS-' }, state: 'open', openUntil: { gt: now } },
     select: { provider: true, openUntil: true, state: true, lastError: true },
   });

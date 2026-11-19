@@ -12,6 +12,9 @@ import type { Job, Prisma, UserPreference } from './prismaClient';
 import { randomUUID } from 'node:crypto';
 import { isAdpPostingUrl, verifyJobPosting } from './jobPostingVerification';
 import { adpPreScoringDisposition } from './adpPreScoring';
+import { employerLinkReplacementFields } from './atsDirectMatch';
+import { canonicalEmployerPostingUrl, canonicalPostingDescription, readCanonicalPosting } from './canonicalPosting';
+import type { AtsScrapeResult } from './atsApi';
 import { preferredPostingDescriptionUrl } from './jobSourceProvenance';
 import { searchDuckDuckGo } from './duckDuckGoSearch';
 import {
@@ -28,7 +31,7 @@ import {
 import { urlMatchesAnyHost } from './urlHost';
 import { invalidateActiveJobScores } from './scoreInvalidation';
 import { LOCAL_SCORING_TERMINAL_ATTEMPTS } from './localScoringPolicy';
-import { filterNewCustomerSuccessRole } from './newCustomerSuccessExclusion';
+import { filterNewIntakeRole } from './newIntakeRoleExclusion';
 import { explicitLocalExclusionVerdict, localTriageVerdict, titleTriageVerdict } from './localTriage';
 import { evaluateAuthoritativeMetadata, hasAuthoritativeMetadata } from './authoritativeMetadataGate';
 import { buildAggregatorDiscardUpdate, buildClosedPostingUpdate, buildTerminalJdRecoveryUpdate, CLOSED_POSTING_REASON } from './jdRecoveryPolicy';
@@ -54,7 +57,13 @@ import {
   isRetryableIngestionTransactionError,
   withProviderTransactionRetry,
 } from './ingestionControl';
-import { verifyJSearchBeforeAim, type PreAimPostingVerification } from './preAimPostingVerification';
+import {
+  DIRECT_WORKDAY_SOURCE,
+  verifyJSearchBeforeAim,
+  verifyWorkdayBeforeAim,
+  workdayVerificationRetryWhere,
+  type PreAimPostingVerification,
+} from './preAimPostingVerification';
 
 export {
   assessJobDescriptionQuality,
@@ -90,9 +99,10 @@ async function resolveFullDescription(job: Job): Promise<ResolvedDescription> {
 
   const rapidApiKeys = getRapidApiKeys();
 
-  let resolvedCanonicalUrl = preferredPostingDescriptionUrl(job.url, job.canonicalUrl) || undefined;
+  let resolvedCanonicalUrl = job.userCanonicalUrl || preferredPostingDescriptionUrl(job.url, job.canonicalUrl) || undefined;
   let discoveredCanonicalUrl: string | undefined;
   let discoveredAts: string | undefined;
+  let employerPosting: AtsScrapeResult | null = null;
 
   const result = (text: string, needsReview: boolean, extra?: { title?: string, company?: string, location?: string }): ResolvedDescription => ({
     text,
@@ -100,21 +110,35 @@ async function resolveFullDescription(job: Job): Promise<ResolvedDescription> {
     closed: false,
     ...(discoveredCanonicalUrl ? { canonicalUrl: discoveredCanonicalUrl } : {}),
     ...(discoveredAts ? { manualAts: discoveredAts } : {}),
-    ...(extra?.title ? { discoveredTitle: extra.title } : {}),
-    ...(extra?.company ? { discoveredCompany: extra.company } : {}),
-    ...(extra?.location ? { discoveredLocation: extra.location } : {}),
+    discoveredTitle: employerPosting?.title || extra?.title,
+    discoveredCompany: employerPosting?.company || extra?.company,
+    discoveredLocation: employerPosting?.location || extra?.location,
   });
   const closedResult = (text: string): ResolvedDescription => ({
     ...result(text, false),
     closed: true,
   });
 
-  // Glassdoor's listing page is an anti-bot tracking page, while its paired
-  // RapidAPI details endpoint contains the full JD. Never send Glassdoor rows
-  // through the canonical-page or Jina fallbacks.
+  const employerUrl = canonicalEmployerPostingUrl(resolvedCanonicalUrl);
+  const readEmployerFirst = employerUrl && job.status === 'pending_af' && !automatedLifecycleIsProtected(job)
+    && job.fitScore === null && job.aimFitScore === null && job.reqFitScore === null
+    && !await prisma.jobScoreEvent.findFirst({ where: { jobId: job.id }, select: { id: true } });
+  if (readEmployerFirst) {
+    employerPosting = await readCanonicalPosting(employerUrl);
+    if (employerPosting?.postingVerificationError) {
+      discoveredAts = employerPosting.ats;
+      return result(description, true);
+    }
+    const employerText = canonicalPostingDescription(employerPosting?.text);
+    if (employerText) {
+      if (employerPosting?.ats !== 'Unknown') discoveredAts = employerPosting?.ats;
+      return isClosedJobPosting(employerText) ? closedResult(employerText) : result(employerText, false);
+    }
+  }
+
+  // Glassdoor's tracking page is an anti-bot interstitial. After the employer
+  // lookup, use the paired provider endpoint to recover any missing description.
   if (job.source === GLASSDOOR_SOURCE) {
-    // Accounted for like any other provider request. Without this the refusal
-    // was invisible and the job below was written as an unusable posting.
     const glassdoorDescription = await fetchGlassdoorJobDescription(
       job,
       jdRecoveryProviderControl(job),
@@ -185,7 +209,8 @@ async function resolveFullDescription(job: Job): Promise<ResolvedDescription> {
     if (canonicalUrl) {
       // First try the specialized ATS API scraper
       const { scrapeAtsApi } = await import('./atsApi');
-      const atsResult = await scrapeAtsApi(canonicalUrl);
+      const atsResult = readEmployerFirst && canonicalUrl === employerUrl
+        ? employerPosting : await scrapeAtsApi(canonicalUrl);
       if (atsResult?.postingVerificationError) {
         discoveredAts = atsResult.ats;
         return result(description, true);
@@ -744,12 +769,14 @@ export async function scoreJobs(
     data: { batchJobId: null },
   });
 
+  const workdayRetryWhere = workdayVerificationRetryWhere(new Date());
   const queuedJobs = await prisma.job.findMany({
     where: {
       ...(requestedIds ? { id: { in: requestedIds } } : {}),
       scoringStatus: 'queued',
       jdBatchId: null,
-      status: { in: ACTIVE_SCORING_STATUSES }
+      status: { in: ACTIVE_SCORING_STATUSES },
+      AND: [workdayRetryWhere],
     },
     take: limit,
     orderBy: { createdAt: 'asc' }
@@ -788,6 +815,7 @@ export async function scoreJobs(
         jdBatchId: null,
         batchJobId: null,
         status: { in: ACTIVE_SCORING_STATUSES },
+        AND: [workdayRetryWhere],
       },
       data: { scoringStatus: 'scoring', batchJobId: leaseId }
     });
@@ -823,11 +851,10 @@ export async function scoreJobs(
       };
       const lifecycleProtected = automatedLifecycleIsProtected(claimedJob);
 
-      // Reject new CS intake before description recovery spends any requests.
-      // This helper refuses existing Inbox work, scores, and manual selections.
-      if (await filterNewCustomerSuccessRole(claimedJob, leaseId,
-        (args) => updateLocalJobWithInvariant(args, invariantVersions))) {
-        if (onProgress) onProgress(`Locally filtered ${scoringJob.company}: customer/client success role`);
+      const writeRoleExclusion = (args: Prisma.JobUpdateManyArgs) => updateLocalJobWithInvariant(args, invariantVersions);
+      const intakeExclusion = await filterNewIntakeRole(claimedJob, leaseId, writeRoleExclusion);
+      if (intakeExclusion) {
+        if (onProgress) onProgress(intakeExclusion);
         scoredCount++;
         continue;
       }
@@ -999,6 +1026,15 @@ export async function scoreJobs(
         continue;
       }
 
+      // Recovery may have spent time fetching the posting. Re-read after any
+      // concurrent input edit before applying a verdict based on the old JD.
+      if (currentJob.description !== claimedJob.description || currentJob.title !== claimedJob.title
+        || currentJob.company !== claimedJob.company || currentJob.url !== claimedJob.url
+        || currentJob.canonicalUrl !== claimedJob.canonicalUrl || currentJob.manualAts !== claimedJob.manualAts) {
+        await releaseLocalScoringLease(job.id, leaseId);
+        continue;
+      }
+
       if (closed) {
         const updateResult = await updateLocalJobWithInvariant({
           where: claimedJobSnapshot(currentJob, leaseId),
@@ -1071,27 +1107,25 @@ export async function scoreJobs(
       });
       const newTitle = resolvedManualMetadata.title;
       const newCompany = resolvedManualMetadata.company;
-      // Apply new geography interpretation only before any score exists.
-      // Saved scores and human lifecycle decisions are never revisited here.
-      const canResolveWorkLocation = !lifecycleProtected && currentJob.fitScore === null
-        && currentJob.aimFitScore === null && currentJob.reqFitScore === null
-        && !await prisma.jobScoreEvent.findFirst({ where: { jobId: currentJob.id }, select: { id: true } });
-      const newLocation = (canResolveWorkLocation && descriptionWorkLocation(resolvedManualMetadata.location, fullDesc))
-        || resolvedManualMetadata.location;
-      // Some providers only reveal the occupation in the recovered title.
-      // Match that title while retaining the stored title in the atomic guard.
-      if (newTitle !== currentJob.title && await filterNewCustomerSuccessRole(
-        { ...currentJob, title: newTitle }, leaseId,
-        (args) => updateLocalJobWithInvariant({
-          ...args,
-          where: { ...args.where, title: currentJob.title },
-          data: { ...args.data, title: newTitle },
-        }, invariantVersions),
-      )) {
-        if (onProgress) onProgress(`Locally filtered ${newCompany}: customer/client success role`);
+      const canonicalUrl = resolved.canonicalUrl || currentJob.canonicalUrl;
+      // A complete JD can establish part-time status even when the title and
+      // other posting metadata never change during recovery.
+      const recoveredExclusion = await filterNewIntakeRole(currentJob, leaseId, writeRoleExclusion, {
+        title: newTitle, company: newCompany, url: currentJob.url, canonicalUrl, resolvedDescription: fullDesc,
+      });
+      if (recoveredExclusion) {
+        if (onProgress) onProgress(recoveredExclusion);
         scoredCount++;
         continue;
       }
+      // Apply new geography interpretation only before any score exists.
+      // Saved scores and human lifecycle decisions are never revisited here.
+      const isUnscoredAutomatedJob = !lifecycleProtected && currentJob.fitScore === null
+        && currentJob.aimFitScore === null && currentJob.reqFitScore === null
+        && !await prisma.jobScoreEvent.findFirst({ where: { jobId: currentJob.id }, select: { id: true } });
+      const newLocation = (isUnscoredAutomatedJob && !resolved.discoveredLocation
+        && descriptionWorkLocation(resolvedManualMetadata.location, fullDesc))
+        || resolvedManualMetadata.location;
       const resolvedInputChanges = [
         newTitle !== currentJob.title ? 'title' : null,
         newCompany !== currentJob.company ? 'company' : null,
@@ -1177,11 +1211,31 @@ export async function scoreJobs(
             title: newTitle,
             location: newLocation,
             url: currentJob.url,
-            canonicalUrl: resolved.canonicalUrl || currentJob.canonicalUrl,
+            canonicalUrl,
           })
         : { pass: false, reason: gateReason };
       const deterministicallyRejected = !triage.pass && !lifecycleProtected;
       const passReason = deterministicallyRejected ? `Locally triaged out: ${triage.reason}` : null;
+
+      // Check the public application page after local triage, while this job
+      // is still on its first pass through scoring.
+      const workdayVerification = !deterministicallyRejected && isUnscoredAutomatedJob
+        && currentJob.source === DIRECT_WORKDAY_SOURCE && currentJob.status === 'pending_af'
+        && !currentJob.tailoringStaged
+        ? await verifyWorkdayBeforeAim({
+            url: currentJob.userCanonicalUrl || canonicalUrl || currentJob.url,
+            title: newTitle,
+          })
+        : null;
+      const workdayDisposition = workdayVerification && workdayVerification.liveness !== 'alive'
+        ? workdayVerification.liveness === 'expired'
+          ? buildClosedPostingUpdate()
+          : { scoringStatus: 'queued', batchJobId: null }
+        : null;
+      const workdayVerificationData = workdayVerification ? {
+        verificationStatus: workdayVerification.liveness,
+        lastVerifiedAt: new Date(),
+      } : {};
 
       // JSearch copies can retain a complete, matching JD after the employer
       // closes the requisition. Once local triage has accepted the role, but
@@ -1199,18 +1253,19 @@ export async function scoreJobs(
           location: newLocation,
           description: fullDesc,
           url: currentJob.url,
-          canonicalUrl: resolved.canonicalUrl || currentJob.canonicalUrl,
+          canonicalUrl,
           source: currentJob.source,
         }, { store: prisma });
       }
       const postingClosedBeforeAim = preAimVerification?.liveness === 'expired'
         || preAimVerification?.liveness === 'unavailable';
+      const employerReplacement = !currentJob.userCanonicalUrl ? preAimVerification?.replacement : null;
 
       const updateResult = await withLocalScoringTransaction(async (tx) => {
         const result = await tx.job.updateMany({
           where: {
             ...claimedJobSnapshot(currentJob, leaseId),
-            ...(preAimVerification ? {
+            ...(preAimVerification || workdayVerification ? {
               // The network check can outlive a user edit. Only project its
               // result onto the exact unscored card that was verified.
               updatedAt: currentJob.updatedAt,
@@ -1220,8 +1275,16 @@ export async function scoreJobs(
               reqFitScore: null,
               scoreEvents: { none: {} },
             } : {}),
+            ...(workdayVerification ? {
+              source: DIRECT_WORKDAY_SOURCE,
+              status: 'pending_af',
+              tailoringStaged: false,
+              jdBatchId: null,
+              canonicalUrl: currentJob.canonicalUrl,
+              userCanonicalUrl: currentJob.userCanonicalUrl,
+            } : {}),
           },
-          data: {
+          data: workdayDisposition ? { ...workdayDisposition, ...workdayVerificationData } : {
             title: newTitle,
             company: newCompany,
             location: newLocation,
@@ -1232,14 +1295,12 @@ export async function scoreJobs(
             ...fullDescPostingFacts,
             ...(resolved.canonicalUrl ? { canonicalUrl: resolved.canonicalUrl } : {}),
             ...(resolved.manualAts ? { manualAts: resolved.manualAts } : {}),
-            ...(preAimVerification?.replacement ? {
-              url: preAimVerification.replacement.url,
-              canonicalUrl: preAimVerification.replacement.url,
-            } : {}),
+            ...(employerReplacement ? employerLinkReplacementFields({ location: newLocation }, employerReplacement) : {}),
             ...(preAimVerification ? {
               verificationStatus: preAimVerification.liveness,
               lastVerifiedAt: new Date(),
             } : {}),
+            ...workdayVerificationData,
             recommendedResume,
             scoringStatus: deterministicallyRejected || postingClosedBeforeAim ? 'skipped' : 'scored',
             batchJobId: null,
@@ -1269,18 +1330,29 @@ export async function scoreJobs(
               authority: preAimVerification.authority,
               sourceOutcome: preAimVerification.sourceLiveness,
               originalUrl: currentJob.url,
-              replacementUrl: preAimVerification.replacement?.url || null,
-              matchEvidence: preAimVerification.replacement ? {
-                via: preAimVerification.replacement.matchedVia,
-                by: preAimVerification.replacement.matchedBy || null,
-                title: preAimVerification.replacement.postingTitle,
-                location: preAimVerification.replacement.postingLocation,
+              replacementUrl: employerReplacement?.url || null,
+              matchEvidence: employerReplacement ? {
+                via: employerReplacement.matchedVia,
+                by: employerReplacement.matchedBy || null,
+                title: employerReplacement.postingTitle,
+                location: employerReplacement.postingLocation,
               } : null,
               probes: preAimVerification.probes,
             },
           } });
         }
-        if (result.count === 1 && resolvedInputChanges.length > 0) {
+        if (result.count === 1 && workdayVerification) {
+          await tx.jobPipelineEvent.create({ data: {
+            eventKey: `workday-pre-aim-check:${currentJob.id}:${randomUUID()}`,
+            eventType: 'workday_posting_verified',
+            stage: 'pre_aim_verification',
+            jobId: currentJob.id,
+            source: currentJob.source,
+            sourceId: currentJob.sourceId,
+            details: { outcome: workdayVerification.liveness, probes: workdayVerification.probes },
+          } });
+        }
+        if (result.count === 1 && !workdayDisposition && resolvedInputChanges.length > 0) {
           await invalidateActiveJobScores({
             jobId: currentJob.id,
             source: currentJob.source,
@@ -1296,6 +1368,15 @@ export async function scoreJobs(
       });
       if (updateResult.count === 0) {
         await releaseLocalScoringLease(job.id, leaseId);
+        continue;
+      }
+      if (workdayDisposition) {
+        if (workdayVerification?.liveness === 'expired') {
+          onProgress?.(`Expired Workday posting before Aim: ${currentJob.company}`);
+          scoredCount++;
+        } else {
+          onProgress?.(`Waiting to retry Workday application page: ${currentJob.company}`);
+        }
         continue;
       }
       const updated = onProgress ? await prisma.job.findUnique({ where: { id: job.id } }) : null;
