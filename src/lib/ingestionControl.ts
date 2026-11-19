@@ -41,6 +41,7 @@ export const JOB_PIPELINE_EVENT_TYPES = [
   'same_job_consolidated',
   'same_job_exception',
   'inbox_posting_verified',
+  'canonical_merge_review',
   'canonical_intake_pending',
   'canonical_intake_expired',
   'cooldown_posting_verified',

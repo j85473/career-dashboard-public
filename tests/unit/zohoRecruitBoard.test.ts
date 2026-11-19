@@ -132,8 +132,8 @@ test('the aggregator worker saves the verified Zoho link, location, and readable
   assert.equal(enrichment.location, 'Remote, United States');
   let written: unknown;
   const stamp = new Date('2026-10-08T12:00:00Z');
-  const transaction = { $queryRaw: async () => {},
-    job: { updateMany: async (args: unknown) => { written = args; return { count: 1 }; } },
+  const transaction = { $executeRaw: async () => 0, $queryRaw: async () => [],
+    job: { findFirst: async () => ({ id: 'aggregator-job' }), updateMany: async (args: unknown) => { written = args; return { count: 1 }; } },
   };
   await applyDirectMatchEnrichment('aggregator-job', stamp, enrichment, {
     ...transaction, $transaction: async (action: (tx: typeof transaction) => Promise<unknown>) => action(transaction),

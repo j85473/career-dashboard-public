@@ -43,11 +43,13 @@ import { normalizeUrl } from './jobIngestion';
 import { JOBLEADS_REPRINT_WINDOW_MS, matchJobLeadsReprints, readJobLeadsReprint,
   type JobLeadsPosting, type JobLeadsReprint } from './jobLeadsReprint';
 import { assertJobLifecycleInvariants } from './jobLifecycleInvariant';
-import { CONSOLIDATED_REASON_PREFIX, lockJobUrlEdits, urlPostingIdentity } from './jobUrlReconciliation';
+import { CONSOLIDATED_REASON_PREFIX } from './jobConsolidationReason';
+import { lockJobUrlEdits, urlPostingIdentity } from './jobUrlReconciliation';
 import { latestUserCanonicalJobUrl, userCanonicalJobUrlFields } from './userCanonicalJobUrl';
 import { conflictingLinkedInObservation } from './linkedinIdentity';
 import { isManualImportSource } from './manualImportPolicy';
 import { prisma } from './prisma';
+import { savedPostingOwnerIds, recheckPostingDisposition, type EmployerFacts } from './savedPostingOwner';
 import {
   employerFeedFamily,
   judgeSameJob,
@@ -460,7 +462,7 @@ export async function consolidateJobLeadsBeforeAim(tx: Prisma.TransactionClient,
  */
 export async function foldSameJob(
   tx: Prisma.TransactionClient,
-  input: { survivorId: string; redundantId: string; now?: Date; jobLeadsLocalPass?: JobLeadsLocalPass },
+  input: { survivorId: string; redundantId: string; now?: Date; jobLeadsLocalPass?: JobLeadsLocalPass; recoveredPosting?: { url: string; facts?: EmployerFacts; leaseId?: string } },
 ): Promise<{ survivor: Job; redundant: Job; evidence: SameJobEvidence; linkUpdated: boolean }> {
   const now = input.now || new Date();
   await lockJobUrlEdits(tx);
@@ -474,10 +476,13 @@ export async function foldSameJob(
   if (isConsolidatedReason(survivor.passReason) || isConsolidatedReason(redundant.passReason)) {
     throw new SameJobFoldSkipped('A card was already combined.');
   }
-  if (!(SAME_JOB_FOLDABLE_STATUSES as readonly string[]).includes(redundant.status)) {
+  const recovered = input.recoveredPosting;
+  if (!(SAME_JOB_FOLDABLE_STATUSES as readonly string[]).includes(redundant.status)
+    && !(recovered && redundant.status === 'needs_jd')) {
     throw new SameJobFoldSkipped(`The copy is now ${redundant.status}.`);
   }
-  if (!(SAME_JOB_CARD_STATUSES as readonly string[]).includes(survivor.status)
+  const inactiveOwner = recovered && ['archived', 'dismissed'].includes(survivor.status);
+  if ((!inactiveOwner && !(SAME_JOB_CARD_STATUSES as readonly string[]).includes(survivor.status))
     || (survivor.status === 'passed' && !passJudgesJob(survivor.passReason))) {
     throw new SameJobFoldSkipped(`The surviving card is now ${survivor.status}.`);
   }
@@ -488,10 +493,13 @@ export async function foldSameJob(
   const localPass = input.jobLeadsLocalPass;
   // This path changes the copy and its provenance only. The survivor may be
   // leased independently, and its score inputs and posting identity stay put.
+  const ownsLocalLease = !!recovered?.leaseId && recovered.leaseId.startsWith('local:')
+    && redundant.batchJobId === recovered.leaseId && redundant.scoringStatus === 'scoring'
+    && !redundant.jdBatchId && !redundant.afBatchId && !redundant.contextBatchId;
   const leased = await tx.scoringBatchItem.count({
     where: { jobId: { in: localPass ? [redundant.id] : [survivor.id, redundant.id] }, status: 'leased' },
   });
-  if (leased > 0 || (!localPass && (inFlight(survivor) || inFlight(redundant)))) {
+  if (leased > 0 || (!localPass && (inFlight(survivor) || !ownsLocalLease && inFlight(redundant)))) {
     throw new SameJobFoldSkipped('An export holds one of the cards.');
   }
   if ((await sameJobExceptionPairs(tx, [redundant.id])).has(pairKey(survivor.id, redundant.id))) {
@@ -512,7 +520,26 @@ export async function foldSameJob(
     const copy = readJobLeadsReprint(localPass.posting);
     const target = readJobLeadsReprint(survivor);
     evidence = copy && target ? matchJobLeadsReprints(copy, target) : null;
+  } else if (recovered) {
+    const owners = await savedPostingOwnerIds(tx, recovered.url, redundant.id);
+    if (owners.length !== 1 || owners[0] !== survivor.id) throw new SameJobFoldSkipped('The posting owner changed.');
+    if (redundant.userCanonicalUrl || redundant.aimFitScore !== null || redundant.reqFitScore !== null || redundant.fitScore !== null
+      || await tx.jobScoreEvent.count({ where: { jobId: redundant.id } })
+      || await tx.jobInterview.count({ where: { jobId: redundant.id } })) throw new SameJobFoldSkipped('The copy has saved work.');
+    if (inactiveOwner && !await recheckPostingDisposition(tx, survivor, recovered.facts)) {
+      throw new SameJobFoldSkipped('The saved disposition requires review.');
+    }
+    evidence = { rule: 'canonical_posting', employer: null, location: 'compatible', containment: null };
   } else {
+    // A weaker periodic match must honor a pending decision on the same pair,
+    // including when its score-based survivor preference would run in reverse.
+    const review = await tx.jobPipelineEvent.findFirst({ where: { eventType: 'canonical_merge_review', OR: [
+      { jobId: redundant.id, AND: [{ details: { path: ['ownerIds'], array_contains: [survivor.id] } },
+        { details: { path: ['sourceUrl'], equals: redundant.url || '' } }] },
+      { jobId: survivor.id, AND: [{ details: { path: ['ownerIds'], array_contains: [redundant.id] } },
+        { details: { path: ['sourceUrl'], equals: survivor.url || '' } }] },
+    ] }, select: { id: true } });
+    if (review) throw new SameJobFoldSkipped('The employer posting is awaiting merge review.');
     evidence = judgeSameJob(survivor, redundant);
   }
   if (!evidence) throw new SameJobFoldSkipped('The cards no longer match.');
@@ -527,7 +554,8 @@ export async function foldSameJob(
       status: 'dismissed',
       passReason: reason,
       postingIdentity: null,
-      ...(unscored || localPass ? { scoringStatus: 'skipped', scoreError: null } : {}),
+      ...(ownsLocalLease ? { batchJobId: null } : {}),
+      ...(unscored || localPass || ownsLocalLease ? { scoringStatus: 'skipped', scoreError: null } : {}),
       ...(localPass ? {
         title: localPass.posting.title,
         company: localPass.posting.company,
@@ -541,14 +569,14 @@ export async function foldSameJob(
   // Preserve the latest user link. Source preference applies only when the
   // user has never supplied one. The scored description stays the survivor's.
   const survivorIsReprint = !employerFeedFamily(survivor.source) && !isManualImportSource(survivor.source);
-  const userLink = localPass ? null : latestUserCanonicalJobUrl([survivor, redundant]);
+  const userLink = localPass || recovered ? null : latestUserCanonicalJobUrl([survivor, redundant]);
   const userLinkFields = userLink?.userCanonicalUrl
     ? userCanonicalJobUrlFields(userLink.userCanonicalUrl, userLink.userCanonicalUrlUpdatedAt ?? new Date()) : null;
-  const linkUpdated = !localPass && (userLinkFields
+  const linkUpdated = !localPass && !recovered && (userLinkFields
     ? userLinkFields.url !== survivor.url || userLinkFields.canonicalUrl !== survivor.canonicalUrl
     : survivorIsReprint && Boolean(employerFeedFamily(redundant.source)) && Boolean(redundant.url));
   const linkedUrl = userLinkFields?.canonicalUrl || (linkUpdated ? normalizeUrl(redundant.canonicalUrl || redundant.url!) : null);
-  const postingIdentity = localPass ? survivor.postingIdentity : linkUpdated
+  const postingIdentity = localPass || recovered ? survivor.postingIdentity : linkUpdated
     ? urlPostingIdentity(linkedUrl!) || redundant.postingIdentity || survivor.postingIdentity
     : survivor.postingIdentity || redundant.postingIdentity;
   const survivorLinks = {
@@ -602,7 +630,7 @@ export async function foldSameJob(
     source: redundant.source, sourceId: redundant.sourceId, occurredAt: now, identityParts,
     details: {
       actor: 'system', protected: true, derived: true, route: SAME_JOB_ROUTE,
-      priorStatus: redundant.status, nextStatus: 'dismissed', priorScoringStatus: localPass ? 'queued' : redundant.scoringStatus,
+      priorStatus: redundant.status, nextStatus: 'dismissed', priorScoringStatus: localPass || ownsLocalLease ? 'queued' : redundant.scoringStatus,
       priorPassReason: redundant.passReason,
       duplicateOfJobId: survivor.id, reason, evidence,
       previousPostingIdentity: redundant.postingIdentity,
@@ -768,7 +796,8 @@ export async function separateSameJob(
   const survivorId = typeof foldDetails.duplicateOfJobId === 'string' ? foldDetails.duplicateOfJobId : null;
   const priorStatus = typeof foldDetails.priorStatus === 'string' ? foldDetails.priorStatus : null;
   if (copy.status !== 'dismissed' || !survivorId || copy.passReason !== `${CONSOLIDATED_REASON_PREFIX}${survivorId}`
-    || !priorStatus || !(SAME_JOB_FOLDABLE_STATUSES as readonly string[]).includes(priorStatus)) {
+    || !priorStatus || (!(SAME_JOB_FOLDABLE_STATUSES as readonly string[]).includes(priorStatus)
+      && !(priorStatus === 'needs_jd' && (foldDetails.evidence as SameJobEvidence | undefined)?.rule === 'canonical_posting'))) {
     throw new SameJobSeparateRefused('This card was not combined automatically, so there is nothing to separate.');
   }
   await tx.$queryRaw`SELECT id FROM "Job" WHERE id = ${survivorId} FOR UPDATE`;

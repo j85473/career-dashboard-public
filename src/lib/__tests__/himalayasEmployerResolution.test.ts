@@ -29,8 +29,8 @@ test('ambiguity and geography disagreement leave existing cards unresolved', () 
 test('an applied card receives the employer link and location while preserving decisions and scoring', async () => {
   const writes: unknown[] = [];
   let count = 1;
-  const transaction = { $queryRaw: async () => {},
-    job: { updateMany: async (query: unknown) => { writes.push(query); return { count }; } } };
+  const transaction = { $executeRaw: async () => 0, $queryRaw: async () => [],
+    job: { findFirst: async () => count ? { id: job.id } : null, updateMany: async (query: unknown) => { writes.push(query); return { count }; } } };
   const store = {
     ...transaction,
     $transaction: async (action: (tx: typeof transaction) => Promise<unknown>) => action(transaction),

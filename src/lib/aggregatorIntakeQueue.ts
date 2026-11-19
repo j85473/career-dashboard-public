@@ -10,7 +10,7 @@ export const aggregatorIntakeRetryAt = (attempts: number, now: Date): Date =>
 export async function retainAggregatorCandidate(input: {
   job: IncomingJob; source: string; sourceId: string; title: string; company: string; url: string;
   reason: string; expired: boolean; context: Record<string, unknown>;
-}, store = prisma, now = new Date()): Promise<void> {
+}, store: Pick<typeof prisma, 'aggregatorIntakeCandidate'> = prisma, now = new Date()): Promise<void> {
   const payload = input.expired ? Prisma.DbNull : JSON.parse(JSON.stringify(input.job));
   const data = { title: input.title, company: input.company, url: input.url, payload,
     context: JSON.parse(JSON.stringify(input.context)), reason: input.reason,

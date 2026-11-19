@@ -77,7 +77,7 @@ export type SameJobSubject = {
 };
 
 export type SameJobEvidence = {
-  rule: 'description' | 'identity' | 'jobleads_responsibilities';
+  rule: 'description' | 'identity' | 'jobleads_responsibilities' | 'canonical_posting';
   employer: EmployerRelation | null;
   location: Exclude<LocationRelation, 'conflict'>;
   /** Share of the shorter description found in the other, when both are usable. */

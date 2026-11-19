@@ -1,3 +1,6 @@
+import { CONSOLIDATED_REASON_PREFIX } from './jobConsolidationReason';
+import { claimPostingBeforeInsert } from './postingSighting';
+import { savedPostingOwnerIds, readArchivedOwnerFacts, recheckPostingDisposition, sameEmployerPosting, type EmployerFacts } from './savedPostingOwner';
 import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
 import { fetchAtsJson } from './atsJsonTransport';
 import { readLinkedInEasyApply } from './atsDisplay';
@@ -96,7 +99,7 @@ import {
 } from './appliedDuplicateStore';
 import {
   boardIdentityFromUrl,
-  isAggregatorSource,
+  isAggregatorSource, isDirectPostingUrl, isSpecificPostingUrl,
   titleLocationSuffix,
   resolveDirectAtsPosting,
   selectFullerAtsDescription,
@@ -1207,6 +1210,7 @@ export function isLikelyDuplicatePosting(
 const duplicateIdentitySelect = {
   id: true,
   createdAt: true,
+  status: true, updatedAt: true,
   title: true,
   company: true,
   location: true,
@@ -1354,11 +1358,36 @@ export async function findAdpPostingCandidates(value: string, store: Pick<Prisma
   return rows.filter(row => matchesAdpPosting(row, value));
 }
 
+async function recheckSavedSighting(tx: Prisma.TransactionClient, candidate: { id: string; updatedAt: Date },
+  url: string, facts?: EmployerFacts) {
+  // A link edit or consolidation between candidate selection and provenance
+  // recording must go back through intake with a fresh owner decision.
+  await tx.$queryRaw`SELECT id FROM "Job" WHERE id = ${candidate.id} FOR UPDATE`;
+  const job = await tx.job.findUnique({ where: { id: candidate.id } });
+  if (!job || +job.updatedAt !== +candidate.updatedAt || job.passReason?.startsWith(CONSOLIDATED_REASON_PREFIX)) return false;
+  if (sameEmployerPosting(job.userCanonicalUrl || job.canonicalUrl || job.url, url)) await recheckPostingDisposition(tx, job, facts);
+  return true;
+}
+
+async function recheckObservedEmployerSighting(observation: { jobId: string; job: { status: string; updatedAt: Date } },
+  source: string, facts: EmployerFacts) {
+  if (/^ATS-/i.test(source) && ['archived', 'dismissed'].includes(observation.job.status)) {
+    await withIngestionTransaction(tx => recheckSavedSighting(tx, { id: observation.jobId,
+      updatedAt: observation.job.updatedAt }, facts.url, facts));
+  }
+}
+
 export async function findLikelyDuplicateJob(input: DuplicateJobIdentity) {
   const title = input.title || '';
   const company = input.company || '';
   const location = input.location || '';
   const canonicalUrl = normalizeUrl(input.canonicalUrl || input.url || '');
+  const official = isDirectPostingUrl(canonicalUrl) || /^ATS-/i.test(input.source || '') && isSpecificPostingUrl(canonicalUrl);
+  if (official || canonicalEmployerPostingUrl(canonicalUrl)) {
+    const owners = await savedPostingOwnerIds(prisma, canonicalUrl);
+    if (owners.length > 1) return null;
+    if (owners.length === 1) return prisma.job.findUnique({ where: { id: owners[0] }, select: duplicateIdentitySelect });
+  }
   const postingIdentity = generatePostingIdentity({
     source: input.source,
     sourceId: input.sourceId,
@@ -1423,10 +1452,24 @@ export async function findLikelyDuplicateJob(input: DuplicateJobIdentity) {
   ]);
   // Verified legacy ADP URLs remain discoverable even when newer fingerprint
   // hints fill the bounded candidate list with unrelated requisitions.
-  const ordinaryMatch = [...adpMatches, ...candidates].find((candidate) => isLikelyDuplicatePosting(candidate, input));
+  // A publisher and an employer with the same text may represent several
+  // requisitions. The complete catalogue / transactional sighting check owns
+  // that decision; the bounded fuzzy list cannot establish uniqueness.
+  const eligible = (candidate: DuplicateJobIdentity) => {
+    const other = candidate.canonicalUrl || candidate.url;
+    const employerCard = /^ATS-/i.test(candidate.source || '') || isDirectPostingUrl(other);
+    if (official && employerCard) {
+      if (sameEmployerPosting(other, canonicalUrl)) return true;
+      if (!input.sourceId || input.source !== candidate.source || input.sourceId !== candidate.sourceId) return false;
+      const incomingBoard = boardIdentityFromUrl(canonicalUrl);
+      const savedBoard = boardIdentityFromUrl(other);
+      return !!incomingBoard && incomingBoard.platform === savedBoard?.platform && incomingBoard.slug === savedBoard.slug;
+    }
+    return official === employerCard || !isAggregatorSource(input.source) && !/^ATS-/i.test(input.source || '');
+  };
+  const ordinaryMatch = [...adpMatches, ...postingIdentityMatches, ...canonicalUrlMatches, ...candidates]
+    .find(candidate => eligible(candidate) && isLikelyDuplicatePosting(candidate, input));
   if (ordinaryMatch) return ordinaryMatch;
-  const reprintMatch = await findDirectAtsReprint(input);
-  if (reprintMatch) return reprintMatch;
 
   // Syndicators sometimes replace the real employer with their own name. Only
   // collapse those records when a substantial normalized description is exact.
@@ -1455,7 +1498,7 @@ export async function findLikelyDuplicateJob(input: DuplicateJobIdentity) {
       take: 100,
       select: duplicateIdentitySelect,
     });
-    const syndicatedMatch = syndicatedCandidates.find((candidate) => isConservativeSyndicatedDuplicate(candidate, input));
+    const syndicatedMatch = syndicatedCandidates.find((candidate) => eligible(candidate) && isConservativeSyndicatedDuplicate(candidate, input));
     if (syndicatedMatch) return syndicatedMatch;
   }
   const appliedMatch = await findAppliedDuplicateEvidence({
@@ -1464,7 +1507,10 @@ export async function findLikelyDuplicateJob(input: DuplicateJobIdentity) {
     status: 'pending_af',
     location,
   });
-  if (appliedMatch) return appliedMatch;
+  if (appliedMatch) {
+    const card = await prisma.job.findUnique({ where: { id: appliedMatch.id }, select: duplicateIdentitySelect });
+    if (card && eligible(card)) return card;
+  }
   return null;
 }
 
@@ -1706,7 +1752,7 @@ async function readIngestionObservation(source: string, sourceId: string, incomi
     : source.toLowerCase() === 'ats-dayforce' ? resolveDayforceObservation : resolveLinkedInObservation;
   return resolve({ sourceId, incomingUrl, find: (key) => prisma.jobSourceObservation.findUnique({
     where: { source_sourceId: { source, sourceId: key } },
-    include: { job: { select: { source: true, status: true, url: true, canonicalUrl: true, userCanonicalUrl: true, postedCompensation: true } } },
+    include: { job: { select: { source: true, status: true, updatedAt: true, url: true, canonicalUrl: true, userCanonicalUrl: true, postedCompensation: true } } },
   }) });
 }
 
@@ -2313,6 +2359,7 @@ export async function ingestExternalJob(
 
   const observation = resolvedObservation.observation;
   if (observation) {
+    await recheckObservedEmployerSighting(observation, input.source, { title, company, description, location, url });
     await refreshLinkedInApplicationMethod(observation.jobId, input.source, input.linkedinEasyApply);
     if (['inbox', 'pending_af', 'applied', 'interviewing'].includes(observation.job.status)
       && await consolidateStoredAtsReprint(observation.jobId)) return 'duplicate';
@@ -2387,6 +2434,11 @@ export async function ingestExternalJob(
   const postingIdentity = generatePostingIdentity({ source: input.source, sourceId, canonicalUrl, url });
   const identityFingerprint = generateV4Fingerprint(title, company, location);
 
+  const verifiedFacts: EmployerFacts | undefined = /^ATS-/i.test(input.source)
+    ? { title, company, location: workdayDetail?.location || input.location || null, description, url }
+    : employerPosting?.title && employerPosting.company && employerPosting.location && employerDescription
+      ? { title: employerPosting.title, company: employerPosting.company, location: employerPosting.location, description: employerDescription, url }
+      : undefined;
   const existing = await findLikelyDuplicateJob({
     title,
     company,
@@ -2398,7 +2450,8 @@ export async function ingestExternalJob(
     sourceId,
   });
   if (existing) {
-    await withIngestionTransaction(async (tx) => {
+    const recorded = await withIngestionTransaction(async (tx) => {
+      if (!await recheckSavedSighting(tx, existing, url, verifiedFacts)) return false;
       await refreshLinkedInApplicationMethod(existing.id, input.source, input.linkedinEasyApply, tx);
       await preferIncomingDirectAtsSource(tx, existing.id, {
         title, company, description, location, source: input.source, sourceId, url, canonicalUrl,
@@ -2420,8 +2473,9 @@ export async function ingestExternalJob(
         details: { reason: 'stable_identity' },
         identityParts: [input.windowEnd?.toISOString() || 'external'],
       }, tx);
+      return true;
     });
-    return 'duplicate';
+    if (recorded) return 'duplicate';
   }
 
   const employer = await resolveEmployerForNewJob({ company, url, canonicalUrl, source: input.source });
@@ -2454,7 +2508,11 @@ export async function ingestExternalJob(
   const priorityLifecycle = acostaPriorityInitialLifecycle({ title, company, employer, url, canonicalUrl }, isClosedJobPosting(description), Boolean(appliedRepeat));
   const postingFacts = derivePostingFacts(description);
   try {
-    const created = await withIngestionTransaction(async (tx) => {
+    return await withIngestionTransaction(async (tx) => {
+      const claimed = await claimPostingBeforeInsert(tx, { title, company, location, description, source: input.source, sourceId, url, canonicalUrl },
+        { source: input.source, sourceId, url: observationUrl, ...attribution },
+        { job: { ...input, sourceId }, context: { ...attribution, route: 'external' } }, verifiedFacts);
+      if (claimed) return claimed;
       const job = await tx.job.create({
         data: {
         title,
@@ -2519,10 +2577,8 @@ export async function ingestExternalJob(
           identityParts: [input.windowEnd?.toISOString() || 'external', 'ingestion'],
         }, tx);
       }
-      return job;
+      return filter.passes ? 'inserted' : 'filtered';
     });
-    void created;
-    return filter.passes ? 'inserted' : 'filtered';
   } catch (error) {
     if (hasPrismaCode(error, 'P2002')) return 'duplicate';
     throw error;
@@ -3452,6 +3508,7 @@ export async function ingestJobs(
     let location = typeof jobData.location === 'string' && jobData.location.trim()
       ? jobData.location.trim()
       : 'Unknown Location';
+    const suppliedLocation = location;
     const rawUrl = typeof jobData.url === 'string' ? jobData.url : '';
     const source = typeof jobData.source === 'string' ? jobData.source : 'Unknown';
     let structuredCompensation = typeof jobData.postedCompensationOverride === 'string' ? jobData.postedCompensationOverride : null;
@@ -3512,6 +3569,7 @@ export async function ingestJobs(
       }
     }
     if (obs) {
+      await recheckObservedEmployerSighting(obs, source, { title, company, description, location: suppliedLocation, url: rawUrl });
       const isExactSmartRecruitersCard = source === 'ATS-smartrecruiters'
         && sameSmartRecruitersPosting(obs.url, rawUrl)
         && sameSmartRecruitersPosting(obs.job.userCanonicalUrl || obs.job.canonicalUrl || obs.job.url, rawUrl);
@@ -3696,9 +3754,12 @@ export async function ingestJobs(
     });
 
     if (existingJob) {
-      // Record observation to track duplicate source
+      const facts = /^ATS-/i.test(source)
+        ? { title, company, location: suppliedLocation, description, url: canonicalUrl }
+        : ['archived', 'dismissed'].includes(existingJob.status) ? await readArchivedOwnerFacts(prisma, canonicalUrl) : undefined;
       try {
-        await withIngestionTransaction(async (tx) => {
+        const recorded = await withIngestionTransaction(async (tx) => {
+          if (!await recheckSavedSighting(tx, existingJob, canonicalUrl, facts)) return false;
           await refreshLinkedInApplicationMethod(existingJob.id, source, jobData.linkedinEasyApply, tx);
           await preferIncomingDirectAtsSource(tx, existingJob.id, {
             title, company, description, location, source, sourceId: sourceId.toString(), url: rawUrl, canonicalUrl,
@@ -3724,12 +3785,14 @@ export async function ingestJobs(
             details: { reason: 'stable_identity' },
             identityParts: [runIdentity],
           }, tx);
+          return true;
         });
+        if (recorded) { stats.duplicates++; return 'duplicate'; }
       } catch (error: unknown) {
         if (!hasPrismaCode(error, 'P2002')) throw error;
+        stats.duplicates++;
+        return 'duplicate';
       }
-      stats.duplicates++;
-      return 'duplicate';
     }
 
     let finalDescription = description || "";
@@ -3740,6 +3803,7 @@ export async function ingestJobs(
     let finalUrl = rawUrl;
     let directAtsResolved = false;
     let hasCanonicalLocation = false;
+    let verifiedFacts: EmployerFacts | undefined;
     let manualAts: string | undefined = undefined;
 
     // This is intentionally language-only: the title and any provider snippet
@@ -3878,6 +3942,9 @@ export async function ingestJobs(
             hasCanonicalLocation ||= Boolean(employerUrl);
          }
          
+         if (employerUrl && atsResult.title && atsResult.company && atsResult.location && employerText) {
+           verifiedFacts = { title: atsResult.title, company: atsResult.company, location: atsResult.location, description: employerText, url: employerUrl };
+         }
          if (atsResult.atsSlug && atsResult.platform) {
             try {
               const discoveredSlug = atsResult.atsSlug;
@@ -3946,6 +4013,12 @@ export async function ingestJobs(
       url: rawUrl,
     });
     const enrichedPostingClosed = isClosedJobPosting(finalDescription);
+    if (/^ATS-/i.test(source)) verifiedFacts = { title, company, location: suppliedLocation, description: finalDescription, url: finalCanonicalUrl };
+    const claimSighting = (tx: Prisma.TransactionClient) => claimPostingBeforeInsert(tx, {
+      title, company, location, description: finalDescription, source, sourceId: normalizedSourceId,
+      url: finalUrl, canonicalUrl: finalCanonicalUrl,
+    }, { source, sourceId: normalizedSourceId, url: rawUrl, ...attribution },
+    { job: { ...jobData, sourceId: normalizedSourceId }, context: { ...attribution, route: 'collector' } }, verifiedFacts);
 
     // ATS/API enrichment can correct both title and company. Re-run dedupe with
     // those final values rather than saving the stale pre-enrichment fingerprint.
@@ -3960,7 +4033,8 @@ export async function ingestJobs(
       sourceId: sourceId.toString(),
     });
     if (enrichedDuplicate) {
-      await withIngestionTransaction(async (tx) => {
+      const recorded = await withIngestionTransaction(async (tx) => {
+        if (!await recheckSavedSighting(tx, enrichedDuplicate, finalCanonicalUrl, verifiedFacts)) return false;
         await refreshLinkedInApplicationMethod(enrichedDuplicate.id, source, jobData.linkedinEasyApply, tx);
         await preferIncomingDirectAtsSource(tx, enrichedDuplicate.id, {
           title, company, description: finalDescription, location, source,
@@ -3989,9 +4063,9 @@ export async function ingestJobs(
           details: { reason: 'enriched_stable_identity' },
           identityParts: [runIdentity],
         }, tx);
+        return true;
       });
-      stats.duplicates++;
-      return 'duplicate';
+      if (recorded) { stats.duplicates++; return 'duplicate'; }
     }
 
     const employer = await resolveEmployerForNewJob({ company, url: finalUrl, canonicalUrl: finalCanonicalUrl, source });
@@ -4041,7 +4115,9 @@ export async function ingestJobs(
     if (!lifecycleProtectedSource && !enrichedPostingClosed && !preFilterResult.passes) {
       // Save as archived so we don't process it, but we keep the observation
       try {
-        await withIngestionTransaction(async (tx) => {
+        const outcome = await withIngestionTransaction(async (tx) => {
+          const claimed = await claimSighting(tx);
+          if (claimed) return claimed;
           const created = await tx.job.create({
             data: {
             title,
@@ -4089,7 +4165,9 @@ export async function ingestJobs(
             },
             identityParts: [runIdentity],
           }, tx);
+          return 'filtered';
         });
+        if (outcome === 'duplicate') { stats.duplicates++; return 'duplicate'; }
         stats.filtered++;
       } catch (error: unknown) {
         if (!hasPrismaCode(error, 'P2002')) throw error;
@@ -4133,7 +4211,9 @@ export async function ingestJobs(
       ? acostaPriorityInitialLifecycle({ title, company, employer, url: finalUrl, canonicalUrl: finalCanonicalUrl }, enrichedPostingClosed, Boolean(appliedRepeat))
       : null;
     try {
-      const created = await withIngestionTransaction(async (tx) => {
+      const outcome = await withIngestionTransaction(async (tx) => {
+        const claimed = await claimSighting(tx);
+        if (claimed) return claimed;
         const job = await tx.job.create({
           data: {
           title,
@@ -4218,9 +4298,10 @@ export async function ingestJobs(
             identityParts: [runIdentity, 'ingestion'],
           }, tx);
         }
-        return job;
+        return 'inserted';
       });
-      void created;
+      if (outcome === 'duplicate') { stats.duplicates++; return 'duplicate'; }
+      if (outcome === 'filtered') { stats.filtered++; return 'skipped'; }
       newJobsCount++;
       stats.inserted++;
       return 'inserted';

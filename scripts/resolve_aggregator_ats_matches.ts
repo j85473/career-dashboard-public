@@ -200,12 +200,6 @@ async function main(): Promise<void> {
 
       const catalogue = await findStoredAtsPostings(group[0].company, prisma, group, { linksOnly });
       if (catalogue.boards.length) boardsKnown += 1;
-      if (storedOnly && !catalogue.boards.length && catalogue.postings.length === 0) {
-        for (const job of group) attempts.push({ jobId: job.id, company: job.company, source: job.source,
-          outcome: 'no_stored_match_or_known_board' });
-        continue;
-      }
-
       for (const job of group) {
         const attempt = { jobId: job.id, company: job.company, source: job.source, outcome: 'lookup_inconclusive',
           fromUrl: job.url } as (typeof attempts)[number];
@@ -214,7 +208,7 @@ async function main(): Promise<void> {
           store: prisma, allowLivePing: !storedOnly, timeoutMs: EMPLOYER_CATALOGUE_TIMEOUT_MS, liveCache,
           onOutcome: outcome => { attempt.outcome = outcome; },
         });
-        if (!match && !storedOnly) {
+        if (!match && !storedOnly && attempt.outcome !== 'cross_employer_unresolved') {
           attempt.catalogueOutcome = attempt.outcome;
           const recovery = await recoverAggregatorSource({ ...job,
             company: resolveEmployer({ company: job.company }, index) }, { cache: sourceCache, competingPostings: catalogue.postings });

@@ -58,6 +58,7 @@ import { postingMetadataValue } from './postingMetadata';
 import { reserveProviderBudgetForSource } from './ingestionControl';
 import { zohoRecruitBoardSlugFromUrl, zohoRecruitBoardRequest, parseZohoRecruitListing } from './zohoRecruitBoard';
 import { EMPLOYER_CATALOGUE_TIMEOUT_MS, fetchEmployerBoardPostings, supportsEmployerBoardLookup } from './employerBoardPostings';
+import { canonicalEmployerPostingUrl } from './canonicalPosting';
 import { adpPostingsConflict } from './adpPostingIdentity';
 import { workdayAliasCandidates } from './workdayDirectMatch';
 
@@ -85,6 +86,8 @@ export type StoredAtsCatalogue = {
   verificationRequiredUrls?: string[];
   /** Known but excluded boards cannot authorize admitting an unverified job. */
   unavailableBoards?: BoardIdentity[];
+  /** A withheld rival or an incomplete read precludes cross-employer inference. */
+  incompleteEvidence?: boolean;
 };
 
 export type DirectAtsMatch = {
@@ -622,13 +625,13 @@ export type DirectMatchDeps = {
   /** A bulk pass shares each board/title request, including failures. */
   liveCache?: Map<string, Promise<BoardPosting[] | null>>;
   onOutcome?: (outcome: 'matched_stored' | 'matched_live' | 'no_verified_board'
-    | 'no_unique_stored_match' | 'stored_match_requires_live_confirmation' | 'live_unsupported' | 'live_unavailable' | 'no_unique_live_match') => void;
+    | 'no_unique_stored_match' | 'stored_match_requires_live_confirmation' | 'live_unsupported' | 'live_unavailable' | 'no_unique_live_match' | 'cross_employer_unresolved') => void;
   /** Only a complete successful live read can establish absence at intake. */
   onLiveCatalogue?: (evidence: { boards: BoardIdentity[]; postings: BoardPosting[] }) => void;
 };
 
 type DirectMatchStore = Pick<Prisma.TransactionClient, 'job'>
-  & Partial<Pick<Prisma.TransactionClient, 'atsCompany' | 'companyNameRule' | 'employerAtsBoard'>>;
+  & Partial<Pick<Prisma.TransactionClient, 'atsCompany' | 'companyNameRule' | 'employerAtsBoard' | '$queryRaw'>>;
 
 const ruleContexts = new WeakMap<DirectMatchStore, { expiresAt: number; rules: EmployerRule[];
   index: ReturnType<typeof buildEmployerRuleIndex> }>();
@@ -715,7 +718,7 @@ export async function findStoredAtsPostings(
     const page = await store.job.findMany({
       where: { OR: companyCandidates, ...(afterId ? { id: { gt: afterId } } : {}) },
       select: { id: true, title: true, company: true, employer: true, source: true,
-        url: true, canonicalUrl: true, location: true, description: needsDescriptions,
+        url: true, canonicalUrl: true, userCanonicalUrl: true, location: true, description: needsDescriptions,
         observations: { where: { source: { startsWith: 'ATS-' } }, select: { source: true, url: true } } },
       // A key boundary prevents OFFSET from rescanning every earlier row for
       // each page of a large employer and remains stable when rows disappear.
@@ -735,7 +738,8 @@ export async function findStoredAtsPostings(
         .filter(url => !adpPostingsConflict(row.canonicalUrl || row.url, url));
       const directSource = /^ATS-/i.test(row.source || '');
       const recognized = [row.canonicalUrl, row.url].filter(isDirectPostingUrl) as string[];
-      const urls = [...new Set([...recognized, ...observedUrls,
+      const pinned = canonicalEmployerPostingUrl(row.userCanonicalUrl);
+      const urls = row.userCanonicalUrl ? (pinned ? [pinned] : []) : [...new Set([...recognized, ...observedUrls,
         ...(directSource && recognized.length === 0 ? [row.canonicalUrl, row.url].filter(isSpecificPostingUrl) : []),
       ])];
       // One retained card can carry several ATS observations. Do not let the
@@ -816,6 +820,8 @@ export async function findStoredAtsPostings(
   return { postings, board: activeBoards.length === 1 ? activeBoards[0] : null, boards: activeBoards,
     ...([...boards.entries()].some(([key]) => !enabled.has(key))
       ? { unavailableBoards: [...boards.entries()].filter(([key]) => !enabled.has(key)).map(([, value]) => value) } : {}),
+    ...(!complete || candidates.some(row => row.board && withheld.has(`${row.board.platform}:${row.board.slug}`))
+      ? { incompleteEvidence: true } : {}),
     ...(verificationRequiredUrls.length ? { verificationRequiredUrls } : {}) };
 }
 
@@ -921,6 +927,37 @@ export async function resolveDirectAtsPosting(
 
 /** Ingestion and scheduled repair share the same complete-catalogue decision. */
 export async function resolveDirectAtsPostingFromCatalogue(
+  job: DirectMatchJob,
+  catalogue: StoredAtsCatalogue,
+  deps: DirectMatchDeps,
+): Promise<DirectAtsMatch | null> {
+  let outcome: Parameters<NonNullable<DirectMatchDeps['onOutcome']>>[0] | undefined;
+  let live: BoardPosting[] = [];
+  const named = await resolveNamedEmployerPosting(job, catalogue, { ...deps,
+    onOutcome: value => { outcome = value; },
+    onLiveCatalogue: result => { live = result.postings; deps.onLiveCatalogue?.(result); },
+  });
+  if (named?.matchedBy === 'description') {
+    const { competingReprint } = await import('./crossEmployerPosting');
+    if (competingReprint(job, [...catalogue.postings, ...live], named.url)) {
+      deps.onOutcome?.('cross_employer_unresolved');
+      return null;
+    }
+  }
+  if (!named && !catalogue.incompleteEvidence && outcome
+    && ['no_verified_board', 'no_unique_live_match', 'no_unique_stored_match'].includes(outcome)) {
+    const { findCrossEmployerPosting } = await import('./crossEmployerPosting');
+    const cross = await findCrossEmployerPosting(job, deps.store, [...catalogue.postings, ...live]);
+    if (cross) {
+      deps.onOutcome?.(cross.kind === 'matched' ? 'matched_stored' : 'cross_employer_unresolved');
+      return cross.kind === 'matched' ? cross.match : null;
+    }
+  }
+  if (outcome) deps.onOutcome?.(outcome);
+  return named;
+}
+
+async function resolveNamedEmployerPosting(
   job: DirectMatchJob,
   { postings: stored, board, boards, verificationRequiredUrls = [] }: StoredAtsCatalogue,
   deps: DirectMatchDeps,
@@ -1117,14 +1154,14 @@ export async function applyDirectMatchEnrichment(
   store: Pick<PrismaClient, 'job' | '$transaction'>,
   additionalWhere: Prisma.JobWhereInput = {},
 ): Promise<boolean> {
-  const persist = (target: Pick<Prisma.TransactionClient, 'job'>) => target.job.updateMany({
-    where: { ...additionalWhere, id: jobId, updatedAt: expectedUpdatedAt, userCanonicalUrl: null,
-      ...(enrichment.location ? unleasedEmployerLocationWhere : {}) },
-    data: enrichment,
-  });
-  const result = enrichment.location ? await store.$transaction(async tx => {
-    await lockJobForEmployerLocationRepair(tx, jobId);
-    return persist(tx);
-  }) : await persist(store);
-  return result.count === 1;
+  const where = { ...additionalWhere, id: jobId, updatedAt: expectedUpdatedAt, userCanonicalUrl: null,
+    ...(enrichment.location ? unleasedEmployerLocationWhere : {}) };
+  const { reconcileRecoveredPosting } = await import('./canonicalMergeReview');
+  const { readArchivedOwnerFacts } = await import('./savedPostingOwner');
+  const facts = await readArchivedOwnerFacts(store, enrichment.url);
+  return store.$transaction(async tx => {
+    const outcome = await reconcileRecoveredPosting(tx, jobId, enrichment.url, expectedUpdatedAt, { where, facts });
+    if (outcome !== 'unowned') return outcome === 'combined';
+    return (await tx.job.updateMany({ where, data: enrichment })).count === 1;
+  }, { timeout: 15_000 });
 }

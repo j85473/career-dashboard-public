@@ -1,9 +1,11 @@
+import { readArchivedOwnerFacts } from './savedPostingOwner';
+import { reconcileRecoveredPosting } from './canonicalMergeReview';
 import { prisma } from './prisma';
 import { safeExternalFetch } from './safeExternalFetch';
 import type { Prisma, PrismaClient } from './prismaClient';
 import { nonManualImportSourceWhere } from './manualImportPolicy';
 import { randomUUID } from 'node:crypto';
-import { employerLinkReplacementFields, isAggregatorSource, lockJobForEmployerLocationRepair, resolveDirectAtsPosting,
+import { employerLinkReplacementFields, isAggregatorSource, resolveDirectAtsPosting,
   unleasedEmployerLocationWhere, type DirectAtsMatch } from './atsDirectMatch';
 import { verifyJobPosting, readRenderedPosting, isAdpPostingUrl, type JobPostingLiveness } from './jobPostingVerification';
 import { ADP_APPLICATION_UNAVAILABLE_EXPIRED_REASON } from './adpPreScoring';
@@ -146,6 +148,8 @@ export async function verifyInboxJobsAlive(
   let unavailableCount = 0;
   let closedWarningCount = 0;
   let repairedCount = 0;
+  let combinedCount = 0;
+  let heldCount = 0;
   let inconclusiveCount = 0;
   const liveCache = new Map();
 
@@ -201,6 +205,8 @@ export async function verifyInboxJobsAlive(
       updateData.passReason = result.liveness === 'unavailable'
         ? ADP_APPLICATION_UNAVAILABLE_EXPIRED_REASON : 'Expired (URL dead)';
     }
+    let recovery: Awaited<ReturnType<typeof reconcileRecoveredPosting>> | undefined;
+    const facts = replacement && client.$transaction ? await readArchivedOwnerFacts(client, replacement.url) : undefined;
     const persist = async (store: Pick<Prisma.TransactionClient, 'job'>
       & Partial<Pick<Prisma.TransactionClient, 'jobPipelineEvent'>>) => {
       const updated = await store.job.updateMany({
@@ -219,7 +225,7 @@ export async function verifyInboxJobsAlive(
         eventType: 'inbox_posting_verified', stage: 'inbox_verification', jobId: job.id,
         source: job.source, sourceId: job.sourceId, occurredAt: checkedAt,
         details: { outcome: result.liveness, sourceOutcome: sourceLiveness, originalUrl: job.url,
-          replacementUrl: replacement?.url || null,
+          replacementUrl: updateData.url ? replacement?.url : null, ...(recovery === 'held' ? { awaitingMerge: true } : {}),
           matchEvidence: replacement ? { via: replacement.matchedVia, by: replacement.matchedBy || null,
             title: replacement.postingTitle, location: replacement.postingLocation } : null,
           probes: result.probes },
@@ -229,11 +235,24 @@ export async function verifyInboxJobsAlive(
     // The projection and its evidence commit together. User/lifecycle changes
     // during network requests defeat both the write and the history event.
     const changed = client.$transaction ? await client.$transaction(async tx => {
-      if (replacement && updateData.location) await lockJobForEmployerLocationRepair(tx, job.id);
+      if (replacement) {
+        recovery = await reconcileRecoveredPosting(tx, job.id, replacement.url, job.updatedAt, { where: unchangedInboxJob, facts });
+        if (recovery === 'combined') return 1;
+        if (recovery === 'stale') return 0;
+        if (recovery === 'held') {
+          // Advance the daily verification clock while keeping the source URL
+          // on the card that now links to merge review.
+          delete updateData.url;
+          delete updateData.canonicalUrl;
+          delete updateData.location;
+        }
+      }
       return persist(tx);
     }) : await persist(client);
     if (changed) {
-      if (replacement) repairedCount++;
+      if (recovery === 'combined') combinedCount++;
+      else if (recovery === 'held') heldCount++;
+      else if (replacement) repairedCount++;
       else if (updateData.status === 'expired') expiredCount++;
       else if (result.liveness === 'expired') closedWarningCount++;
       else if (result.liveness === 'unavailable') unavailableCount++;
@@ -244,5 +263,5 @@ export async function verifyInboxJobsAlive(
     if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
   }
 
-  onProgress?.(`Checked ${inboxJobs.length} postings: ${expiredCount} expired, ${closedWarningCount} closed-posting warnings, ${unavailableCount} application pages unavailable, ${repairedCount} employer links repaired, ${inconclusiveCount} inconclusive.`);
+  onProgress?.(`Checked ${inboxJobs.length} postings: ${expiredCount} expired, ${closedWarningCount} closed-posting warnings, ${unavailableCount} application pages unavailable, ${repairedCount} employer links repaired, ${combinedCount} copies combined, ${heldCount} matches held, ${inconclusiveCount} inconclusive.`);
 }

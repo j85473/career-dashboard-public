@@ -7,7 +7,13 @@ import { workdayDetailLocation } from './workdayLocation';
 
 export type JobPostingLiveness = 'alive' | 'expired' | 'unavailable' | 'inconclusive';
 export type PostingProbe = { url: string; status: number | null; outcome: JobPostingLiveness; reason: string };
-export type PostingVerification = { liveness: JobPostingLiveness; probes: PostingProbe[]; postingLocation?: string };
+export type VerifiedAdpPosting = Pick<NonNullable<ReturnType<typeof parseAdpPosting>>, 'text' | 'location'>;
+export type PostingVerification = {
+  liveness: JobPostingLiveness;
+  probes: PostingProbe[];
+  postingLocation?: string;
+  adpPosting?: VerifiedAdpPosting;
+};
 
 export function isAdpPostingUrl(value: string): boolean {
   try {
@@ -112,14 +118,15 @@ export async function verifyJobPosting(
   job: { url: string; title: string },
   authoritativeUrl: string | null,
   dependencies: { fetchPosting?: typeof safeExternalFetch; readPosting?: typeof readRenderedPosting } = {},
-  options: { requireCandidatePage?: boolean } = {},
+  options: { requireCandidatePage?: boolean; includeAdpPosting?: boolean } = {},
 ): Promise<PostingVerification> {
   const { fetchPosting = safeExternalFetch, readPosting = readRenderedPosting } = dependencies;
-  const { requireCandidatePage = false } = options;
+  const { requireCandidatePage = false, includeAdpPosting = false } = options;
   const adp = isAdpPostingUrl(job.url);
   const adpDetailUrl = adp ? adpPostingDetailUrl(job.url) : null;
   const probes: PostingProbe[] = [];
   let postingLocation: string | undefined;
+  let adpPosting: VerifiedAdpPosting | undefined;
   const probe = async (url: string, rendered = false): Promise<JobPostingLiveness> => {
     try {
       const response = rendered ? await readPosting(url) : await fetchPosting(url, {
@@ -155,6 +162,9 @@ export async function verifyJobPosting(
           : response.status === 404 || response.status === 410 ? 'expired'
           : response.status === 200 && posting && words(posting.title) === words(job.title)
             && isScorableJobDescription(posting.text, { structuredSource: true }) ? 'alive' : 'inconclusive';
+        if (outcome === 'alive' && posting && includeAdpPosting) {
+          adpPosting = { text: posting.text, location: posting.location };
+        }
         reason = 'adp_requisition_data';
       } else if (adp) {
         // A redirect to a different opening or career center is not evidence
@@ -192,9 +202,8 @@ export async function verifyJobPosting(
     }
   }
   const page = await probe(job.url);
-  if (page !== 'inconclusive') return { liveness: page, probes };
-  if (requireCandidatePage && probes.at(-1)?.reason === 'candidate_page_identity_unconfirmed') {
-    return { liveness: page, probes };
-  }
-  return { liveness: await probe(job.url, true), probes };
+  const liveness = page === 'inconclusive'
+    && !(requireCandidatePage && probes.at(-1)?.reason === 'candidate_page_identity_unconfirmed')
+    ? await probe(job.url, true) : page;
+  return { liveness, probes, ...(adpPosting ? { adpPosting } : {}) };
 }

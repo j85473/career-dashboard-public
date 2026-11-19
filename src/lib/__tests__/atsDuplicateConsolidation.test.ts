@@ -126,59 +126,34 @@ test('a later ATS sighting promotes the source on the saved card without touchin
   assert.equal(saved.url, ats.url);
   for (const key of ['id', 'status', 'aimFitScore', 'reqFitScore', 'submittedResume', 'description', 'company', 'title'] as const)
     assert.equal(saved[key], original[key], key);
-  assert.deepEqual(Object.keys(writes[0]).sort(), ['canonicalUrl', 'postingIdentity', 'source', 'sourceId', 'url']);
+  assert.deepEqual(Object.keys(writes[0]).sort(), ['canonicalUrl', 'postingIdentity', 'source', 'sourceId', 'updatedAt', 'url']);
   assert.equal(observations.length, 1);
   await preferIncomingDirectAtsSource(tx, 'saved', aggregate);
   assert.equal(writes.length, 1, 'a later aggregator cannot replace the ATS source');
 });
 
-test('existing copies consolidate transactionally and retain both stored score sets', async () => {
+test('rediscovering two scored copies leaves their scores visible and opens merge review', async () => {
   const defaults = { status: 'inbox', passReason: null, updatedAt: new Date(), tailoringStaged: false,
     submittedResume: null, aimFitScore: 84, reqFitScore: 81, fitScore: null, scoringStatus: 'scored' };
-  const saved = new Map([
-    ['ats', { ...defaults, ...ats, id: 'ats' } as Job],
-    ['aggregate', { ...defaults, ...aggregate, id: 'aggregate' } as Job],
-  ]);
-  const writes: Record<string, unknown>[] = [];
-  const events: Array<{ eventType: string; details: { actor: string } }> = [];
-  let leased = false;
-  let aggregateOnlyScoreEvent = false;
+  const direct = { ...defaults, ...ats, id: 'ats', observations: [] };
+  const publisher = { ...defaults, ...aggregate, id: 'aggregate', observations: [] };
+  const events: Array<{ eventType: string; jobId: string }> = [];
   const tx = {
-    $queryRaw: async (sql: TemplateStringsArray) => sql[0].includes('WITH prefix AS') ? [saved.get('ats')] : [],
+    $queryRaw: async (sql: TemplateStringsArray) => sql[0].includes('lower("canonicalUrl")') ? [{ id: 'ats' }] : [],
     $executeRaw: async () => 0,
     job: {
-      findMany: async () => [...saved.values()],
-      findUnique: async ({ where }: { where: { id: string } }) => saved.get(where.id),
-      update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-        writes.push(data); saved.set(where.id, { ...saved.get(where.id)!, ...data }); return saved.get(where.id);
-      },
+      findFirst: async () => publisher,
+      findMany: async ({ where }: { where: { id: { in: string[] } } }) =>
+        [direct, publisher].filter(job => where.id.in.includes(job.id)),
     },
-    scoringBatchItem: { count: async () => leased ? 1 : 0 },
-    jobScoreEvent: { findMany: async () => aggregateOnlyScoreEvent ? [{ jobId: 'aggregate', evaluationType: 'aim_fit' }] : [] },
-    jobSourceObservation: { updateMany: async () => ({ count: 1 }), upsert: async () => ({}) },
-    jobPipelineEvent: { upsert: async ({ create }: { create: { eventType: string; details: { actor: string } } }) => { events.push(create); return create; } },
+    scoringBatchItem: { count: async () => 0 },
+    jobPipelineEvent: { findMany: async () => [], upsert: async ({ create }: { create: typeof events[number] }) => events.push(create) },
   } as unknown as Prisma.TransactionClient;
   const store = {
-    job: { findFirst: async () => saved.get('aggregate'), findMany: async () => [saved.get('ats')] },
+    job: { findFirst: async () => publisher, findMany: async () => [direct] },
     $transaction: async (callback: (client: Prisma.TransactionClient) => Promise<unknown>) => callback(tx),
   } as unknown as Pick<typeof prisma, 'job' | '$transaction'>;
-  leased = true;
   assert.equal(await consolidateStoredAtsReprint('aggregate', true, store), null);
-  assert.equal(writes.length, 0);
-  leased = false;
-  aggregateOnlyScoreEvent = true;
-  assert.equal(await consolidateStoredAtsReprint('aggregate', true, store), null);
-  assert.equal(writes.length, 0, 'event-only authority cannot be hidden behind an unscored record');
-  aggregateOnlyScoreEvent = false;
-  const result = await consolidateStoredAtsReprint('aggregate', true, store);
-  assert.equal(result?.canonicalId, 'ats');
-  assert.equal(saved.get('aggregate')?.status, 'dismissed');
-  assert.equal(saved.get('ats')?.status, 'inbox');
-  for (const row of saved.values()) {
-    assert.equal(row.aimFitScore, 84);
-    assert.equal(row.reqFitScore, 81);
-  }
-  assert.ok(writes.every(write => !Object.keys(write).some(key => /score|description/i.test(key))));
-  assert.equal(events[0].eventType, 'lifecycle_reconciled');
-  assert.equal(events[0].details.actor, 'system');
+  assert.deepEqual(events.map(({ eventType, jobId }) => [eventType, jobId]), [['canonical_merge_review', publisher.id]]);
+  assert.ok([direct, publisher].every(row => row.status === 'inbox' && row.aimFitScore === 84 && row.reqFitScore === 81));
 });

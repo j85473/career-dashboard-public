@@ -350,8 +350,10 @@ test('the enrichment write is refused when the row changed underneath it', async
   const seen: Array<{ where: Record<string, unknown>; data: unknown }> = [];
   let locked = false;
   const transaction = {
-    $queryRaw: async () => { locked = true; },
+    $executeRaw: async () => 0,
+    $queryRaw: async () => { locked = true; return []; },
     job: {
+      findFirst: async () => ({ id: 'job-1' }),
       updateMany: async (args: { where: Record<string, unknown>; data: unknown }) => {
         assert.ok(locked, 'the job must be locked before checking for a scoring lease');
         seen.push(args);

@@ -141,6 +141,7 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
   const [isScraping, setIsScraping] = useState(false);
   const [hiddenRepeats, setHiddenRepeats] = useState<HiddenRepeat[]>([]);
   const [restoringRepeat, setRestoringRepeat] = useState(false);
+  const [matchingCards, setMatchingCards] = useState<Array<{ url: string; id: string; title: string; company: string; status: string }>>([]);
   const [combinedCopies, setCombinedCopies] = useState<CombinedCopy[]>([]);
   const [separatingId, setSeparatingId] = useState<string | null>(null);
   const [mergeReview, setMergeReview] = useState<DuplicateMergeReview | null>(null);
@@ -213,15 +214,21 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
     if (!job?.id || isCombinedCopy) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setCombinedCopies([]);
+      setMatchingCards([]);
       return;
     }
+    setMatchingCards([]);
     const controller = new AbortController();
     fetch(`/api/jobs/${job.id}/combined`, { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : { copies: [] }))
-      .then((data) => setCombinedCopies(Array.isArray(data.copies) ? data.copies : []))
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setCombinedCopies(Array.isArray(data.copies) ? data.copies : []);
+        setMatchingCards(Array.isArray(data.matchingCards) ? data.matchingCards : []);
+      })
       .catch(() => undefined);
     return () => controller.abort();
-  }, [job?.id, isCombinedCopy]);
+  }, [job?.id, job?.url, job?.userCanonicalUrl, isCombinedCopy]);
 
   React.useEffect(() => {
     if (!initialJob?.id) return;
@@ -555,6 +562,7 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
     setJob(data.job);
     setManualJD(data.job.description || '');
     setDirectUrl('');
+    setMatchingCards([]);
     setMergeReview(null);
     setMergeCompleted(`Merged into the ${data.job.status.replaceAll('_', ' ')} card.${mergeReview.linkUpdate ? ' Your link is saved.' : ''} Source history was preserved.`);
     setMergeBusy(false);
@@ -1165,6 +1173,12 @@ export function ExpandOverlay({ job: initialJob, onClose, onStatusChange, onTogg
           </button>
         </div>
       )}
+      {matchingCards.map(card => (
+        <button key={card.id} className="expand-btn" onClick={() => void openDuplicateMergeReview(card.id,
+          'The employer posting for this listing is also saved on this card. Review both before combining them.', { url: card.url, linkOnly: true })}>
+          Review matching card · {card.company} · {card.title} ({card.status.replaceAll('_', ' ')})
+        </button>
+      ))}
       {combinedCopies.length > 0 && (
         <details className="repeat-notice repeat-list combined-list">
           <summary>

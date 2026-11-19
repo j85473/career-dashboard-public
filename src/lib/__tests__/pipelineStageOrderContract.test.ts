@@ -20,7 +20,8 @@ test('Inbox source expiry checks the employer copy and preserves score authority
   assert.match(inboxVerification, /employer\.liveness === 'alive'/);
   assert.match(inboxVerification, /employerLinkReplacementFields\(job, replacement\)/);
   assert.match(inboxVerification, /updatedAt: job\.updatedAt/);
-  assert.match(inboxVerification, /client\.\$transaction\(async tx => \{[\s\S]*?lockJobForEmployerLocationRepair\(tx, job\.id\)[\s\S]*?return persist\(tx\)/);
+  assert.match(inboxVerification, /client\.\$transaction\(async tx => \{[\s\S]*?reconcileRecoveredPosting\(tx, job\.id, replacement\.url, job\.updatedAt[\s\S]*?return persist\(tx\)/);
+  assert.match(source('src', 'lib', 'canonicalMergeReview.ts'), /FOR UPDATE[\s\S]*?updatedAt: stamp/);
   assert.doesNotMatch(inboxVerification, /updateData\.(?:aimFitScore|reqFitScore|scoringStatus|description|jdClaimedAt|localClaimedAt)\s*=/);
 });
 

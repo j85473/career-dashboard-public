@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { verifyJobPosting, isAdpPostingUrl } from '../jobPostingVerification';
 import { adpPostingDetailUrl } from '../adpPosting';
 import { adpPreScoringDisposition, ADP_APPLICATION_UNAVAILABLE_EXPIRED_REASON } from '../adpPreScoring';
+import { locationTriageVerdict } from '../localTriage';
 import { isRawLocalTerminalFailure } from '../operationalQueue';
 
 const url = 'https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid=608a4890-b285-4ecd-8659-69a2d44059f4&ccId=19000101_000001&lang=en_US&jobId=469173';
@@ -82,6 +83,30 @@ test('a live ADP role with generic Recruitment browser title is recognized after
   })).liveness, 'inconclusive');
 });
 
+test('local scoring gets the current exact ADP location even when the saved copy offered remote', async () => {
+  const currentTitle = 'Senior Strategic Account Manager';
+  const hybrid = 'Alpharetta, GA, US';
+  const current = {
+    ...JSON.parse(data),
+    requisitionTitle: currentTitle,
+    requisitionDescription: `<p>Location: Alpharetta, GA (Hybrid)</p><p>${description}</p>`,
+    requisitionLocations: [{ nameCode: { shortName: hybrid } }],
+  };
+  const detail = adpPostingDetailUrl(url);
+  const dependencies = {
+    fetchPosting: async (target: string | URL) => String(target) === detail
+      ? Response.json(current)
+      : new Response(`<h1>${currentTitle}</h1><p>${description}</p>`),
+  };
+  assert.equal(locationTriageVerdict(`${hybrid}; Remote, US`).pass, true);
+  const verified = await verifyJobPosting({ url, title: currentTitle }, null, dependencies, { includeAdpPosting: true });
+  assert.equal(verified.liveness, 'alive');
+  assert.equal(verified.adpPosting?.location, hybrid);
+  assert.match(verified.adpPosting?.text || '', /^Location: Alpharetta, GA \(Hybrid\)/);
+  assert.equal(locationTriageVerdict(verified.adpPosting?.location).pass, false);
+  assert.equal((await verifyJobPosting({ url, title: currentTitle }, null, dependencies)).adpPosting, undefined);
+});
+
 test('ADP detail identity, candidate redirects, and real posting bodies prevent false verification', async () => {
   const result = await verifyJobPosting({ url, title }, null, {
     fetchPosting: async target => {
@@ -91,9 +116,10 @@ test('ADP detail identity, candidate redirects, and real posting bodies prevent 
       return response;
     },
     readPosting: async () => new Response(reader('Cookie preferences')),
-  });
+  }, { includeAdpPosting: true });
   assert.equal(result.liveness, 'inconclusive');
   assert.equal(result.probes[0].outcome, 'inconclusive');
+  assert.equal(result.adpPosting, undefined);
   assert.equal((await verifyJobPosting({ url, title }, null, {
     fetchPosting: async target => new Response(String(target) === adpPostingDetailUrl(url) ? data : `<h1>${title}</h1><p>${description}</p><p>If this page is currently not available, contact us.</p>`),
   })).liveness, 'alive');
@@ -115,9 +141,9 @@ test('unavailable new ADP jobs expire instead of entering JD Failed, without wri
 
 test('ADP pre-scoring verification is fenced against saved scores, staged work, and edits', () => {
   const source = readFileSync('src/lib/jobScoring.ts', 'utf8');
-  const gate = source.slice(source.indexOf('if (!lifecycleProtected && isAdpPostingUrl'), source.indexOf('let resolved: ResolvedDescription;'));
-  for (const part of ['claimedJob.fitScore === null', 'prisma.jobScoreEvent.findFirst', 'updatedAt: claimedJob!.updatedAt', 'status: claimedJob!.status', 'scoreEvents: { none: {} }', 'tailoringStaged: false', 'adp_posting_verified']) assert(gate.includes(part), part);
-  assert(source.indexOf(gate) < source.indexOf('resolved = await resolveFullDescription(scoringJob)'));
+  const gate = source.slice(source.indexOf('const adpVerificationUrl'), source.indexOf('let resolved: ResolvedDescription;'));
+  for (const part of ['scoringJob.userCanonicalUrl || scoringJob.url', 'claimedJob.fitScore === null', 'prisma.jobScoreEvent.findFirst', 'updatedAt: claimedJob!.updatedAt', 'status: claimedJob!.status', 'scoreEvents: { none: {} }', 'tailoringStaged: false', 'adp_posting_verified']) assert(gate.includes(part), part);
+  assert.match(source.slice(source.indexOf(gate)), /verifiedAdpPosting = adpPosting;[\s\S]*?resolved = verifiedAdpPosting \? \{[\s\S]*?text: verifiedAdpPosting\.text,[\s\S]*?discoveredLocation:[\s\S]*?await resolveFullDescription\(scoringJob\)[\s\S]*?location: resolved\.discoveredLocation \|\| currentJob\.location,[\s\S]*?localTriageVerdict\(\{[\s\S]*?location: newLocation/);
   assert.equal(isAdpPostingUrl(url.replace('https:', 'http:')), false);
   assert.equal(isAdpPostingUrl(url.replace('.com/', '.com.evil.example/')), false);
 });

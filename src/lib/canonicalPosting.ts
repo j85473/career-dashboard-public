@@ -9,7 +9,7 @@ import { cleanHtmlText } from './jobIngestion';
 export function canonicalEmployerPostingUrl(url: string | null | undefined): string | null {
   if (!isSpecificPostingUrl(url) || urlMatchesAnyHost(url, [
     'adzuna.com', 'appcast.io', 'careerforce.mn.gov', 'dejobs.org', 'dice.com',
-    'glassdoor.com', 'himalayas.app', 'indeed.com', 'jobsyn.org', 'linkedin.com',
+    'glassdoor.com', 'himalayas.app', 'indeed.com', 'jobgether.com', 'jobicy.com', 'jobleads.com', 'jobsyn.org', 'linkedin.com',
     'jsearch.p.rapidapi.com', 'remoteok.com', 'themuse.com', 'weworkremotely.com',
     'ziprecruiter.com',
   ])) return null;

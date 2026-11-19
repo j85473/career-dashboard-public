@@ -1,3 +1,5 @@
+import { readArchivedOwnerFacts } from './savedPostingOwner';
+import { reconcileRecoveredPosting } from './canonicalMergeReview';
 import { prisma } from './prisma';
 import { getAllResumes } from './resume';
 import type { ResumeData } from './resume';
@@ -11,7 +13,7 @@ import { buildSafeJinaReaderUrl, safeExternalFetch } from './safeExternalFetch';
 import { getRapidApiKeys, fetchWithKeyRotation } from './apiFallback';
 import type { Job, Prisma, UserPreference } from './prismaClient';
 import { randomUUID } from 'node:crypto';
-import { isAdpPostingUrl, verifyJobPosting } from './jobPostingVerification';
+import { isAdpPostingUrl, verifyJobPosting, type VerifiedAdpPosting } from './jobPostingVerification';
 import { adpPreScoringDisposition } from './adpPreScoring';
 import { employerLinkReplacementFields } from './atsDirectMatch';
 import { canonicalEmployerPostingUrl, canonicalPostingDescription, readCanonicalPosting } from './canonicalPosting';
@@ -967,10 +969,14 @@ export async function scoreJobs(
       // A full retained ADP API description cannot establish that a candidate
       // can still apply. Verify new ADP jobs before any Aim handoff, while
       // leaving existing scores and protected human work outside this gate.
-      if (!lifecycleProtected && isAdpPostingUrl(scoringJob.url || '')
+      let verifiedAdpPosting: VerifiedAdpPosting | undefined;
+      const adpVerificationUrl = scoringJob.userCanonicalUrl || scoringJob.url;
+      if (!lifecycleProtected && adpVerificationUrl && isAdpPostingUrl(adpVerificationUrl)
         && claimedJob.fitScore === null && claimedJob.aimFitScore === null && claimedJob.reqFitScore === null
         && !await prisma.jobScoreEvent.findFirst({ where: { jobId: claimedJob.id }, select: { id: true } })) {
-        const verification = await verifyJobPosting({ url: scoringJob.url!, title: scoringJob.title }, null);
+        const { adpPosting, ...verification } = await verifyJobPosting(
+          { url: adpVerificationUrl, title: scoringJob.title }, null, {}, { includeAdpPosting: true },
+        );
         const disposition = adpPreScoringDisposition(verification.liveness, false);
         const changed = await withLocalScoringTransaction(async tx => {
           const updated = await tx.job.updateMany({
@@ -984,7 +990,7 @@ export async function scoreJobs(
               eventKey: `adp-pre-scoring-check:${claimedJob!.id}:${randomUUID()}`,
               eventType: 'adp_posting_verified', stage: 'local_verification', jobId: claimedJob!.id,
               source: claimedJob!.source, sourceId: claimedJob!.sourceId,
-              details: verification as unknown as Prisma.InputJsonValue,
+              details: { ...verification, ...(adpPosting?.location ? { postingLocation: adpPosting.location } : {}) },
             } });
             await assertJobLifecycleInvariants(tx, [claimedJob!.id], { versions: invariantVersions });
           }
@@ -997,11 +1003,20 @@ export async function scoreJobs(
           if (changed) scoredCount++;
           continue;
         }
+        verifiedAdpPosting = adpPosting;
       }
 
       let resolved: ResolvedDescription;
       try {
-        resolved = await resolveFullDescription(scoringJob);
+        // The exact current requisition can change its location while the
+        // opening stays live. Score its text and geography together.
+        resolved = verifiedAdpPosting ? {
+          text: verifiedAdpPosting.text,
+          discoveredLocation: descriptionWorkLocation(verifiedAdpPosting.location, verifiedAdpPosting.text)
+            || verifiedAdpPosting.location,
+          needsReview: false,
+          closed: false,
+        } : await resolveFullDescription(scoringJob);
       } catch (error) {
         // The provider was never asked, so there is nothing to judge the job
         // by. Hold it for the next release window instead of spending an
@@ -1037,7 +1052,8 @@ export async function scoreJobs(
       // concurrent input edit before applying a verdict based on the old JD.
       if (currentJob.description !== claimedJob.description || currentJob.title !== claimedJob.title
         || currentJob.company !== claimedJob.company || currentJob.url !== claimedJob.url
-        || currentJob.canonicalUrl !== claimedJob.canonicalUrl || currentJob.manualAts !== claimedJob.manualAts) {
+        || currentJob.location !== claimedJob.location || currentJob.canonicalUrl !== claimedJob.canonicalUrl
+        || currentJob.userCanonicalUrl !== claimedJob.userCanonicalUrl || currentJob.manualAts !== claimedJob.manualAts) {
         await releaseLocalScoringLease(job.id, leaseId);
         continue;
       }
@@ -1272,8 +1288,14 @@ export async function scoreJobs(
       const postingClosedBeforeAim = preAimVerification?.liveness === 'expired'
         || preAimVerification?.liveness === 'unavailable';
       const employerReplacement = !currentJob.userCanonicalUrl ? preAimVerification?.replacement : null;
+      const employerFacts = employerReplacement ? await readArchivedOwnerFacts(prisma, employerReplacement.url) : undefined;
 
       const updateResult = await withLocalScoringTransaction(async (tx) => {
+        const recovery = employerReplacement ? await reconcileRecoveredPosting(tx, currentJob.id, employerReplacement.url,
+          currentJob.updatedAt, { where: { ...claimedJobSnapshot(currentJob, leaseId), fitScore: null, aimFitScore: null, reqFitScore: null,
+            scoreEvents: { none: {} } }, leaseId, facts: employerFacts }) : null;
+        if (recovery === 'stale') return { count: 0, duplicateOf: null };
+        if (recovery === 'combined') return { count: 1, duplicateOf: true };
         if (preAimVerification && !postingClosedBeforeAim && !employerReplacement
           && currentJob.status === 'pending_af' && !currentJob.tailoringStaged) {
           const duplicateOf = await consolidateJobLeadsBeforeAim(tx, {
@@ -1318,9 +1340,9 @@ export async function scoreJobs(
             fitRationale: rationale,
             description: fullDesc,
             ...fullDescPostingFacts,
-            ...(resolved.canonicalUrl ? { canonicalUrl: resolved.canonicalUrl } : {}),
+            ...(resolved.canonicalUrl && recovery !== 'held' ? { canonicalUrl: resolved.canonicalUrl } : {}),
             ...(resolved.manualAts ? { manualAts: resolved.manualAts } : {}),
-            ...(employerReplacement ? employerLinkReplacementFields({ location: newLocation }, employerReplacement) : {}),
+            ...(employerReplacement && recovery !== 'held' ? employerLinkReplacementFields({ location: newLocation }, employerReplacement) : {}),
             ...(preAimVerification ? {
               verificationStatus: preAimVerification.liveness,
               lastVerifiedAt: new Date(),
@@ -1407,7 +1429,7 @@ export async function scoreJobs(
       const updated = onProgress ? await prisma.job.findUnique({ where: { id: job.id } }) : null;
       if (onProgress) onProgress(
         updateResult.duplicateOf
-          ? `Combined a JobLeads copy before Aim Fit: ${currentJob.company}`
+          ? `Combined a duplicate posting before Aim Fit: ${currentJob.company}`
           : postingClosedBeforeAim
           ? `Expired stale JSearch posting before Aim: ${currentJob.company}`
           : deterministicallyRejected

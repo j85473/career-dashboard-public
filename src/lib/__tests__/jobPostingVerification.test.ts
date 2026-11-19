@@ -87,7 +87,8 @@ function inboxStore() {
   const events: unknown[] = [];
   const writes: Prisma.JobUpdateManyArgs[] = [];
   let inTransaction = false;
-  const client = { $queryRaw: async () => { assert.equal(inTransaction, true); }, job: {
+  const client = { $executeRaw: async () => 0, $queryRaw: async () => { assert.equal(inTransaction, true); return []; }, job: {
+    findFirst: async (args: Prisma.JobFindFirstArgs) => args.where?.id === job.id ? job : null,
     findMany: async (args: Prisma.JobFindManyArgs) => {
       assert.equal(args.take, 25);
       assert.deepEqual(args.where?.OR?.[0], { status: 'inbox' });
