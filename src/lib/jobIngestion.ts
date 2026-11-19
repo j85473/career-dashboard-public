@@ -19,6 +19,7 @@ import { recruiteePostingLocation } from './recruiteeLocation';
 import { publishedEmployerName } from './publicAtsEmployer';
 import { dayforcePostingIdentity, isDayforcePostingHost, resolveDayforceObservation } from './dayforcePostingIdentity';
 import { recoverRetainedAtsEmployerEvidence } from './atsEmployerRecovery';
+import { readNewerAtsPostingEmployerEvidence } from './atsRetainedPostingEvidence';
 import { isPublicAtsPlatform, buildPublicAtsBoardRequest } from './publicAtsBoards';
 import { atsListingPositionsConsumed, gr8PeoplePostingIdentity } from './gr8PeopleBoard';
 import { eightfoldSearchUrl, eightfoldPostingUrl, eightfoldLocation } from './eightfoldBoard';
@@ -119,9 +120,11 @@ import type { PrefetchedAtsBatch } from './atsAcquisition';
 import type { PrefetchedAtsSegment } from './atsAcquisitionLedger';
 import {
   ATS_JOB_ENRICHMENT_VERSION,
+  retainedCornerstoneTitleRejected,
   ATS_OPERATOR_RESET_ABANDONED_REASON,
   ATS_INVALID_PROVIDER_RESPONSE_REASON,
   isAtsJobEnrichmentMarker,
+  isWorkdayBulletFieldsOnly,
   readAtsJobEnrichmentMarker,
 } from './atsJobEnrichment';
 import { atsListingSourceId } from './atsPrequeueCompaction';
@@ -243,12 +246,12 @@ export const ATS_PREFETCHED_JOB_WAVE_CONCURRENCY = Number.isFinite(INGESTION_JOB
 
 type PrefetchedAtsHandoff = PrefetchedAtsBatch | PrefetchedAtsSegment;
 
-/** Older Oracle/UKG manifests can mix verified and held postings. Reconcile
+/** Older manifests for these providers can mix verified and held postings. Reconcile
  * each completed posting before an unresolved neighbor interrupts the suffix.
  * The immutable manifest and the saved retry date do not need to change. */
 export function atsPrefetchedWaveConcurrency(handoff: Pick<PrefetchedAtsHandoff, 'handoffKind' | 'platform' | 'totalJobCount'>): number {
   return handoff.handoffKind === 'ledger_segment' && handoff.totalJobCount > 1
-    && ['oracle', 'ukg'].includes(handoff.platform) ? 1 : ATS_PREFETCHED_JOB_WAVE_CONCURRENCY;
+    && ['cornerstone', 'oracle', 'ukg'].includes(handoff.platform) ? 1 : ATS_PREFETCHED_JOB_WAVE_CONCURRENCY;
 }
 
 function prefetchedAtsAuditContext(
@@ -5656,6 +5659,9 @@ export async function ingestJobs(
           // ATS child. The parent may normalize and persist it, but must never
           // fall back to any of the legacy per-posting detail adapters.
           const parentAtsNetworkAllowed = !options.prefetchedAtsBatch;
+          const handoff = options.prefetchedAtsBatch;
+          const heldBatchId = handoff?.handoffKind === 'ledger_segment' && handoff.employerVerificationRetry
+            ? handoff.sourceBatchId : null;
           const processAtsJob = async (job: AtsJob, batchJobIndex: number) => {
             throwIfAtsInterrupted();
             if (options.prefetchedAtsBatch) {
@@ -5668,7 +5674,11 @@ export async function ingestJobs(
             const coarseLocationMatch = isLocationMatch(job);
             mnJobsFound++;
             if (atsEnrichmentMarker?.reason === ATS_OPERATOR_RESET_ABANDONED_REASON
-              || atsEnrichmentMarker?.reason === ATS_INVALID_PROVIDER_RESPONSE_REASON) {
+              || atsEnrichmentMarker?.reason === ATS_INVALID_PROVIDER_RESPONSE_REASON
+              || (handoff?.handoffKind === 'ledger_segment' && (
+                retainedCornerstoneTitleRejected(job, atsEnrichmentMarker)
+                || (board.platform === 'workday' && isWorkdayBulletFieldsOnly(job, atsEnrichmentMarker))
+              ))) {
               const stats = statsFor(boardSource);
               stats.seen++;
               stats.filtered++;
@@ -6115,7 +6125,8 @@ export async function ingestJobs(
               company = listingDetail?.company || job.company || '';
               let recoveredPostingLocation: string | null = null;
               if (['oracle', 'ukg', 'zohorecruit'].includes(board.platform)) {
-                const recovered = await recoverRetainedAtsEmployerEvidence(board.platform, board.slug, { ...job, company });
+                const recovered = await recoverRetainedAtsEmployerEvidence(board.platform, board.slug, { ...job, company },
+                  undefined, heldBatchId ? () => readNewerAtsPostingEmployerEvidence(board.platform, board.slug, heldBatchId, job) : undefined);
                 company = recovered?.company || '';
                 if (!cleanDescription && recovered?.description) cleanDescription = cleanHtmlText(recovered.description);
                 recoveredPostingLocation = recovered?.location || null;

@@ -223,6 +223,27 @@ test('retained incomplete handoffs can recover a local copy without rewriting th
   assert.deepEqual(raw, before);
 });
 
+test('a retained Oracle or UKG handoff prefers stored exact evidence before starting provider reads', async () => {
+  const evidence = { company: 'Verified Employer', description: null, location: 'Minneapolis, MN' };
+  const dependencies = {
+    storedPostingEvidence: async () => null,
+    boardEmployer: async () => { throw new Error('should not fetch board'); },
+    postingEvidence: async () => { throw new Error('should not fetch posting'); },
+  };
+  assert.deepEqual(await recoverRetainedAtsEmployerEvidence(
+    'oracle', oracleSlug, oracleJob, dependencies, async () => evidence,
+  ), evidence);
+  const manual = { ...evidence, company: 'Recorded Employer' };
+  assert.deepEqual(await recoverRetainedAtsEmployerEvidence(
+    'oracle', oracleSlug, oracleJob, { ...dependencies, storedPostingEvidence: async () => manual },
+    async () => { throw new Error('should not look up newer copies'); },
+  ), manual);
+  assert.deepEqual(await recoverRetainedAtsEmployerEvidence(
+    'oracle', oracleSlug, oracleJob, { ...dependencies, boardEmployer: async () => 'Verified Employer' },
+    async () => { throw new Error('read failed'); },
+  ), { company: 'Verified Employer', description: null, location: null });
+});
+
 test('retry classification distinguishes provider, corporate-site and malformed-posting failures', async () => {
   for (const [failure, reason] of [
     ['rate', { code: 'provider_rate_limit', scope: 'provider' }],

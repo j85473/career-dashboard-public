@@ -11,7 +11,7 @@ import { publicAtsBoardSlugFromUrl, isPublicAtsPlatform } from './publicAtsBoard
 import { eightfoldDetailUrl, eightfoldLocation } from './eightfoldBoard';
 import { isDailyAtsBoard } from './atsRotation';
 import { isAcostaChannelSalesPriorityRole } from './priorityOpportunity';
-import { passesPreFilter } from './jobFiltering';
+import { passesPreFilter, passesTitlePreFilter } from './jobFiltering';
 import { extractStructuredBaseCompensation } from './postedCompensation';
 import { safeExternalFetch } from './safeExternalFetch';
 import { workdayHiringOrganizationName } from './workdayCompany';
@@ -294,6 +294,18 @@ export function readAtsJobEnrichmentMarker(job: unknown): AtsJobEnrichmentMarker
   return isAtsJobEnrichmentMarker(marker) ? marker : null;
 }
 
+/** Workday sometimes returns only requisition bullets, with no posting data.
+ * A retained handoff may also carry the ledger's original no-identity marker. */
+export function isWorkdayBulletFieldsOnly(job: unknown, marker?: AtsJobEnrichmentMarker | null): boolean {
+  if (!isRecord(job) || !Object.hasOwn(job, 'bulletFields') || !Array.isArray(job.bulletFields)
+    || !job.bulletFields.every(value => typeof value === 'string')) return false;
+  const keys = Object.keys(job);
+  if (keys.length === 1) return true;
+  return keys.length === 2 && Object.hasOwn(job, ATS_JOB_ENRICHMENT_KEY)
+    && marker?.platform === 'workday' && marker.status === 'not_needed'
+    && marker.reason === 'missing_detail_identity' && job[ATS_JOB_ENRICHMENT_KEY] === marker;
+}
+
 function cloneWithMarker(
   job: Record<string, unknown>,
   marker: AtsJobEnrichmentMarker,
@@ -341,6 +353,16 @@ function hasRawDescription(job: Record<string, unknown>): boolean {
 
 function listingTitle(job: Record<string, unknown>): string {
   return stringValue(job.text || job.title || job.name || job.jobOpeningName);
+}
+
+/** A saved Cornerstone title decision can finish without asking for employer
+ * evidence, provided the current title rules still reject that same role. */
+export function retainedCornerstoneTitleRejected(job: Record<string, unknown>,
+  marker: AtsJobEnrichmentMarker | null): boolean {
+  if (marker?.platform !== 'cornerstone' || marker.status !== 'not_needed' || marker.reason !== 'title_gate_rejected') return false;
+  const title = listingTitle(job);
+  return Boolean(title) && !isAcostaChannelSalesPriorityRole({ title, company: 'Acosta' })
+    && !passesTitlePreFilter(title).passes;
 }
 
 function immutableListingTitleRejected(input: {

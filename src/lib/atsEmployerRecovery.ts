@@ -199,13 +199,15 @@ export async function recoverRetainedAtsEmployerEvidence(platform: string, slug:
     boardEmployer: recoverPublishedAtsBoardEmployer,
     postingEvidence: recoverPublishedAtsPostingEvidence,
     storedPostingEvidence: verifiedAtsPostingEvidence,
-  }): Promise<AtsPostingEmployerEvidence | null> {
+  }, newerPostingEvidence?: () => Promise<AtsPostingEmployerEvidence | null>): Promise<AtsPostingEmployerEvidence | null> {
   const supplied = typeof job.company === 'string' ? job.company : '';
   if (supplied === 'Oracle' || publishedEmployerName(supplied)) {
     return { company: supplied, description: null, location: null };
   }
   const stored = await recovery.storedPostingEvidence?.(platform, slug, job);
   if (stored) return stored;
+  const newer = await newerPostingEvidence?.().catch(() => null);
+  if (newer) return newer;
   const company = await recovery.boardEmployer(platform, slug);
   return company ? { company, description: null, location: null }
     : recovery.postingEvidence(platform, slug, job);

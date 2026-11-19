@@ -10,9 +10,10 @@ import {
   processAtsItemsInBoundedWaves,
   recoverAtsBatchItemOutcome,
 } from '../jobIngestion';
+import { retainedCornerstoneTitleRejected, type AtsJobEnrichmentMarker } from '../atsJobEnrichment';
 
-test('older Oracle and UKG chunks save verified progress before an unresolved neighbor', async () => {
-  for (const platform of ['oracle', 'ukg']) {
+test('older Cornerstone, Oracle and UKG chunks save verified progress before an unresolved neighbor', async () => {
+  for (const platform of ['cornerstone', 'oracle', 'ukg']) {
     const prefixes: number[] = [], attempted: number[] = [];
     await assert.rejects(processAtsItemsInBoundedWaves({
       items: [0, 1, 2, 3],
@@ -27,6 +28,21 @@ test('older Oracle and UKG chunks save verified progress before an unresolved ne
     { handoffKind: 'legacy_batch' as const, platform: 'oracle', totalJobCount: 25 }]) {
     assert.equal(atsPrefetchedWaveConcurrency(handoff), ATS_PREFETCHED_JOB_WAVE_CONCURRENCY);
   }
+});
+
+test('retained Cornerstone title decisions can reconcile without employer evidence only under current title rules', () => {
+  const marker: AtsJobEnrichmentMarker = {
+    version: 1, platform: 'cornerstone', detailSource: 'ATS-cornerstone Details', status: 'not_needed',
+    attempted: false, completedAt: new Date(0).toISOString(), reason: 'title_gate_rejected',
+    description: null, company: null, location: null, compensation: null,
+  };
+  const nurse = { title: 'Registered Nurse' };
+  assert.equal(retainedCornerstoneTitleRejected(nurse, marker), true);
+  assert.equal(retainedCornerstoneTitleRejected({ title: 'Channel Sales Manager' }, marker), false);
+  assert.equal(retainedCornerstoneTitleRejected({ title: 'Channel Sales Manager - Demo' }, marker), false);
+  assert.equal(retainedCornerstoneTitleRejected({ title: '' }, marker), false);
+  assert.equal(retainedCornerstoneTitleRejected(nurse, { ...marker, reason: 'endpoint_error' }), false);
+  assert.equal(retainedCornerstoneTitleRejected(nurse, { ...marker, platform: 'ukg' }), false);
 });
 
 test('prefetched ATS jobs fill the bounded write width and checkpoint whole waves', async () => {

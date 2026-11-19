@@ -21,6 +21,7 @@ import {
   ATS_INVALID_PROVIDER_RESPONSE_REASON,
   ATS_JOB_ENRICHMENT_VERSION,
   enrichAtsListingJob,
+  isWorkdayBulletFieldsOnly,
   markAtsListingsWithoutDetail,
   readAtsJobEnrichmentMarker,
   type AtsJobEnrichmentDependencies,
@@ -1365,16 +1366,17 @@ export async function materializeAtsV2PageObservations(input: {
   });
 }
 
-/** Only a hash-proven empty source object can finish as an invalid response. */
-export function emptyAtsListingResponseOverlay(
+/** Only a hash-proven empty object or Workday metadata fragment can finish as an invalid response. */
+export function invalidAtsListingResponseOverlay(
   observation: { rawJson: unknown; rawHash: string; providerSourceId: string | null },
   platform: string,
   now: Date,
 ): JsonObject | null {
   const raw = observation.rawJson;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)
-    || Object.keys(raw).length !== 0 || observation.providerSourceId !== null
-    || observation.rawHash !== atsLedgerHash({})) return null;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || observation.providerSourceId !== null) return null;
+  const empty = Object.keys(raw).length === 0;
+  if ((!empty && !(platform === 'workday' && isWorkdayBulletFieldsOnly(raw)))
+    || observation.rawHash !== atsLedgerHash(raw)) return null;
   return {
     [ATS_JOB_ENRICHMENT_KEY]: {
       version: ATS_JOB_ENRICHMENT_VERSION,
@@ -1385,7 +1387,8 @@ export function emptyAtsListingResponseOverlay(
       completedAt: now.toISOString(),
       description: null, company: null, location: null, compensation: null,
       reason: ATS_INVALID_PROVIDER_RESPONSE_REASON,
-      error: 'Provider returned an empty listing object with no job identity or content.',
+      error: empty ? 'Provider returned an empty listing object with no job identity or content.'
+        : 'Workday returned listing bullets without a posting title or identity.',
     },
   };
 }
@@ -1458,7 +1461,7 @@ export async function resolveNextAtsV2ObservationChunk(input: {
       return { resolved: 0, retained: 0, compacted: 0, complete: true };
     }
     const jobs = observations.map((observation) => jsonObject(observation.rawJson));
-    const invalidOverlays = observations.map((observation) => emptyAtsListingResponseOverlay(observation, batch.platform, now));
+    const invalidOverlays = observations.map((observation) => invalidAtsListingResponseOverlay(observation, batch.platform, now));
     if (jobs.some((job, index) => Object.keys(job).length === 0 && !invalidOverlays[index])) {
       throw new AtsLedgerAuthorityError(`ATS batch ${batch.id} has an observation without materialized JSON.`);
     }
