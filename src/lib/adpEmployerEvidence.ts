@@ -67,8 +67,8 @@ export function adpEmployerWebsite(body: AdpCareerCenter): string | null {
     }) || null : null;
 }
 
-/** The welcome heading and the named corporate home link must agree. */
-function adpCareerCenterCompany(body: AdpCareerCenter): string | undefined {
+/** A corporate home link is a name candidate until the welcome heading or the exact posting confirms it. */
+function adpCareerCenterBranding(body: AdpCareerCenter) {
     const headings = new Set<string>();
     const brands = new Map<string, string>();
     for (const entry of body.contentLinks || []) {
@@ -89,8 +89,18 @@ function adpCareerCenterCompany(body: AdpCareerCenter): string | undefined {
             if (name && name.length <= 200 && !GENERIC_ADP_EMPLOYER_NAME.test(name)) brands.set(name.toLowerCase(), name);
         }
     }
-    if (headings.size !== 1 || brands.size !== 1) return undefined;
-    return brands.get([...headings][0]);
+    const homeBrand = brands.size === 1 ? [...brands.values()][0] : undefined;
+    const name = homeBrand && headings.size === 1 ? brands.get([...headings][0]) : undefined;
+    // If the center publishes competing headings, the posting text cannot
+    // turn that conflicting center branding into a fallback.
+    return { name, homeBrand: headings.size === 0 ? homeBrand : undefined };
+}
+
+function postingBenefitsConfirmEmployer(postingText: string, brand: string): boolean {
+    return postingText.split('\n').some(line => {
+        const subject = /^\s*(.{2,120}?)\s+(?:provides|offers)\s+(?:competitive\s+)?(?:salaries|wages|pay|compensation)\b[^.!?]{0,100}\bbenefits\b/i.exec(line)?.[1];
+        return subject?.toLowerCase() === brand.toLowerCase();
+    });
 }
 
 export async function readAdpPublicJson(url: string, fetcher: AdpPublicFetcher,
@@ -126,7 +136,8 @@ export function adpCareerCenterUrl(postingUrl: string): string | null {
 /** One reader per board turn or import; only published same-board evidence is
  * cached. An unavailable optional source never discards the verified posting. */
 export class AdpEmployerEvidence {
-    private employer?: Promise<{ name?: string; title?: string }>;
+    private employer?: Promise<{ name?: string; site?: string; homeBrand?: string }>;
+    private website?: Promise<{ name?: string; title?: string }>;
     constructor(private dependencies: {
         json: (url: string) => Promise<unknown>;
         careerCenter: () => Promise<AdpCareerCenter>;
@@ -134,16 +145,26 @@ export class AdpEmployerEvidence {
         fetcher: AdpPublicFetcher;
     }) {}
     async company(postingUrl: string, postingText: string): Promise<string | undefined> {
-        const identity: { name?: string; title?: string } = await (this.employer ||= (async () => {
+        const identity: { name?: string; site?: string; homeBrand?: string } = await (this.employer ||= (async () => {
             let configured: string | undefined;
             try { configured = parseAdpClientCompany(await this.dependencies.json(adpClientFeaturesUrl(postingUrl)!)); }
             catch (error) { if (!(error instanceof AdpPublicResponseError)) throw error; }
             if (configured) return { name: configured };
             const careerCenter = await this.dependencies.careerCenter();
-            const brand = adpCareerCenterCompany(careerCenter);
-            if (brand) return { name: brand };
+            const { name, homeBrand } = adpCareerCenterBranding(careerCenter);
+            if (name) return { name };
             const site = adpEmployerWebsite(careerCenter);
-            if (!site) return {};
+            return site ? { site, homeBrand: new URL(site).pathname === '/' ? homeBrand : undefined } : {};
+        })().catch(error => {
+            if (error instanceof AdpPublicResponseError) return {};
+            throw error;
+        }));
+        if (identity.name) return identity.name;
+        if (!identity.site) return undefined;
+        if (identity.homeBrand && postingBenefitsConfirmEmployer(postingText, identity.homeBrand)) return identity.homeBrand;
+
+        const site = identity.site;
+        const website: { name?: string; title?: string } = await (this.website ||= (async () => {
             await this.dependencies.check();
             let response: Response;
             try { response = await this.dependencies.fetcher(site, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(15000) }); }
@@ -166,10 +187,10 @@ export class AdpEmployerEvidence {
             if (error instanceof AdpPublicResponseError) return {};
             throw error;
         }));
-        if (identity.name) return identity.name;
-        if (identity.title) {
-            const escaped = identity.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            if (new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}\\s+(?:is|are)\\s+(?:seeking|hiring|recruiting|looking\\s+for)\\b`, 'iu').test(postingText)) return identity.title;
+        if (website.name) return website.name;
+        if (website.title) {
+            const escaped = website.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            if (new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}\\s+(?:is|are)\\s+(?:seeking|hiring|recruiting|looking\\s+for)\\b`, 'iu').test(postingText)) return website.title;
         }
         return undefined;
     }

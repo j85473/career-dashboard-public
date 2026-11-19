@@ -32,7 +32,7 @@ function adpPostedCompensation(value: unknown): string | undefined {
 
 /** Only authored employer sections or explicit named-employer EEO statements
  * supply identity. Editor wrappers, clients and conflicting names do not. */
-function authoredAdpEmployer($: cheerio.CheerioAPI): string | undefined {
+function authoredAdpEmployer($: cheerio.CheerioAPI, title: string): string | undefined {
   const names = new Map<string, string>();
   const normalize = (text: string) => text.replace(/\s+/g, ' ').trim();
   // Read content blocks in document order so an About heading nested inside a
@@ -47,6 +47,13 @@ function authoredAdpEmployer($: cheerio.CheerioAPI): string | undefined {
     return name && name.length <= 100 && !/^(?:we|it|this|our|your|you|all|each|every)\b|^(?:the company|the team|the role)$|\b(?:is|are|was|were|will|must|should|which|that|clients?|customers?)\b|[!?;:]/i.test(name)
       ? name : '';
   };
+  // The named division must independently introduce itself in the posting.
+  // The parent company named in that introduction is a separate identity.
+  const division = employerName(/\(([^()]{2,80})\)\s*$/.exec(title)?.[1]);
+  const introduction = blocks[0] === normalize(title) ? blocks[1] : blocks[0];
+  const divisionName = /^(.+?)(?:\s+\([A-Z0-9&.-]{2,15}\))?,\s+a\s+(?:division|subsidiary)\s+of\s+[^,]+,/i.exec(introduction || '')?.[1];
+  if (division && divisionName && key(division) === key(divisionName)) names.set(key(division), division);
+
   for (let index = 0; index < blocks.length; index++) {
     const heading = blocks[index];
     const next = blocks.slice(index + 1, index + 11);
@@ -56,6 +63,11 @@ function authoredAdpEmployer($: cheerio.CheerioAPI): string | undefined {
       const name = publishedEmployerName(named[1]);
       if (name) names.set(key(name), name);
     }
+    const recruit = employerName(/^Why (?:join|work (?:at|for))\s+(.+?)\??$/i.exec(heading)?.[1]);
+    if (recruit && next.some(block => {
+      const firstPerson = /^At\s+([^,]+),\s+we\b/i.exec(block)?.[1];
+      return firstPerson && key(recruit) === key(firstPerson);
+    })) names.set(key(recruit), recruit);
     if (!/^(?:about us|company overview)\s*:?$/i.test(heading)) continue;
     const subject = /^(.{2,100}?)\s+(?:is|are)\b/i.exec(next[0] || '')?.[1];
     const name = employerName(subject);
@@ -87,7 +99,7 @@ export function parseAdpPosting(body: unknown, url: string) {
   if (id !== identity.jobId || !job.requisitionTitle?.trim() || typeof job.requisitionDescription !== 'string') return null;
   const $ = cheerio.load(job.requisitionDescription);
   $('script,style').remove();
-  const company = authoredAdpEmployer($);
+  const company = authoredAdpEmployer($, job.requisitionTitle);
   $('p,div,li,h1,h2,h3,br').append('\n');
   const text = $.root().text().replace(/[\t ]+/g, ' ').replace(/\n\s*\n+/g, '\n\n').trim();
   const locations = [...new Set((job.requisitionLocations || []).map(place => place.nameCode?.shortName?.trim()).filter(Boolean))];

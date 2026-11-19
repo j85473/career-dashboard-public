@@ -72,6 +72,26 @@ test('ADP recovers a named employer from its published corporate website and sha
     assert.equal(calls.filter(url => url === site).length, 1);
 });
 
+test('ADP verifies a named corporate home link against the exact posting benefits, per posting', async () => {
+    const configuration = center();
+    Object.assign(configuration.contentLinks[0].contentBody.links[0], { title: 'Example Foods' });
+    const benefits = '<p>Example Foods provides competitive salaries and a range of benefits.</p>';
+    const { reader, calls, fetcher } = harness({ center: configuration, description: benefits, websiteFailure: true });
+    assert.equal((await reader.detail(link())).company, 'Example Foods');
+    assert.equal((await fetchAdpPosting(link().url, input => fetcher(String(input))))?.company, 'Example Foods');
+    assert.equal(calls.includes(site), false);
+
+    for (const input of [
+        { center: configuration, description: '<p>Our client Example Foods provides competitive salaries and benefits.</p>' },
+        { center: configuration, description: '<p>Other Foods offers competitive salaries and benefits.</p>' },
+        { center: { ...configuration, contentLinks: [...configuration.contentLinks, {
+            linkTypeCode: { codeValue: 'WELCOME-TXT', longName: '<h2>Careers at Other Foods</h2>' },
+        }] }, description: benefits },
+    ]) {
+        assert.equal((await harness({ ...input, websiteFailure: true }).reader.detail(link())).company, 'Unknown Company');
+    }
+});
+
 test('ADP explicit configuration names take precedence and avoid a corporate lookup', async () => {
     const { reader, calls } = harness({ company: 'Configured Employer' });
     assert.equal((await reader.detail(link())).company, 'Configured Employer');

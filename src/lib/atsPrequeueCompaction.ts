@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { smartRecruitersCompensationRefreshEligible, smartRecruitersPostingIdentity } from './smartRecruitersPosting';
 
 export const ATS_PREQUEUE_COMPACTION_METADATA_KEY = '__careerDashboardAtsPrequeueCompaction';
 export const ATS_PREQUEUE_COMPACTION_VERSION = 1 as const;
@@ -27,6 +28,8 @@ export type AtsObservedSourceState = {
   jobStatus: string | null;
   jobUpdatedAt: string;
   boardSlug: string | null;
+  /** Effective URL only when this SmartRecruiters card still needs posted pay. */
+  compensationRefreshUrl?: string | null;
 };
 
 export type AtsCompactedObservationReceipt = {
@@ -149,7 +152,10 @@ export function planAtsPrequeueCompaction(input: {
       retained.push(job);
       continue;
     }
-    if (!canCompactExactAtsObservation(observation.jobStatus)) {
+    const payTarget = input.platform === 'smartrecruiters' && smartRecruitersCompensationRefreshEligible(observation.jobStatus)
+      ? smartRecruitersPostingIdentity(observation.compensationRefreshUrl) : null;
+    const needsPay = payTarget && payTarget.id === sourceId && payTarget.board.toLowerCase() === input.boardSlug.toLowerCase();
+    if (!canCompactExactAtsObservation(observation.jobStatus) || needsPay) {
       retainedExactObservationCount++;
       retained.push(job);
       continue;

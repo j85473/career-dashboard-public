@@ -289,6 +289,14 @@ export interface StructuredPayRange {
   rangeEnd?: number;
 }
 
+/** Validate explicit numeric USD range endpoints without assuming a pay period or type. */
+export function formatStructuredDollarRange(min: unknown, max: unknown): string | null {
+  if (typeof min !== 'number' || typeof max !== 'number' || min > max || max / min > MAX_RANGE_RATIO) return null;
+  const low = formatAmount(String(min));
+  const high = formatAmount(String(max));
+  return low && high ? `$${low}–$${high}` : null;
+}
+
 /**
  * Same shape as the posting itself for platforms that publish pay as
  * structured fields (Rippling's `payRangeDetails`) rather than prose. Applies
@@ -307,18 +315,8 @@ export function extractStructuredBaseCompensation(
   const candidates = new Set<string>();
   for (const range of ranges) {
     if (range.currency !== 'USD' || range.frequency !== 'YEAR') continue;
-    if (typeof range.rangeStart !== 'number' || typeof range.rangeEnd !== 'number') continue;
-
-    const low = formatAmount(String(range.rangeStart));
-    const high = formatAmount(String(range.rangeEnd));
-    if (!low || !high) continue;
-
-    const lowValue = Number(low.replaceAll(',', ''));
-    const highValue = Number(high.replaceAll(',', ''));
-    if (lowValue > highValue) continue;
-    if (lowValue <= 0 || highValue / lowValue > MAX_RANGE_RATIO) continue;
-
-    candidates.add(`$${low}–$${high} base`);
+    const band = formatStructuredDollarRange(range.rangeStart, range.rangeEnd);
+    if (band) candidates.add(`${band} base`);
   }
 
   return candidates.size === 1 ? [...candidates][0] : null;

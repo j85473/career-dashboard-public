@@ -509,13 +509,16 @@ async function observedAtsSourceStates(
       jobStatus: string | null;
       jobUpdatedAt: Date | string;
       observationUrl: string | null;
+      compensationRefreshUrl: string | null;
     }>>(Prisma.sql`
       SELECT
         observation."sourceId" AS "sourceId",
         observation."jobId" AS "jobId",
         job."status" AS "jobStatus",
         job."updatedAt" AS "jobUpdatedAt",
-        observation."url" AS "observationUrl"
+        observation."url" AS "observationUrl",
+        CASE WHEN observation.source = 'ATS-smartrecruiters' AND job."postedCompensation" IS NULL
+          THEN COALESCE(job."userCanonicalUrl", job."canonicalUrl", job.url) END AS "compensationRefreshUrl"
       FROM "JobSourceObservation" observation
       INNER JOIN "Job" job ON job."id" = observation."jobId"
       WHERE observation."source" = ${`ATS-${platform}`}
@@ -529,6 +532,7 @@ async function observedAtsSourceStates(
       jobStatus: row.jobStatus,
       jobUpdatedAt: new Date(row.jobUpdatedAt).toISOString(),
       boardSlug: boardSlugFromJobUrl(row.observationUrl, platform),
+      compensationRefreshUrl: row.compensationRefreshUrl,
     })));
   }
   return observations;

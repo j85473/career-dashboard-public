@@ -6,6 +6,7 @@ import { passesPreFilter } from './jobFiltering';
 import { descriptionWorkLocation } from './descriptionWorkLocation';
 import { hasAdditionalTerritoryRetailTitle, hasCustomerAccountResponsibilityEvidence, hasDealerDistributorAccountEvidence, hasMidLevelCommercialTitle, hasTerritoryAccountSalesEvidence } from './commercialRoleDiscovery';
 import { derivePostingFacts } from './postingFacts';
+import { sameSmartRecruitersPosting } from './smartRecruitersPosting';
 import { buildSafeJinaReaderUrl, safeExternalFetch } from './safeExternalFetch';
 import { getRapidApiKeys, fetchWithKeyRotation } from './apiFallback';
 import type { Job, Prisma, UserPreference } from './prismaClient';
@@ -31,6 +32,7 @@ import {
 import { urlMatchesAnyHost } from './urlHost';
 import { invalidateActiveJobScores } from './scoreInvalidation';
 import { LOCAL_SCORING_TERMINAL_ATTEMPTS } from './localScoringPolicy';
+import { consolidateJobLeadsBeforeAim } from './sameJobConsolidation';
 import { filterNewIntakeRole } from './newIntakeRoleExclusion';
 import { explicitLocalExclusionVerdict, localTriageVerdict, titleTriageVerdict } from './localTriage';
 import { evaluateAuthoritativeMetadata, hasAuthoritativeMetadata } from './authoritativeMetadataGate';
@@ -84,6 +86,7 @@ type ResolvedDescription = {
   discoveredTitle?: string;
   discoveredCompany?: string;
   discoveredLocation?: string;
+  postedCompensation?: string;
 };
 
 async function resolveFullDescription(job: Job): Promise<ResolvedDescription> {
@@ -104,7 +107,8 @@ async function resolveFullDescription(job: Job): Promise<ResolvedDescription> {
   let discoveredAts: string | undefined;
   let employerPosting: AtsScrapeResult | null = null;
 
-  const result = (text: string, needsReview: boolean, extra?: { title?: string, company?: string, location?: string }): ResolvedDescription => ({
+  const result = (text: string, needsReview: boolean,
+    extra?: { title?: string; company?: string; location?: string; postedCompensation?: string }): ResolvedDescription => ({
     text,
     needsReview,
     closed: false,
@@ -113,6 +117,8 @@ async function resolveFullDescription(job: Job): Promise<ResolvedDescription> {
     discoveredTitle: employerPosting?.title || extra?.title,
     discoveredCompany: employerPosting?.company || extra?.company,
     discoveredLocation: employerPosting?.location || extra?.location,
+    postedCompensation: (employerPosting?.platform === 'smartrecruiters' ? employerPosting.postedCompensation : undefined)
+      || extra?.postedCompensation,
   });
   const closedResult = (text: string): ResolvedDescription => ({
     ...result(text, false),
@@ -221,7 +227,8 @@ async function resolveFullDescription(job: Job): Promise<ResolvedDescription> {
         if (atsResult.ats !== 'Unknown') {
           discoveredAts = atsResult.ats;
         }
-        return result(atsResult.text, false, { title: atsResult.title, company: atsResult.company || atsResult.atsSlug, location: atsResult.location });
+        return result(atsResult.text, false, { title: atsResult.title, company: atsResult.company || atsResult.atsSlug,
+          location: atsResult.location, postedCompensation: atsResult.platform === 'smartrecruiters' ? atsResult.postedCompensation : undefined });
       }
 
       // Fallback to naive fetch
@@ -1153,6 +1160,11 @@ export async function scoreJobs(
       // moment the full text exists. Recomputing here also means a re-scrape
       // that changes the JD cannot leave a stale salary or travel figure behind.
       const fullDescPostingFacts = derivePostingFacts(fullDesc);
+      const priorPosting = currentJob.userCanonicalUrl || currentJob.canonicalUrl || currentJob.url;
+      const effectivePosting = currentJob.userCanonicalUrl || canonicalUrl || currentJob.url;
+      const structuredPay = resolved.postedCompensation
+        || (sameSmartRecruitersPosting(priorPosting, effectivePosting) ? currentJob.postedCompensation : null);
+      if (structuredPay) fullDescPostingFacts.postedCompensation = structuredPay;
 
       if (!filterResult.passes && !lifecycleProtected) {
         const updateResult = await withLocalScoringTransaction(async (tx) => {
@@ -1262,6 +1274,19 @@ export async function scoreJobs(
       const employerReplacement = !currentJob.userCanonicalUrl ? preAimVerification?.replacement : null;
 
       const updateResult = await withLocalScoringTransaction(async (tx) => {
+        if (preAimVerification && !postingClosedBeforeAim && !employerReplacement
+          && currentJob.status === 'pending_af' && !currentJob.tailoringStaged) {
+          const duplicateOf = await consolidateJobLeadsBeforeAim(tx, {
+            jobId: currentJob.id,
+            leaseId,
+            updatedAt: currentJob.updatedAt,
+            posting: {
+              ...currentJob, title: newTitle, company: newCompany, location: newLocation,
+              canonicalUrl: resolved.canonicalUrl || currentJob.canonicalUrl, description: fullDesc,
+            },
+          });
+          if (duplicateOf) return { count: 1, duplicateOf };
+        }
         const result = await tx.job.updateMany({
           where: {
             ...claimedJobSnapshot(currentJob, leaseId),
@@ -1364,7 +1389,7 @@ export async function scoreJobs(
         } else if (result.count === 1) {
           await assertJobLifecycleInvariants(tx, [currentJob.id], { versions: invariantVersions });
         }
-        return result;
+        return { ...result, duplicateOf: null };
       });
       if (updateResult.count === 0) {
         await releaseLocalScoringLease(job.id, leaseId);
@@ -1381,7 +1406,9 @@ export async function scoreJobs(
       }
       const updated = onProgress ? await prisma.job.findUnique({ where: { id: job.id } }) : null;
       if (onProgress) onProgress(
-        postingClosedBeforeAim
+        updateResult.duplicateOf
+          ? `Combined a JobLeads copy before Aim Fit: ${currentJob.company}`
+          : postingClosedBeforeAim
           ? `Expired stale JSearch posting before Aim: ${currentJob.company}`
           : deterministicallyRejected
           ? `Locally rejected ${currentJob.company} without an API call`

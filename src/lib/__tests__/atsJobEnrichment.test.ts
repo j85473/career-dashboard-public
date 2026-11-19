@@ -525,7 +525,8 @@ test('bounded marker planning resolves every no-request item without touching de
   const inputJobs = [
     { id: 'sr-rejected', name: 'Registered Nurse, ICU' },
     { id: 'sr-needed', name: 'Channel Manager' },
-    { id: 'sr-complete', name: 'Partner Manager', description: 'Already complete.' },
+    { id: 'sr-complete', name: 'Partner Manager', description: 'Already complete.',
+      compensation: { min: 95000, max: 125000, currency: 'USD', period: 'YEARLY' } },
   ];
   const result = markAtsListingsWithoutDetail({
     platform: 'smartrecruiters',
@@ -1350,23 +1351,43 @@ test('SmartRecruiters detail candidate location restricts an otherwise broad rem
 test('SmartRecruiters detail carries the posting brand through the durable handoff without renaming the shared board', async () => {
   const job = { id: '744000160676880', name: 'Account Manager', company: { name: 'StepStone Group' } };
   const original = structuredClone(job);
-  const harness = createHarness({ body: { company: job.company,
+  const harness = createHarness({ body: { id: job.id, company: { ...job.company, identifier: 'StepStoneGroup' },
     customField: [{ fieldLabel: 'Brands', valueLabel: 'Appcast' }, { fieldLabel: 'Legal Entity', valueLabel: 'Appcast Inc' }],
+    compensation: { min: 96500, max: 160500, currency: 'USD', period: 'YEARLY' },
     jobAd: { sections: { jobDescription: { text: 'Manage Appcast client accounts.' } } } } });
   const enriched = await enrichAtsListingJob({ platform: 'smartrecruiters', slug: 'StepStoneGroup', job,
     requestTimeoutMs: 1000 }, harness.dependencies);
   assert.equal(readAtsJobEnrichmentMarker(enriched)?.company, 'Appcast');
   assert.equal(readAtsJobEnrichmentMarker(enriched)?.description, 'Manage Appcast client accounts.');
+  assert.equal(readAtsJobEnrichmentMarker(enriched)?.compensation, '$96,500–$160,500 per year');
   assert.deepEqual(job, original);
   assert.equal(harness.urls.length, 1);
 });
 
-test('SmartRecruiters listing brand survives when a complete description needs no detail request', async () => {
+test('SmartRecruiters can preserve listing brand and pay without an extra request when both are published', async () => {
   const harness = createHarness();
   const enriched = await enrichAtsListingJob({ platform: 'smartrecruiters', slug: 'StepStoneGroup',
     job: { id: '744000160676880', name: 'Account Manager', description: 'Already complete.',
+      compensation: { min: 30.5, max: 45, currency: 'USD', period: 'HOURLY' },
       company: { name: 'StepStone Group' }, customField: [{ fieldLabel: 'Brands', valueLabel: 'Appcast' }] },
     requestTimeoutMs: 1000 }, harness.dependencies);
   assert.equal(readAtsJobEnrichmentMarker(enriched)?.company, 'Appcast');
+  assert.equal(readAtsJobEnrichmentMarker(enriched)?.compensation, '$30.5–$45 per hour');
   assert.deepEqual(harness.urls, []);
+});
+
+test('SmartRecruiters fetches missing pay beside a saved description and ignores pay on a different posting', async () => {
+  const job = { id: '744000160676880', name: 'Account Manager', description: 'Original description.' };
+  const compensation = { min: 95000, max: 110000, currency: 'USD', period: 'YEARLY' };
+  for (const id of [job.id, '744000160676881']) {
+    const harness = createHarness({ body: { id, company: { identifier: 'StepStoneGroup' }, compensation,
+      jobAd: { sections: { jobDescription: { text: 'Other description.' } } } } });
+    const enriched = await enrichAtsListingJob({ platform: 'smartrecruiters', slug: 'StepStoneGroup', job,
+      requestTimeoutMs: 1000 }, harness.dependencies);
+    const marker = readAtsJobEnrichmentMarker(enriched);
+    assert.equal(marker?.compensation, id === job.id ? '$95,000–$110,000 per year' : null);
+    assert.equal(marker?.description, null);
+    assert.equal(enriched.description, job.description);
+    assert.equal(harness.urls.length, 1);
+  }
 });

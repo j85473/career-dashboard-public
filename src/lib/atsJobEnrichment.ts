@@ -1,6 +1,8 @@
 import { parseAdditionalDetail } from './additionalPublicAts';
 import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
 import { smartRecruitersPostingCompany } from './smartRecruitersCompany';
+import { smartRecruitersDetailMatches, smartRecruitersPostedCompensation, smartRecruitersPostingDescription,
+  smartRecruitersPostingDetailUrl } from './smartRecruitersPosting';
 import { expandedPostingIdentity, polymerDetailRequest, parsePolymerDetail } from './expandedPublicAts';
 import { readCornerstoneBody, readCornerstonePosting, type CornerstoneEvidenceReader } from './cornerstonePosting';
 import { readAtsRetryReason, withAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
@@ -128,7 +130,7 @@ const DETAIL_MUTABLE_FIELDS: Readonly<Record<string, ReadonlySet<DetailMutableFi
   successfactors: new Set(['company', 'location']),
   eightfold: new Set(['description', 'company', 'location']),
   workday: new Set(['description', 'company', 'location']),
-  smartrecruiters: new Set(['description', 'company', 'location']),
+  smartrecruiters: new Set(['description', 'company', 'location', 'compensation']),
   workable: new Set(['description']),
   bamboohr: new Set(['description']),
   breezy: new Set(['description', 'company', 'location']),
@@ -698,33 +700,27 @@ function preparedDetailPlan(input: {
   if (platform === 'smartrecruiters') {
     fields.company = smartRecruitersPostingCompany(job);
     fields.location = smartRecruitersPostingLocation(job);
-    if (rawDescriptionPresent) return { plan: null, reason: 'description_already_present', fields };
+    fields.compensation = smartRecruitersPostedCompensation(job);
+    if (rawDescriptionPresent && fields.compensation) return { plan: null, reason: 'description_already_present', fields };
     if (immutableListingTitleRejected(input)) {
       return { plan: null, reason: 'title_gate_rejected', fields };
     }
     const jobId = identifier(job.id);
     if (!jobId || !slug) return { plan: null, reason: 'missing_detail_identity', fields };
+    const identity = { board: slug, id: jobId };
     return {
       plan: jsonResponsePlan(
-        `https://api.smartrecruiters.com/v1/companies/${slug}/postings/${jobId}`,
+        smartRecruitersPostingDetailUrl(identity),
         fields,
         (payload) => {
           const location = isRecord(payload) ? smartRecruitersPostingLocation(payload) : null;
-          const jobAd = isRecord(payload) && isRecord(payload.jobAd) ? payload.jobAd : null;
-          const sections = jobAd && isRecord(jobAd.sections) ? jobAd.sections : null;
-          const sectionText = (name: string) => {
-            const section = sections && isRecord(sections[name]) ? sections[name] : null;
-            return section && typeof section.text === 'string' ? section.text : '';
-          };
           return {
             ...fields,
             company: smartRecruitersPostingCompany(payload) || fields.company,
             location: location || fields.location,
-            description: [
-              sectionText('jobDescription'),
-              sectionText('qualifications'),
-              sectionText('additionalInformation'),
-            ].filter(Boolean).join('\n\n') || null,
+            description: rawDescriptionPresent ? null : smartRecruitersPostingDescription(payload) || null,
+            compensation: (smartRecruitersDetailMatches(payload, identity) ? smartRecruitersPostedCompensation(payload) : null)
+              || fields.compensation,
           };
         },
       ),

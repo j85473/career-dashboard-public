@@ -169,6 +169,7 @@ export async function POST(request: Request) {
             const employerResult = shouldReadEmployer ? await readCanonicalPosting(employerUrl) : null;
             const employerPosting = employerResult?.postingVerificationError ? null : employerResult;
             const employerText = canonicalPostingDescription(employerPosting?.text);
+            let smartRecruitersPay = employerPosting?.platform === 'smartrecruiters' ? employerPosting.postedCompensation : undefined;
             if (employerText) {
               attempt.url = employerUrl;
               attempt.transport = 'ats_api';
@@ -188,7 +189,8 @@ export async function POST(request: Request) {
                     )
                   : {
                       ...buildClosedPostingUpdate(),
-                      ...(employerText ? { description: employerText, ...derivePostingFacts(employerText) } : {}),
+                      ...(employerText ? { description: employerText, ...derivePostingFacts(employerText),
+                        ...(smartRecruitersPay ? { postedCompensation: smartRecruitersPay } : {}) } : {}),
                     },
                 [],
                 employerText ? jdRecoveryAttemptEvidence(attempt, 'closed', null) : undefined,
@@ -257,7 +259,8 @@ export async function POST(request: Request) {
                         ...(employerPosting ? {
                           title, company, location,
                           identityFingerprint: generateV4Fingerprint(title, company, location || 'Unknown Location'),
-                          ...(employerText ? { description: employerText, ...derivePostingFacts(employerText) } : {}),
+                          ...(employerText ? { description: employerText, ...derivePostingFacts(employerText),
+                            ...(smartRecruitersPay ? { postedCompensation: smartRecruitersPay } : {}) } : {}),
                         } : {}),
                         scoreAttempts: 0,
                         scoreError: null,
@@ -317,6 +320,7 @@ export async function POST(request: Request) {
               const atsResult = shouldReadEmployer && extractionUrl === employerUrl
                 ? employerResult : await scrapeAtsApi(extractionUrl);
               if (atsResult?.postingVerificationError) throw new Error(atsResult.postingVerificationError);
+              if (atsResult?.platform === 'smartrecruiters') smartRecruitersPay ||= atsResult.postedCompensation;
               // Workday's detail response carries the complete primary plus
               // additional-location list and its authoritative hiring entity.
               // Preserve both even if the description itself is too short and
@@ -381,6 +385,7 @@ export async function POST(request: Request) {
               || resolvedCompany !== job.company
               || resolvedLocation !== job.location;
             const resolvedMetadataUpdate = {
+              ...(smartRecruitersPay ? { postedCompensation: smartRecruitersPay } : {}),
               ...(newTitle ? { title: newTitle } : {}),
               ...(newCompany ? { company: newCompany } : {}),
               ...(newLocation ? { location: newLocation } : {}),

@@ -319,7 +319,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     });
     descriptionText = descriptionResult.description;
     // Retained descriptions cannot supply fresh pay evidence for a new link.
-    const postedCompensation = (descriptionResult.verified ? extractPostedCompensation(descriptionText) : null)
+    const postedCompensation = (atsResult?.platform === 'smartrecruiters' ? atsResult.postedCompensation : undefined)
+      ?? (descriptionResult.verified ? extractPostedCompensation(descriptionText) : null)
       ?? atsResult?.postedCompensation;
     const compensationChanged = postedCompensation !== undefined && postedCompensation !== claimedJob.postedCompensation;
     // Only the newly verified posting can narrow a remote label. A retained

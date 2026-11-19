@@ -115,6 +115,20 @@ test('ADP employer sections reject client mentions, unnamed subjects, conflictin
   ]) assert.equal(parseAdpPosting({ ...fixture, requisitionDescription: description }, url)?.company, undefined);
 });
 
+test('ADP recovers agreeing recruitment headings and a division named in the posting title', () => {
+  for (const [title, description, expected] of [
+    ['Account Manager', '<h1>Why Join Transit Technologies?</h1><ul><li>Help expand a customer program.</li></ul><p>At Transit Technologies, we build software.</p>', 'Transit Technologies'],
+    ['Account Manager (PJ Boren)', '<p>PJ Boren (PJB), a division of Forward Solutions, helps manufacturers grow.</p>', 'PJ Boren'],
+    ['Account Manager (PJ Boren)', '<p>A Client (AC), a division of Forward Solutions, helps manufacturers grow.</p>', undefined],
+    ['Account Manager', '<p>PJ Boren (PJB), a division of Forward Solutions, helps manufacturers grow.</p>', undefined],
+    ['Account Manager', '<p>Why Join Example Employer?</p><p>At Other Employer, we build software.</p>', undefined],
+    ['Account Manager', '<p>Why join our client?</p><p>At our client, we build software.</p>', undefined],
+    ['Account Manager', '<p>Why Join Example Employer?</p><p>At Example Employer, we build software.</p><p>Other Employer is an equal opportunity employer.</p>', undefined],
+  ]) {
+    assert.equal(parseAdpPosting({ ...fixture, requisitionTitle: title, requisitionDescription: description }, url)?.company, expected);
+  }
+});
+
 test('ADP recovers the exact USGBC posting despite wrapped headings and missing tenant names', () => {
   const body = JSON.parse(readFileSync(new URL('../fixtures/adp/usgbc-channel-partner.json', import.meta.url), 'utf8'));
   const target = 'https://workforcenow.adp.com/mascsr/default/mdf/recruitment/recruitment.html?cid=8d661a1d-66d3-4337-be21-bf05f238bb42&ccId=19000101_000001&jobId=577272';

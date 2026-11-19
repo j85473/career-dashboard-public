@@ -2,6 +2,8 @@ import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
 import { fetchAtsJson } from './atsJsonTransport';
 import { readLinkedInEasyApply } from './atsDisplay';
 import { smartRecruitersPostingCompany } from './smartRecruitersCompany';
+import { sameSmartRecruitersPosting, smartRecruitersCompensationRefreshEligible, smartRecruitersDetailMatches,
+  smartRecruitersPostedCompensation, smartRecruitersPostingDescription, smartRecruitersPostingDetailUrl } from './smartRecruitersPosting';
 import { readAtsRetryReason, type AtsRetryReason } from './atsRetryReason';
 import { AtsPlatformDeferredError, RateLimitedError, PLATFORM_THROTTLE_MS, fetchAtsPlatformResponse, platformPauseRemainingMs, waitForPlatformSlot, IngestionInterruptedError, interruptionError } from './atsProviderRequest';
 // Compatibility exports for consumers that predate the separate request runtime.
@@ -127,7 +129,7 @@ import {
   isWorkdayBulletFieldsOnly,
   readAtsJobEnrichmentMarker,
 } from './atsJobEnrichment';
-import { atsListingSourceId } from './atsPrequeueCompaction';
+import { atsListingSourceId, canCompactExactAtsObservation } from './atsPrequeueCompaction';
 import { describeAtsBatchChunk, describeAtsBatchJob } from './pipelineTelemetry';
 import {
   evaluateTeamtailorLocationAvailability,
@@ -1704,7 +1706,7 @@ async function readIngestionObservation(source: string, sourceId: string, incomi
     : source.toLowerCase() === 'ats-dayforce' ? resolveDayforceObservation : resolveLinkedInObservation;
   return resolve({ sourceId, incomingUrl, find: (key) => prisma.jobSourceObservation.findUnique({
     where: { source_sourceId: { source, sourceId: key } },
-    include: { job: { select: { source: true, status: true, url: true, canonicalUrl: true } } },
+    include: { job: { select: { source: true, status: true, url: true, canonicalUrl: true, userCanonicalUrl: true, postedCompensation: true } } },
   }) });
 }
 
@@ -3452,6 +3454,7 @@ export async function ingestJobs(
       : 'Unknown Location';
     const rawUrl = typeof jobData.url === 'string' ? jobData.url : '';
     const source = typeof jobData.source === 'string' ? jobData.source : 'Unknown';
+    let structuredCompensation = typeof jobData.postedCompensationOverride === 'string' ? jobData.postedCompensationOverride : null;
     const applicationFields = linkedInApplicationFields(source, jobData.linkedinEasyApply);
     const suppliedSourceId = jobData.sourceId;
     const candidatePostedAt = jobData.postedAt instanceof Date ? jobData.postedAt : new Date(String(jobData.postedAt || ''));
@@ -3509,6 +3512,25 @@ export async function ingestJobs(
       }
     }
     if (obs) {
+      const isExactSmartRecruitersCard = source === 'ATS-smartrecruiters'
+        && sameSmartRecruitersPosting(obs.url, rawUrl)
+        && sameSmartRecruitersPosting(obs.job.userCanonicalUrl || obs.job.canonicalUrl || obs.job.url, rawUrl);
+      if (isExactSmartRecruitersCard && smartRecruitersCompensationRefreshEligible(obs.job.status)) {
+        if (structuredCompensation && !obs.job.postedCompensation) {
+          await prisma.job.updateMany({
+            where: { id: obs.jobId, status: obs.job.status, postedCompensation: null,
+              url: obs.job.url, canonicalUrl: obs.job.canonicalUrl, userCanonicalUrl: obs.job.userCanonicalUrl,
+              batchJobId: null, afBatchId: null, jdBatchId: null, scoringStatus: { not: 'scoring' },
+              scoringBatchItems: { none: { status: 'leased' } } },
+            data: { postedCompensation: structuredCompensation },
+          });
+        }
+        // Cards normally compacted on rediscovery reach this path for pay only.
+        if (canCompactExactAtsObservation(obs.job.status)) {
+          stats.duplicates++;
+          return 'duplicate';
+        }
+      }
       await refreshLinkedInApplicationMethod(obs.jobId, source, jobData.linkedinEasyApply);
       const consolidation = ['inbox', 'pending_af', 'applied', 'interviewing'].includes(obs.job.status)
         ? await consolidateStoredAtsReprint(obs.jobId) : null;
@@ -3619,6 +3641,8 @@ export async function ingestJobs(
             data: {
               ...rediscoveryRefreshUpdate(description),
               ...derivePostingFacts(description),
+              ...(isExactSmartRecruitersCard && (obs.job.postedCompensation || structuredCompensation)
+                ? { postedCompensation: undefined } : {}),
             },
           });
           if (refreshed.count === 1) {
@@ -3830,6 +3854,9 @@ export async function ingestJobs(
       const employerText = employerUrl ? canonicalPostingDescription(atsResult?.text) : undefined;
       
       if (atsResult && !atsResult.postingVerificationError) {
+         if (atsResult.platform === 'smartrecruiters' && atsResult.postedCompensation) {
+            structuredCompensation = atsResult.postedCompensation;
+         }
          if (employerText || !employerUrl && atsResult.text) finalDescription = employerText || atsResult.text;
          manualAts = atsResult.ats;
          if (resolvedUrl && boardIdentityFromUrl(resolvedUrl)) {
@@ -4005,9 +4032,6 @@ export async function ingestJobs(
     // a later status change never has to recompute them. A structured override
     // (Rippling's payRangeDetails) wins over whatever the prose extractor found,
     // since it is read directly off the source rather than guessed from text.
-    const structuredCompensation = typeof jobData.postedCompensationOverride === 'string'
-      ? jobData.postedCompensationOverride
-      : null;
     const enrichedPostingFacts = {
       ...derivePostingFacts(finalDescription),
       ...(structuredCompensation ? { postedCompensation: structuredCompensation } : {}),
@@ -5829,14 +5853,17 @@ export async function ingestJobs(
              */
             let smartRecruitersDetailLocation = board.platform === "smartrecruiters" ? atsEnrichmentMarker?.location : null;
             let smartRecruitersDetailCompany = board.platform === "smartrecruiters" ? atsEnrichmentMarker?.company : null;
-            if (parentAtsNetworkAllowed && board.platform === "smartrecruiters" && !rawDescription && job.id) {
+            let smartRecruitersCompensation = board.platform === 'smartrecruiters'
+              ? atsEnrichmentMarker?.compensation || smartRecruitersPostedCompensation(job) : null;
+            if (parentAtsNetworkAllowed && board.platform === "smartrecruiters" && (!rawDescription || !smartRecruitersCompensation) && job.id) {
+              const identity = { board: board.slug, id: String(job.id) };
               const detailSource = `${boardSource} Details`;
               try {
                 const res = await fetchAtsPlatformResponse(board.platform, atsTurnSignal, async () => {
                   throwIfAtsInterrupted();
                   await reserveSourceRequest(detailSource);
                   return fetch(
-                    `https://api.smartrecruiters.com/v1/companies/${board.slug}/postings/${job.id}`,
+                    smartRecruitersPostingDetailUrl(identity),
                     { headers: { "Accept": "application/json" }, signal: atsRequestSignal(10_000) },
                   );
                 });
@@ -5846,15 +5873,10 @@ export async function ingestJobs(
                   const detail = await res.json();
                   smartRecruitersDetailLocation = smartRecruitersPostingLocation(detail);
                   smartRecruitersDetailCompany = smartRecruitersPostingCompany(detail);
-                  // companyDescription is left out on purpose: it is boilerplate
-                  // marketing that inflates length without describing the role,
-                  // which is exactly what the 650-character gate exists to catch.
-                  const sections = detail?.jobAd?.sections || {};
-                  rawDescription = [
-                    sections.jobDescription?.text,
-                    sections.qualifications?.text,
-                    sections.additionalInformation?.text,
-                  ].filter(Boolean).join("\n\n");
+                  rawDescription ||= smartRecruitersPostingDescription(detail);
+                  if (smartRecruitersDetailMatches(detail, identity)) {
+                    smartRecruitersCompensation = smartRecruitersPostedCompensation(detail) || smartRecruitersCompensation;
+                  }
                 } else {
                   markSourceError(detailSource, new Error(`SmartRecruiters posting detail HTTP ${res.status}`));
                 }
@@ -6251,7 +6273,7 @@ export async function ingestJobs(
                   source: `ATS-${board.platform}`,
                   sourceId,
                   postedAt,
-                  postedCompensationOverride: ripplingCompensation || breezyCompensation
+                  postedCompensationOverride: ripplingCompensation || breezyCompensation || smartRecruitersCompensation
                     || (['kula', 'gr8people'].includes(board.platform) ? atsEnrichmentMarker?.compensation || job.postedCompensation : null),
                   authoritativePrefilterReason:
                     teamtailorLocationAvailability?.passes === false

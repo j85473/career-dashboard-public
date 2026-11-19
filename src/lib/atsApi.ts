@@ -45,6 +45,10 @@ import { isAppOneHost } from './apponePostingIdentity';
 import { fetchAppOnePosting } from './apponePosting';
 import { buildIcimsIframeUrl, ICIMS_FETCH_USER_AGENT, icimsPostingId, icimsPostingUrlsMatch } from './icimsPostingUrl';
 import { isPlaceholderEmployerName } from './companyIdentity';
+import { smartRecruitersDetailMatches, smartRecruitersPostedCompensation, smartRecruitersPostingDescription,
+  smartRecruitersPostingDetailUrl, smartRecruitersPostingIdentity } from './smartRecruitersPosting';
+import { smartRecruitersPostingCompany } from './smartRecruitersCompany';
+import { smartRecruitersPostingLocation } from './smartRecruitersLocation';
 
 export { buildIcimsIframeUrl, ICIMS_FETCH_USER_AGENT } from './icimsPostingUrl';
 
@@ -501,6 +505,22 @@ export async function scrapeEightfoldPostingDetail(url: string, pageHtml?: strin
   }
 }
 
+export function parseSmartRecruitersPostingDetail(payload: unknown,
+  expected: NonNullable<ReturnType<typeof smartRecruitersPostingIdentity>>): AtsScrapeResult | null {
+  if (!smartRecruitersDetailMatches(payload, expected)) return null;
+  const text = cleanHtmlText(smartRecruitersPostingDescription(payload));
+  const pay = smartRecruitersPostedCompensation(payload);
+  const usable = assessJobDescriptionQuality(text, { structuredSource: true }).scorable;
+  if (!usable && !pay) return null;
+  return {
+    text: usable ? text : '', ats: 'SmartRecruiters', platform: 'smartrecruiters', atsSlug: expected.board,
+    title: postingMetadataValue((payload as { name?: unknown }).name),
+    company: smartRecruitersPostingCompany(payload) || undefined,
+    location: smartRecruitersPostingLocation(payload) || undefined,
+    postedCompensation: pay || undefined,
+  };
+}
+
 export async function scrapeAtsApi(url: string, options: { requireSameUrl?: boolean } = {}): Promise<AtsScrapeResult | null> {
   try {
     const parsed = await assertSafeExternalUrl(url);
@@ -508,6 +528,18 @@ export async function scrapeAtsApi(url: string, options: { requireSameUrl?: bool
 
     if (isIndeedHost(host)) return fetchIndeedPosting(url);
     if (isAppOneHost(host)) return fetchAppOnePosting(url);
+
+    const smartRecruiters = smartRecruitersPostingIdentity(url);
+    if (smartRecruiters) {
+      const detailUrl = smartRecruitersPostingDetailUrl(smartRecruiters);
+      const response = await safeExternalFetch(detailUrl, {
+        headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10000),
+      }).catch(() => null);
+      const result = response?.ok && postingUrlsMatch(response.url || detailUrl, detailUrl)
+        ? parseSmartRecruitersPostingDetail(await readSafeFetchText(response).then(JSON.parse).catch(() => null), smartRecruiters)
+        : null;
+      if (result) return result;
+    }
 
     if (jobvitePostingIdentity(url)) {
       // nl=1 keeps this exact posting on Jobvite instead of redirecting to
