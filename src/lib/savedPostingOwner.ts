@@ -41,14 +41,17 @@ export async function savedPostingOwnerIds(store: Pick<Prisma.TransactionClient,
   const exactUrls = Prisma.join(urls);
   const jobUrlKeys = Prisma.join(urls.map(value => Prisma.sql`left(lower(${value}::text), 512)`));
   const observationUrlKeys = Prisma.join(urls.map(value => Prisma.sql`left(${value}::text, 512)`));
-  // Use bounded B-tree keys for exact URL lookups. Keep the full URL
-  // comparison because distinct requisitions can share the same prefix.
+  // Isolate the indexed prefix lookup so the full URL comparison cannot
+  // make PostgreSQL choose a costly trigram scan on large tables.
   const hits = await store.$queryRaw<Array<{ id: string }>>`
+    WITH url_candidates AS MATERIALIZED (
+      SELECT id, url FROM "Job" WHERE left(lower(url), 512) COLLATE "C" IN (${jobUrlKeys})
+      UNION ALL
+      SELECT "jobId", url FROM "JobSourceObservation"
+      WHERE source LIKE 'ATS-%' AND left(url, 512) COLLATE "C" IN (${observationUrlKeys})
+    )
     SELECT id FROM "Job" WHERE lower("canonicalUrl") IN (${Prisma.join(urls.map(value => value.toLowerCase()))})
-    UNION SELECT id FROM "Job"
-    WHERE left(lower(url), 512) COLLATE "C" IN (${jobUrlKeys}) AND url IN (${exactUrls})
-    UNION SELECT "jobId" FROM "JobSourceObservation"
-    WHERE source LIKE 'ATS-%' AND left(url, 512) COLLATE "C" IN (${observationUrlKeys}) AND url IN (${exactUrls})
+    UNION SELECT id FROM url_candidates WHERE url IN (${exactUrls})
     ${keys.length ? Prisma.sql`UNION SELECT id FROM "Job" WHERE "postingIdentity" IN (${Prisma.join(keys)})` : Prisma.empty}`;
   const possible = hits.map(hit => hit.id).filter(id => id !== excludeId);
   if (!possible.length) return [];

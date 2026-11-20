@@ -139,7 +139,7 @@ test('rediscovering two scored copies leaves their scores visible and opens merg
   const publisher = { ...defaults, ...aggregate, id: 'aggregate', observations: [] };
   const events: Array<{ eventType: string; jobId: string }> = [];
   const tx = {
-    $queryRaw: async (sql: TemplateStringsArray) => sql[0].includes('lower("canonicalUrl")') ? [{ id: 'ats' }] : [],
+    $queryRaw: async (sql: TemplateStringsArray) => sql.some(part => part.includes('lower("canonicalUrl")')) ? [{ id: 'ats' }] : [],
     $executeRaw: async () => 0,
     job: {
       findFirst: async () => publisher,
